@@ -1,0 +1,13 @@
+[package]
+name = "wmux-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wmux-render.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

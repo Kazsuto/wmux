@@ -1,0 +1,16 @@
+[package]
+name = "wmux-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wmux-app"
+path = "src/main.rs"
+
+[dependencies]
+wmux-ui.workspace = true
+wmux-render.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

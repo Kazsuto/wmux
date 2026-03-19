@@ -1,0 +1,66 @@
+[workspace]
+members = [
+    "wmux-core",
+    "wmux-pty",
+    "wmux-render",
+    "wmux-ui",
+    "wmux-ipc",
+    "wmux-cli",
+    "wmux-app",
+    "wmux-browser",
+    "wmux-config",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# GPU & Rendering
+wgpu = "28"
+winit = "0.30"
+glyphon = "0.10"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Terminal
+vte = "0.13"
+portable-pty = "0.9"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config & Utilities
+thiserror = "2"
+dirs = "6"
+toml = "0.8"
+arboard = "3"
+anyhow = "1"
+
+# Internal crates
+wmux-core = { path = "wmux-core" }
+wmux-pty = { path = "wmux-pty" }
+wmux-render = { path = "wmux-render" }
+wmux-ui = { path = "wmux-ui" }
+wmux-ipc = { path = "wmux-ipc" }
+wmux-cli = { path = "wmux-cli" }
+wmux-browser = { path = "wmux-browser" }
+wmux-config = { path = "wmux-config" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+panic = "abort"
