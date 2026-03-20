@@ -1,0 +1,80 @@
+[sidebar]
+new_workspace = "Nouvel espace de travail"
+close_workspace = "Fermer l'espace de travail"
+rename_workspace = "Renommer l'espace de travail"
+workspaces = "Espaces de travail"
+collapse = "Réduire"
+expand = "Développer"
+
+[palette]
+search_placeholder = "Saisissez une commande..."
+no_results = "Aucun résultat"
+open = "Ouvrir"
+recent = "Récent"
+commands = "Commandes"
+
+[notification]
+clear_all = "Tout effacer"
+mark_read = "Marquer comme lu"
+notifications = "Notifications"
+no_notifications = "Aucune notification"
+
+[terminal]
+copy = "Copier"
+paste = "Coller"
+search = "Rechercher"
+clear = "Effacer"
+select_all = "Tout sélectionner"
+split_horizontal = "Division horizontale"
+split_vertical = "Division verticale"
+close_pane = "Fermer le panneau"
+zoom = "Zoom"
+
+[menu]
+file = "Fichier"
+edit = "Édition"
+view = "Affichage"
+settings = "Paramètres"
+help = "Aide"
+about = "À propos de wmux"
+quit = "Quitter"
+new_window = "Nouvelle fenêtre"
+
+[status]
+connected = "Connecté"
+disconnected = "Déconnecté"
+connecting = "Connexion en cours..."
+error = "Erreur"
+
+[dialog]
+confirm_close = "Fermer cet espace de travail ?"
+confirm_close_description = "Tous les panneaux de cet espace de travail seront fermés."
+yes = "Oui"
+no = "Non"
+cancel = "Annuler"
+ok = "OK"
+apply = "Appliquer"
+
+[error]
+connection_failed = "Échec de la connexion"
+shell_not_found = "Shell introuvable"
+theme_not_found = "Thème introuvable"
+permission_denied = "Permission refusée"
+timeout = "Délai d'opération dépassé"
+
+[browser]
+navigate = "Naviguer"
+reload = "Recharger"
+back = "Précédent"
+forward = "Suivant"
+address_bar = "Adresse"
+stop = "Arrêter"
+
+[settings]
+font = "Police"
+theme = "Thème"
+language = "Langue"
+scrollback = "Défilement"
+font_size = "Taille de police"
+cursor_style = "Style du curseur"
+keybindings = "Raccourcis clavier"

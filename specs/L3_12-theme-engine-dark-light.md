@@ -1,7 +1,7 @@
 ---
 task_id: L3_12
 title: "Implement Theme Engine and Dark/Light Mode Detection"
-status: pending
+status: done
 priority: P1
 estimated_hours: 2
 wave: 2

@@ -1,7 +1,7 @@
 ---
 task_id: L3_05
 title: "Implement Browser Navigation and JavaScript Eval API"
-status: pending
+status: done
 priority: P1
 estimated_hours: 2
 wave: 2

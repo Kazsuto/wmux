@@ -14,6 +14,18 @@ pub enum BrowserError {
     #[error("user data directory setup failed: {0}")]
     UserDataDirFailed(String),
 
+    #[error("navigation failed: {0}")]
+    NavigationFailed(String),
+
+    #[error("JavaScript eval error: {0}")]
+    JavaScriptError(String),
+
+    #[error("wait timed out: {0}")]
+    Timeout(String),
+
+    #[error("WebView2 controller not available")]
+    ControllerNotAvailable,
+
     #[error("{0}")]
     General(String),
 

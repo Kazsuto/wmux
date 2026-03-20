@@ -1,0 +1,80 @@
+[sidebar]
+new_workspace = "New Workspace"
+close_workspace = "Close Workspace"
+rename_workspace = "Rename Workspace"
+workspaces = "Workspaces"
+collapse = "Collapse"
+expand = "Expand"
+
+[palette]
+search_placeholder = "Type a command..."
+no_results = "No results"
+open = "Open"
+recent = "Recent"
+commands = "Commands"
+
+[notification]
+clear_all = "Clear All"
+mark_read = "Mark as Read"
+notifications = "Notifications"
+no_notifications = "No notifications"
+
+[terminal]
+copy = "Copy"
+paste = "Paste"
+search = "Search"
+clear = "Clear"
+select_all = "Select All"
+split_horizontal = "Split Horizontal"
+split_vertical = "Split Vertical"
+close_pane = "Close Pane"
+zoom = "Zoom"
+
+[menu]
+file = "File"
+edit = "Edit"
+view = "View"
+settings = "Settings"
+help = "Help"
+about = "About wmux"
+quit = "Quit"
+new_window = "New Window"
+
+[status]
+connected = "Connected"
+disconnected = "Disconnected"
+connecting = "Connecting..."
+error = "Error"
+
+[dialog]
+confirm_close = "Close this workspace?"
+confirm_close_description = "All panes in this workspace will be closed."
+yes = "Yes"
+no = "No"
+cancel = "Cancel"
+ok = "OK"
+apply = "Apply"
+
+[error]
+connection_failed = "Connection failed"
+shell_not_found = "Shell not found"
+theme_not_found = "Theme not found"
+permission_denied = "Permission denied"
+timeout = "Operation timed out"
+
+[browser]
+navigate = "Navigate"
+reload = "Reload"
+back = "Back"
+forward = "Forward"
+address_bar = "Address"
+stop = "Stop"
+
+[settings]
+font = "Font"
+theme = "Theme"
+language = "Language"
+scrollback = "Scrollback"
+font_size = "Font Size"
+cursor_style = "Cursor Style"
+keybindings = "Keybindings"

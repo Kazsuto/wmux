@@ -1,7 +1,7 @@
 ---
 task_id: L1_06
 title: "Implement PTY Async I/O with Tokio"
-status: in_progress
+status: done
 priority: P0
 estimated_hours: 1.5
 wave: 2

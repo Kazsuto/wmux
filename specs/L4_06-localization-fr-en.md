@@ -1,7 +1,7 @@
 ---
 task_id: L4_06
 title: "Implement Localization FR/EN"
-status: pending
+status: done
 priority: P2
 estimated_hours: 2
 wave: 2

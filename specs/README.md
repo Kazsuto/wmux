@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 11 done, 1 in progress, 38 pending (22% complete)
+> **Current progress**: 15 done, 0 in progress, 35 pending (30% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -54,18 +54,18 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > `/apex implement wave 1 in teams mode`
 
-### Wave 2 — Grid, PTY I/O, Browser Nav & Theme (needs Wave 1) — CURRENT
+### Wave 2 — Grid, PTY I/O, Browser Nav & Theme (needs Wave 1) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
 | [L1_01](L1_01-terminal-cell-grid.md) | Terminal Cell Grid | P0 | 2.5h | L0_02 | ✅ |
-| [L1_06](L1_06-pty-async-io.md) | PTY Async I/O | P0 | 1.5h | L1_05 | 🔄 |
-| [L3_05](L3_05-browser-navigation-eval-api.md) | Browser Navigation + JS Eval | P1 | 2h | L3_03 | ⬜ |
-| [L3_12](L3_12-theme-engine-dark-light.md) | Theme Engine + Dark/Light | P1 | 2h | L3_11 | ⬜ |
-| [L4_06](L4_06-localization-fr-en.md) | Localization FR/EN | P2 | 2h | L3_11 | ⬜ |
+| [L1_06](L1_06-pty-async-io.md) | PTY Async I/O | P0 | 1.5h | L1_05 | ✅ |
+| [L3_05](L3_05-browser-navigation-eval-api.md) | Browser Navigation + JS Eval | P1 | 2h | L3_03 | ✅ |
+| [L3_12](L3_12-theme-engine-dark-light.md) | Theme Engine + Dark/Light | P1 | 2h | L3_11 | ✅ |
+| [L4_06](L4_06-localization-fr-en.md) | Localization FR/EN | P2 | 2h | L3_11 | ✅ |
 
-> `/apex implement wave 2 in teams mode`
+> 5/5 done
 
-### Wave 3 — VTE, Scrollback, Rendering, Input & Browser DOM (needs Wave 2) — 2/7 done
+### Wave 3 — VTE, Scrollback, Rendering, Input & Browser DOM (needs Wave 2) — CURRENT
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
 | [L1_02](L1_02-vte-parser-integration.md) | VTE Parser Integration | P0 | 3h | L1_01 | ✅ |
@@ -184,7 +184,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | L1_03 | [Scrollback Ring Buffer](L1_03-scrollback-ring-buffer.md) | P0 | 2h | 3 | ✅ | L1_01 |
 | L1_04 | [OSC Sequence Handlers](L1_04-osc-sequence-handlers.md) | P1 | 1.5h | 4 | ✅ | L1_02 |
 | L1_05 | [ConPTY Shell Spawning](L1_05-conpty-shell-spawning.md) | P0 | 2h | 1 | ✅ | L0_01 |
-| L1_06 | [PTY Async I/O](L1_06-pty-async-io.md) | P0 | 1.5h | 2 | 🔄 | L1_05 |
+| L1_06 | [PTY Async I/O](L1_06-pty-async-io.md) | P0 | 1.5h | 2 | ✅ | L1_05 |
 | L1_07 | [Terminal Grid GPU Rendering](L1_07-terminal-grid-gpu-rendering.md) | P0 | 3h | 3 | ⬜ | L1_01, L0_03 |
 | L1_08 | [Keyboard Input → PTY Dispatch](L1_08-keyboard-input-pty-dispatch.md) | P0 | 2h | 3 | ⬜ | L1_06 |
 | L1_09 | [Mouse Selection, Copy/Paste](L1_09-mouse-selection-copypaste.md) | P1 | 2.5h | 3 | ⬜ | L1_01, L1_06 |
@@ -217,14 +217,14 @@ Run `/create-tasks status` to see current wave and next actions.
 | L3_02 | [Session Restore](L3_02-session-restore.md) | P1 | 2h | 10 | ⬜ | L3_01 |
 | L3_03 | [WebView2 COM Init](L3_03-webview2-com-initialization.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
 | L3_04 | [WebView2 Browser Panel](L3_04-webview2-browser-panel.md) | P1 | 2.5h | 8 | ⬜ | L3_03, L2_02 |
-| L3_05 | [Browser Nav + JS Eval](L3_05-browser-navigation-eval-api.md) | P1 | 2h | 2 | ⬜ | L3_03 |
+| L3_05 | [Browser Nav + JS Eval](L3_05-browser-navigation-eval-api.md) | P1 | 2h | 2 | ✅ | L3_03 |
 | L3_06 | [Browser DOM Automation](L3_06-browser-dom-automation.md) | P1 | 3h | 3 | ⬜ | L3_05 |
 | L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ⬜ | L2_11, L3_05, L3_06 |
 | L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ⬜ | L1_04 |
 | L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ⬜ | L3_08, L2_08 |
 | L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ⬜ | L3_08 |
 | L3_11 | [Ghostty Config Parser](L3_11-ghostty-config-parser.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
-| L3_12 | [Theme Engine](L3_12-theme-engine-dark-light.md) | P1 | 2h | 2 | ⬜ | L3_11 |
+| L3_12 | [Theme Engine](L3_12-theme-engine-dark-light.md) | P1 | 2h | 2 | ✅ | L3_11 |
 | L3_13 | [Shell Integration](L3_13-shell-integration-hooks.md) | P1 | 2h | 3 | ⬜ | L1_06 |
 | L3_14 | [Git/Port Detection](L3_14-git-branch-detection.md) | P2 | 2h | 10 | ⬜ | L2_08, L1_04 |
 
@@ -236,7 +236,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | L4_03 | [SSH Remote](L4_03-ssh-remote.md) | P2 | 3h | 9 | ⬜ | L2_09, L2_07 |
 | L4_04 | [Auto-Update](L4_04-auto-update.md) | P2 | 2.5h | 1 | ✅ | L0_01 |
 | L4_05 | [Mica/Acrylic Effects](L4_05-mica-acrylic-effects.md) | P2 | 2h | 10 | ⬜ | L2_08 |
-| L4_06 | [Localization FR/EN](L4_06-localization-fr-en.md) | P2 | 2h | 2 | ⬜ | L3_11 |
+| L4_06 | [Localization FR/EN](L4_06-localization-fr-en.md) | P2 | 2h | 2 | ✅ | L3_11 |
 | L4_07 | [Packaging + Distribution](L4_07-packaging-distribution.md) | P2 | 2.5h | 12 | ⬜ | all prior |
 
 ---
@@ -259,7 +259,7 @@ graph TD
     L1_01 --> L1_09["⬜ L1_09: Mouse/Clipboard"]
     L0_03 --> L1_07
     L1_02 --> L1_04["✅ L1_04: OSC Handlers"]
-    L1_05 --> L1_06["🔄 L1_06: PTY Async I/O"]
+    L1_05 --> L1_06["✅ L1_06: PTY Async I/O"]
     L1_06 --> L1_08["⬜ L1_08: Keyboard Input"]
     L1_06 --> L1_09
     L1_06 --> L3_13["⬜ L3_13: Shell Hooks"]
@@ -302,7 +302,7 @@ graph TD
     L3_01 --> L3_02["⬜ L3_02: Session Restore"]
     L3_03 --> L3_04["⬜ L3_04: Browser Panel"]
     L2_02 --> L3_04
-    L3_03 --> L3_05["⬜ L3_05: Browser Nav/Eval"]
+    L3_03 --> L3_05["✅ L3_05: Browser Nav/Eval"]
     L3_05 --> L3_06["⬜ L3_06: Browser DOM"]
     L2_11 --> L3_07["⬜ L3_07: Browser IPC"]
     L3_05 --> L3_07
@@ -311,7 +311,7 @@ graph TD
     L3_08 --> L3_09["⬜ L3_09: Notification Visuals"]
     L2_08 --> L3_09
     L3_08 --> L3_10["⬜ L3_10: Toast Notifications"]
-    L3_11 --> L3_12["⬜ L3_12: Theme Engine"]
+    L3_11 --> L3_12["✅ L3_12: Theme Engine"]
     L2_08 --> L3_14["⬜ L3_14: Git/Port Detection"]
     L1_04 --> L3_14
 
@@ -321,7 +321,7 @@ graph TD
     L2_09 --> L4_03["⬜ L4_03: SSH Remote"]
     L2_07 --> L4_03
     L2_08 --> L4_05["⬜ L4_05: Mica/Acrylic"]
-    L3_11 --> L4_06["⬜ L4_06: Localization"]
+    L3_11 --> L4_06["✅ L4_06: Localization"]
 ```
 
 ---
@@ -332,8 +332,8 @@ graph TD
 |------|------|-------|------|-------------|---------|--------|
 | 0 | Scaffold Foundation | 1 | 1 | 0 | 0 | Complete |
 | 1 | Core Types & Foundations | 6 | 6 | 0 | 0 | Complete |
-| 2 | Grid, PTY I/O, Browser Nav | 5 | 1 | 1 | 3 | **Active** |
-| 3 | VTE, Scrollback, Rendering | 7 | 2 | 0 | 5 | Waiting |
+| 2 | Grid, PTY I/O, Browser Nav | 5 | 5 | 0 | 0 | Complete |
+| 3 | VTE, Scrollback, Rendering | 7 | 2 | 0 | 5 | **Active** |
 | 4 | OSC Handlers | 1 | 1 | 0 | 0 | Complete |
 | 5 | Terminal Integration | 2 | 0 | 0 | 2 | Waiting |
 | 6 | AppState Actor & Toast | 2 | 0 | 0 | 2 | Waiting |
@@ -343,10 +343,10 @@ graph TD
 | 10 | Metadata IPC, Polish | 6 | 0 | 0 | 6 | Waiting |
 | 11 | CLI Commands | 1 | 0 | 0 | 1 | Waiting |
 | 12 | Packaging | 1 | 0 | 0 | 1 | Waiting |
-| **Total** | | **50** | **11** | **1** | **38** | **22%** |
+| **Total** | | **50** | **15** | **0** | **35** | **30%** |
 
 **Estimated total effort**: 111 hours (range: 100–125 hours)
-**Estimated remaining**: ~93 hours
+**Estimated remaining**: ~83.5 hours
 **Critical path**: L0_01 → L0_02 → L1_01 → L1_02 → L1_04 → L1_10 → L2_01 → L2_02 → L2_07 → L2_08 → L2_14 → L2_16 (~30h sequential)
 
 ---
@@ -392,7 +392,7 @@ graph TD
 - **Execution waves**: 13 (waves 0–12)
 - **Max parallelism**: 8 tasks (waves 8 and 9)
 - **Estimated total effort**: 111 hours
-- **Estimated remaining**: ~93 hours
+- **Estimated remaining**: ~83.5 hours
 
 ### Effort by Wave
 | Wave | Tasks | Hours | Cumulative |
@@ -417,11 +417,9 @@ graph TD
 - **After Wave 10**: Browser, notifications, config, session persistence (~80% cmux parity)
 - **After Wave 12 (L4_07)**: Production-ready MVP release
 
-### Next Actions (Current Wave 2)
-Complete L1_06 (PTY Async I/O — in progress), then:
-1. Finish remaining Wave 1 tasks: `/apex implement specs L3_03, L3_11, L4_04 in teams mode`
-2. Finish remaining Wave 2 tasks: `/apex implement specs L3_05, L3_12, L4_06 in teams mode`
-3. Execute Wave 3: `/apex implement specs L1_07, L1_08, L1_09, L3_06, L3_13 in teams mode`
+### Next Actions (Current Wave 3)
+Wave 2 complete. Execute Wave 3 (5 pending tasks):
+1. `/apex implement wave 3 in teams mode` — L1_07, L1_08, L1_09, L3_06, L3_13
 
 ---
 
