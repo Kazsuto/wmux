@@ -1,8 +1,22 @@
+---
+task_id: L4_07
+title: "Implement Packaging and Distribution"
+status: pending
+priority: P2
+estimated_hours: 2.5
+wave: 12
+prd_features: [F-14]
+archi_sections: [ADR-0001]
+depends_on: [L2_03, L2_05, L2_06, L2_10, L2_16, L3_02, L3_04, L3_07, L3_09, L3_10, L3_12, L3_13, L3_14, L4_01, L4_02, L4_03, L4_04, L4_05, L4_06]
+blocks: []
+---
+
 # Task L4_07: Implement Packaging and Distribution
 
 > **Phase**: Polish
 > **Priority**: P2-Medium
 > **Estimated effort**: 2.5 hours
+> **Wave**: 12
 
 ## Context
 wmux needs to be distributed via multiple channels for easy installation. Architecture §9 specifies MSI, winget, Scoop, and portable zip. PRD mentions distribution via GitHub Releases.

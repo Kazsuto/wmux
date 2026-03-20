@@ -1,8 +1,22 @@
+---
+task_id: L3_03
+title: "Implement WebView2 COM Initialization and RAII Wrappers"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 1
+prd_features: [F-04]
+archi_sections: [ADR-0001, ADR-0006]
+depends_on: [L0_01]
+blocks: [L3_04, L3_05]
+---
+
 # Task L3_03: Implement WebView2 COM Initialization and RAII Wrappers
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 1
 
 ## Context
 The integrated browser uses Microsoft WebView2 (Chromium/Edge) for rendering web content in terminal panes. This task sets up the COM foundation. Architecture §5 (wmux-browser) specifies webview2-com 0.39. ADR-0006 mandates WebView2 in separate child HWND (NEVER inside wgpu surface).

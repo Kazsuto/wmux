@@ -1,8 +1,22 @@
+---
+task_id: L4_02
+title: "Implement Terminal Search with Match Highlighting"
+status: pending
+priority: P2
+estimated_hours: 2
+wave: 9
+prd_features: [F-12]
+archi_sections: [ADR-0001, ADR-0003]
+depends_on: [L1_03, L2_04]
+blocks: [L4_07]
+---
+
 # Task L4_02: Implement Terminal Search with Match Highlighting
 
 > **Phase**: Polish
 > **Priority**: P2-Medium
 > **Estimated effort**: 2 hours
+> **Wave**: 9
 
 ## Context
 Terminal search (Ctrl+F) lets users find text in the scrollback and visible grid. Matches are highlighted and navigable with n/N (vi-style). PRD §12 requires regex support and < 100ms search on 4K lines.

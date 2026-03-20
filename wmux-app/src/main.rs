@@ -1,3 +1,5 @@
+mod updater;
+
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 use wmux_ui::App;

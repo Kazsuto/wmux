@@ -1,8 +1,22 @@
+---
+task_id: L4_05
+title: "Implement Mica/Acrylic Visual Effects"
+status: pending
+priority: P2
+estimated_hours: 2
+wave: 10
+prd_features: [F-15]
+archi_sections: [ADR-0001]
+depends_on: [L2_08]
+blocks: [L4_07]
+---
+
 # Task L4_05: Implement Mica/Acrylic Visual Effects
 
 > **Phase**: Polish
 > **Priority**: P3-Low
 > **Estimated effort**: 2 hours
+> **Wave**: 10
 
 ## Context
 Windows 11 supports Mica and Acrylic backdrop effects for modern UI appearance. wmux uses these for the sidebar. Windows 10 falls back to opaque background. PRD §15 describes the effects. Architecture §3 specifies DWM API.

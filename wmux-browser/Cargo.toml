@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+webview2-com.workspace = true
+windows.workspace = true
+dirs.workspace = true

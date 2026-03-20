@@ -1,8 +1,22 @@
+---
+task_id: L4_03
+title: "Implement SSH Remote Support"
+status: pending
+priority: P2
+estimated_hours: 3
+wave: 9
+prd_features: [F-09]
+archi_sections: [ADR-0001, ADR-0005]
+depends_on: [L2_09, L2_07]
+blocks: [L4_07]
+---
+
 # Task L4_03: Implement SSH Remote Support
 
 > **Phase**: Polish
 > **Priority**: P2-Medium
 > **Estimated effort**: 3 hours
+> **Wave**: 9
 
 ## Context
 SSH remote lets users create durable workspaces on remote machines. A Go daemon (wmuxd-remote, reused from cmux) runs on the remote. PRD §9 describes the workflow. Architecture §5 specifies Go daemon reuse.

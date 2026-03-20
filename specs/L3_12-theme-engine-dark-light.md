@@ -1,8 +1,22 @@
+---
+task_id: L3_12
+title: "Implement Theme Engine and Dark/Light Mode Detection"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 2
+prd_features: [F-10]
+archi_sections: [ADR-0001, ADR-0010]
+depends_on: [L3_11]
+blocks: [L4_07]
+---
+
 # Task L3_12: Implement Theme Engine and Dark/Light Mode Detection
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 2
 
 ## Context
 Themes control terminal colors, sidebar appearance, and UI chrome. wmux imports Ghostty themes (50+ community themes) and detects the Windows dark/light mode preference. PRD §10 describes theme management and live switching.

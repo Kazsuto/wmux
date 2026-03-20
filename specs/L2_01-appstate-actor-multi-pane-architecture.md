@@ -1,8 +1,22 @@
+---
+task_id: L2_01
+title: "Refactor to AppState Actor and Multi-Pane Architecture"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 6
+prd_features: [F-02]
+archi_sections: [ADR-0001, ADR-0007, ADR-0008]
+depends_on: [L1_10]
+blocks: [L2_02, L2_09]
+---
+
 # Task L2_01: Refactor to AppState Actor and Multi-Pane Architecture
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 6
 
 ## Context
 The single-pane terminal (Task L1_10) has a direct coupling between the event loop and terminal state. To support multiple panes, workspaces, and IPC, the application needs an actor-based architecture where AppState owns all mutable state and communicates via bounded channels. ADR-0008 mandates the actor pattern. Architecture §5 (wmux-ipc) describes the AppState actor.

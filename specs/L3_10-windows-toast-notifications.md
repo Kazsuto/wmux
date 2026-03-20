@@ -1,8 +1,22 @@
+---
+task_id: L3_10
+title: "Implement Windows Toast Notifications"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 6
+prd_features: [F-07]
+archi_sections: [ADR-0001]
+depends_on: [L3_08]
+blocks: [L4_07]
+---
+
 # Task L3_10: Implement Windows Toast Notifications
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 6
 
 ## Context
 Desktop notifications use Windows Toast (WinRT) to alert users when wmux is not focused. PRD §7 describes Toast integration with actions, sounds, and custom commands. Architecture §3 maps NSUserNotification (macOS) to Windows Toast.

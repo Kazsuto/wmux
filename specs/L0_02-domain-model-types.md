@@ -1,8 +1,22 @@
+---
+task_id: L0_02
+title: "Create Domain Model Types in wmux-core"
+status: done
+priority: P0
+estimated_hours: 2
+wave: 1
+prd_features: [F-01, F-02]
+archi_sections: [ADR-0001]
+depends_on: [L0_01]
+blocks: [L1_01, L2_02]
+---
+
 # Task L0_02: Create Domain Model Types in wmux-core
 
 > **Phase**: Scaffold
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 1
 
 ## Context
 

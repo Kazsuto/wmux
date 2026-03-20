@@ -1,8 +1,22 @@
+---
+task_id: L2_10
+title: "Implement IPC Authentication and Security Modes"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 8
+prd_features: [F-03]
+archi_sections: [ADR-0001, ADR-0005]
+depends_on: [L2_09]
+blocks: [L4_07]
+---
+
 # Task L2_10: Implement IPC Authentication and Security Modes
 
 > **Phase**: Core
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 8
 
 ## Context
 The IPC server needs multiple security modes to balance convenience and safety. The default `wmux_only` mode allows only child processes. The `password` mode uses HMAC-SHA256 for external clients. Architecture §7 defines the security modes and auth flow. `.claude/rules/ipc-protocol.md` specifies unauthenticated methods.

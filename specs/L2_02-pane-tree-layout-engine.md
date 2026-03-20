@@ -1,8 +1,22 @@
+---
+task_id: L2_02
+title: "Implement PaneTree Binary Split Layout Engine"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 7
+prd_features: [F-02]
+archi_sections: [ADR-0001]
+depends_on: [L2_01, L0_02]
+blocks: [L2_03, L2_04, L2_06, L2_07, L3_04]
+---
+
 # Task L2_02: Implement PaneTree Binary Split Layout Engine
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 7
 
 ## Context
 The multiplexer needs a binary tree layout engine where each split divides a region into two children (horizontal or vertical). This is the spatial layout core of wmux. Architecture §5 (wmux-core) specifies "Binary split tree" in pane_tree.rs. PRD §2 describes split panes with dividers.

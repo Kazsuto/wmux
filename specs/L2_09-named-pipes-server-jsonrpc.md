@@ -1,8 +1,22 @@
+---
+task_id: L2_09
+title: "Implement Named Pipes Server and JSON-RPC v2 Protocol"
+status: pending
+priority: P0
+estimated_hours: 3
+wave: 7
+prd_features: [F-03]
+archi_sections: [ADR-0001, ADR-0005, ADR-0008]
+depends_on: [L2_01]
+blocks: [L2_10, L2_11, L2_15, L4_03]
+---
+
 # Task L2_09: Implement Named Pipes Server and JSON-RPC v2 Protocol
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 3 hours
+> **Wave**: 7
 
 ## Context
 The IPC server enables programmatic control of wmux by AI agents and the CLI. It uses Windows Named Pipes with JSON-RPC v2 protocol, matching cmux's protocol for compatibility. Architecture §5 (wmux-ipc) describes the server. ADR-0005 mandates Named Pipes (NEVER TCP). PRD §3 specifies the complete API.

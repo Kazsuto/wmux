@@ -1,8 +1,22 @@
+---
+task_id: L2_12
+title: "Implement Workspace and Surface IPC Handlers"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 9
+prd_features: [F-03]
+archi_sections: [ADR-0001, ADR-0005]
+depends_on: [L2_11, L2_07]
+blocks: [L2_16]
+---
+
 # Task L2_12: Implement Workspace and Surface IPC Handlers
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 9
 
 ## Context
 AI agents and CLI need to manage workspaces and surfaces programmatically. These handlers implement the workspace.* and surface.* method families. PRD §3 lists workspace and surface methods. Architecture §6 shows the IPC command data flow.

@@ -1,8 +1,22 @@
+---
+task_id: L3_11
+title: "Implement Ghostty-Compatible Config Parser"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 1
+prd_features: [F-10]
+archi_sections: [ADR-0001, ADR-0010]
+depends_on: [L0_01]
+blocks: [L3_12, L4_06]
+---
+
 # Task L3_11: Implement Ghostty-Compatible Config Parser
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 1
 
 ## Context
 wmux uses a Ghostty-compatible config format (`key = value`, NOT standard TOML sections) to reuse 50+ Ghostty community themes. Architecture §5 (wmux-config) specifies the parser. ADR-0010 mandates Ghostty-compatible format.

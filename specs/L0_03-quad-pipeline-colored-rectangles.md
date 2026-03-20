@@ -1,8 +1,22 @@
+---
+task_id: L0_03
+title: "Build QuadPipeline for Colored Rectangles"
+status: done
+priority: P0
+estimated_hours: 2.5
+wave: 1
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0002]
+depends_on: [L0_01]
+blocks: [L1_07, L2_04, L2_08]
+---
+
 # Task L0_03: Build QuadPipeline for Colored Rectangles
 
 > **Phase**: Scaffold
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 1
 
 ## Context
 

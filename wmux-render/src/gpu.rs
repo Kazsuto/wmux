@@ -21,7 +21,7 @@ impl<'window> GpuContext<'window> {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window.clone())?;
+        let surface = instance.create_surface(window)?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {

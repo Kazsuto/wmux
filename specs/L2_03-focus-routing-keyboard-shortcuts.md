@@ -1,8 +1,22 @@
+---
+task_id: L2_03
+title: "Implement Focus Routing and Keyboard Shortcut Dispatcher"
+status: pending
+priority: P0
+estimated_hours: 2
+wave: 8
+prd_features: [F-02]
+archi_sections: [ADR-0001, ADR-0007]
+depends_on: [L2_02]
+blocks: [L4_07]
+---
+
 # Task L2_03: Implement Focus Routing and Keyboard Shortcut Dispatcher
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 8
 
 ## Context
 With multiple panes, keyboard input must be routed to the focused pane. Global shortcuts (Ctrl+N, Ctrl+D, etc.) must be intercepted before reaching the terminal. The shortcut dispatcher has a priority chain: global shortcuts > overlay shortcuts > pane-local input. PRD §Raccourcis Clavier defines all keyboard shortcuts. Architecture §13 Phase 2 mentions "Global keyboard shortcut priority dispatcher."

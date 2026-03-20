@@ -2,6 +2,18 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum BrowserError {
+    #[error("WebView2 runtime not installed")]
+    RuntimeNotInstalled,
+
+    #[error("COM initialization failed: {0}")]
+    ComInitFailed(String),
+
+    #[error("WebView2 environment creation failed: {0}")]
+    EnvironmentCreationFailed(String),
+
+    #[error("user data directory setup failed: {0}")]
+    UserDataDirFailed(String),
+
     #[error("{0}")]
     General(String),
 
@@ -20,5 +32,26 @@ mod tests {
     fn error_is_send_and_sync() {
         _assert_send::<BrowserError>();
         _assert_sync::<BrowserError>();
+    }
+
+    #[test]
+    fn error_messages() {
+        let err = BrowserError::RuntimeNotInstalled;
+        assert_eq!(err.to_string(), "WebView2 runtime not installed");
+
+        let err = BrowserError::ComInitFailed("STA failed".into());
+        assert_eq!(err.to_string(), "COM initialization failed: STA failed");
+
+        let err = BrowserError::EnvironmentCreationFailed("timeout".into());
+        assert_eq!(
+            err.to_string(),
+            "WebView2 environment creation failed: timeout"
+        );
+
+        let err = BrowserError::UserDataDirFailed("permission denied".into());
+        assert_eq!(
+            err.to_string(),
+            "user data directory setup failed: permission denied"
+        );
     }
 }

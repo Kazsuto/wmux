@@ -1,8 +1,22 @@
+---
+task_id: L1_02
+title: "Implement VTE Parser Integration (vte::Perform → Grid)"
+status: done
+priority: P0
+estimated_hours: 3
+wave: 3
+prd_features: [F-01]
+archi_sections: [ADR-0001]
+depends_on: [L1_01]
+blocks: [L1_04, L1_10]
+---
+
 # Task L1_02: Implement VTE Parser Integration (vte::Perform → Grid)
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 3 hours
+> **Wave**: 3
 
 ## Context
 

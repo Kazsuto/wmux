@@ -1,8 +1,22 @@
+---
+task_id: L1_05
+title: "Implement ConPTY Shell Spawning via portable-pty"
+status: done
+priority: P0
+estimated_hours: 2
+wave: 1
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0004]
+depends_on: [L0_01]
+blocks: [L1_06]
+---
+
 # Task L1_05: Implement ConPTY Shell Spawning via portable-pty
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 1
 
 ## Context
 

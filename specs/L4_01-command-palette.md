@@ -1,8 +1,22 @@
+---
+task_id: L4_01
+title: "Implement Command Palette with Fuzzy Search"
+status: pending
+priority: P2
+estimated_hours: 2.5
+wave: 10
+prd_features: [F-11]
+archi_sections: [ADR-0001, ADR-0003]
+depends_on: [L2_08]
+blocks: [L4_07]
+---
+
 # Task L4_01: Implement Command Palette with Fuzzy Search
 
 > **Phase**: Polish
 > **Priority**: P2-Medium
 > **Estimated effort**: 2.5 hours
+> **Wave**: 10
 
 ## Context
 The command palette (Ctrl+Shift+P) provides quick access to all wmux commands via fuzzy search. Architecture §5 (wmux-ui) lists overlay.rs for command palette. PRD §11 describes the palette with cross-surface search (Ctrl+P).

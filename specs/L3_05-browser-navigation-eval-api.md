@@ -1,8 +1,22 @@
+---
+task_id: L3_05
+title: "Implement Browser Navigation and JavaScript Eval API"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 2
+prd_features: [F-04]
+archi_sections: [ADR-0001, ADR-0006]
+depends_on: [L3_03]
+blocks: [L3_06, L3_07]
+---
+
 # Task L3_05: Implement Browser Navigation and JavaScript Eval API
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 2
 
 ## Context
 AI agents need to navigate browser panels and execute JavaScript. This task implements the navigation commands (open, navigate, back, forward, reload) and JavaScript eval with return values. PRD §4 lists 50+ browser commands across 8 categories. Architecture §5 shows automation API exposed via IPC.

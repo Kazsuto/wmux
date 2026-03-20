@@ -1,8 +1,22 @@
+---
+task_id: L3_14
+title: "Implement Git Branch and Port Detection for Sidebar"
+status: pending
+priority: P2
+estimated_hours: 2
+wave: 10
+prd_features: [F-13]
+archi_sections: [ADR-0001]
+depends_on: [L2_08, L1_04]
+blocks: [L4_07]
+---
+
 # Task L3_14: Implement Git Branch and Port Detection for Sidebar
 
 > **Phase**: Integration
 > **Priority**: P2-Medium
 > **Estimated effort**: 2 hours
+> **Wave**: 10
 
 ## Context
 The sidebar shows git branch, dirty state, and listening ports for each workspace. Git detection triggers on CWD changes (OSC 7 events). Port detection uses Windows API. PRD §13 describes these sidebar metadata items.

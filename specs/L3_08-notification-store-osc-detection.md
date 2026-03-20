@@ -1,8 +1,22 @@
+---
+task_id: L3_08
+title: "Implement Notification Store and OSC Detection"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 5
+prd_features: [F-07]
+archi_sections: [ADR-0001]
+depends_on: [L1_04]
+blocks: [L3_09, L3_10]
+---
+
 # Task L3_08: Implement Notification Store and OSC Detection
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 5
 
 ## Context
 wmux needs a notification system with a complete lifecycle (received → unread → read → cleared). Notifications come from OSC escape sequences (already parsed in Task L1_04), the CLI, and the IPC API. Architecture §4 shows NotificationManager component. PRD §7 defines the notification lifecycle and suppression rules.

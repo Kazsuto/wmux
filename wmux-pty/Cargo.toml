@@ -9,3 +9,4 @@ thiserror.workspace = true
 tracing.workspace = true
 portable-pty.workspace = true
 dirs.workspace = true
+tokio.workspace = true

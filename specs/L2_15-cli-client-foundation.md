@@ -1,8 +1,22 @@
+---
+task_id: L2_15
+title: "Build CLI Client Foundation (wmux.exe)"
+status: pending
+priority: P0
+estimated_hours: 2
+wave: 8
+prd_features: [F-03]
+archi_sections: [ADR-0001, ADR-0005]
+depends_on: [L2_09]
+blocks: [L2_16]
+---
+
 # Task L2_15: Build CLI Client Foundation (wmux.exe)
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 8
 
 ## Context
 The wmux CLI (`wmux.exe`) is how AI agents and users interact with wmux programmatically. It connects to the Named Pipe, sends JSON-RPC requests, and displays results. Architecture §5 (wmux-cli) specifies clap 4 with derive macros. PRD §3 defines global CLI options.

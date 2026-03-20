@@ -1,8 +1,22 @@
+---
+task_id: L1_06
+title: "Implement PTY Async I/O with Tokio"
+status: in_progress
+priority: P0
+estimated_hours: 1.5
+wave: 2
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0004, ADR-0008]
+depends_on: [L1_05]
+blocks: [L1_08, L1_09, L1_10, L3_13]
+---
+
 # Task L1_06: Implement PTY Async I/O with Tokio
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 1.5 hours
+> **Wave**: 2
 
 ## Context
 

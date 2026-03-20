@@ -1,8 +1,22 @@
+---
+task_id: L2_06
+title: "Implement Surface (Tab) System Within Panes"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 8
+prd_features: [F-02]
+archi_sections: [ADR-0001]
+depends_on: [L2_02]
+blocks: [L4_07]
+---
+
 # Task L2_06: Implement Surface (Tab) System Within Panes
 
 > **Phase**: Core
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 8
 
 ## Context
 Each pane can contain multiple surfaces (tabs). A surface is an individual terminal or browser panel identified by WMUX_SURFACE_ID. Users create surfaces with Ctrl+T and navigate with Ctrl+Tab. PRD §Modèle Conceptuel defines Surface as "onglet dans un pane." Architecture §12 shows surface as a layer between Pane and Panel.

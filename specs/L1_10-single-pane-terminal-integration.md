@@ -1,8 +1,22 @@
+---
+task_id: L1_10
+title: "Wire Single-Pane Terminal Integration"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 5
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0007]
+depends_on: [L1_02, L1_03, L1_04, L1_06, L1_07, L1_08, L1_09]
+blocks: [L2_01]
+---
+
 # Task L1_10: Wire Single-Pane Terminal Integration
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 5
 
 ## Context
 

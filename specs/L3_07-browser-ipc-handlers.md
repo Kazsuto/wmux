@@ -1,8 +1,22 @@
+---
+task_id: L3_07
+title: "Implement Browser IPC Handlers"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 9
+prd_features: [F-03, F-04]
+archi_sections: [ADR-0001, ADR-0005, ADR-0006]
+depends_on: [L2_11, L3_05, L3_06]
+blocks: [L4_07]
+---
+
 # Task L3_07: Implement Browser IPC Handlers
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 9
 
 ## Context
 All browser automation methods need IPC handlers so AI agents can control browser panels via the CLI or Named Pipe API. This wires the browser.* method family to the IPC router. PRD §3 lists browser methods in the API table.

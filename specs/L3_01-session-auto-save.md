@@ -1,8 +1,22 @@
+---
+task_id: L3_01
+title: "Implement Session Auto-Save"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 9
+prd_features: [F-08]
+archi_sections: [ADR-0001, ADR-0009]
+depends_on: [L2_07]
+blocks: [L3_02]
+---
+
 # Task L3_01: Implement Session Auto-Save
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 9
 
 ## Context
 Session persistence saves workspace layout, pane trees, and scrollback so users can close and reopen wmux without losing their environment. Architecture §6 defines the session JSON schema. ADR-0009 mandates JSON format with auto-save every 8 seconds and atomic writes. PRD §8 describes what is and isn't restored.

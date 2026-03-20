@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -48,6 +49,12 @@ pub struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
 }
 
+impl fmt::Debug for PtyHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PtyHandle").finish_non_exhaustive()
+    }
+}
+
 impl PtyHandle {
     /// Get a mutable reference to the PTY reader (terminal output).
     #[inline]
@@ -86,11 +93,33 @@ impl PtyHandle {
             })
             .map_err(|e| PtyError::ResizeFailed(e.into()))
     }
+
+    /// Consume the handle, returning its individual components.
+    ///
+    /// Used by [`PtyActorHandle`](crate::PtyActorHandle) to move each component
+    /// into separate async tasks.
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<dyn Read + Send>,
+        Box<dyn Write + Send>,
+        Box<dyn Child + Send + Sync>,
+        Box<dyn MasterPty + Send>,
+    ) {
+        (self.reader, self.writer, self.child, self.master)
+    }
 }
 
 /// Manages PTY lifecycle: shell detection, spawning, and handle creation.
 pub struct PtyManager {
     pty_system: Box<dyn PtySystem + Send>,
+}
+
+impl fmt::Debug for PtyManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PtyManager").finish_non_exhaustive()
+    }
 }
 
 impl PtyManager {

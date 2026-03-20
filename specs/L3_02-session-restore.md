@@ -1,8 +1,22 @@
+---
+task_id: L3_02
+title: "Implement Session Restore on Launch"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 10
+prd_features: [F-08]
+archi_sections: [ADR-0001, ADR-0009]
+depends_on: [L3_01]
+blocks: [L4_07]
+---
+
 # Task L3_02: Implement Session Restore on Launch
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 10
 
 ## Context
 When wmux starts, it should restore the previous session: workspaces, pane layouts, working directories, scrollback, and browser URLs. ADR-0009 specifies graceful handling of corrupt files. PRD §8 lists what is restored vs not.

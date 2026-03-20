@@ -1,8 +1,22 @@
+---
+task_id: L0_01
+title: "Add Error Types and Tracing Infrastructure to Stub Crates"
+status: done
+priority: P0
+estimated_hours: 1.5
+wave: 0
+prd_features: [F-01, F-03]
+archi_sections: [ADR-0001]
+depends_on: []
+blocks: [L0_02, L0_03, L1_05, L3_03, L3_11, L4_04]
+---
+
 # Task L0_01: Add Error Types and Tracing Infrastructure to Stub Crates
 
 > **Phase**: Scaffold
 > **Priority**: P0-Critical
 > **Estimated effort**: 1.5 hours
+> **Wave**: 0
 
 ## Context
 

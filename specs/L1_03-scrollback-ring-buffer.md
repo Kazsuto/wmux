@@ -1,8 +1,22 @@
+---
+task_id: L1_03
+title: "Implement Scrollback Ring Buffer and Alternate Screen"
+status: done
+priority: P0
+estimated_hours: 2
+wave: 3
+prd_features: [F-01]
+archi_sections: [ADR-0001]
+depends_on: [L1_01]
+blocks: [L1_10, L4_02]
+---
+
 # Task L1_03: Implement Scrollback Ring Buffer and Alternate Screen
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 3
 
 ## Context
 

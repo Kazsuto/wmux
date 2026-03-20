@@ -1,8 +1,22 @@
+---
+task_id: L3_06
+title: "Implement Browser DOM Automation"
+status: pending
+priority: P1
+estimated_hours: 3
+wave: 3
+prd_features: [F-04]
+archi_sections: [ADR-0001, ADR-0006]
+depends_on: [L3_05]
+blocks: [L3_07]
+---
+
 # Task L3_06: Implement Browser DOM Automation
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 3 hours
+> **Wave**: 3
 
 ## Context
 AI agents need full DOM interaction: click, fill forms, type text, check/uncheck, scroll, take screenshots, and inspect the accessibility tree. This is what makes wmux's browser programmable. PRD §4 lists 8 categories of browser commands.

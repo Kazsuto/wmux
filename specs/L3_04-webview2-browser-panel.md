@@ -1,8 +1,22 @@
+---
+task_id: L3_04
+title: "Implement WebView2 Browser Panel in Split Panes"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 8
+prd_features: [F-04]
+archi_sections: [ADR-0001, ADR-0006]
+depends_on: [L3_03, L2_02]
+blocks: [L4_07]
+---
+
 # Task L3_04: Implement WebView2 Browser Panel in Split Panes
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 8
 
 ## Context
 Browser panels live inside panes as separate child HWNDs (NEVER inside wgpu surface). When a browser surface is created, a child window hosts the WebView2 control, positioned to match the pane's layout rect. Architecture §5 specifies "separate child HWND" and ADR-0006 details the approach.

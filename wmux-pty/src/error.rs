@@ -14,6 +14,9 @@ pub enum PtyError {
     #[error("clone reader failed")]
     CloneReaderFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
 
+    #[error("pty actor channel closed")]
+    ChannelClosed,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

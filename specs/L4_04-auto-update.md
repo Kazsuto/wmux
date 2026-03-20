@@ -1,8 +1,22 @@
+---
+task_id: L4_04
+title: "Implement Auto-Update System"
+status: pending
+priority: P2
+estimated_hours: 2.5
+wave: 1
+prd_features: [F-14]
+archi_sections: [ADR-0001]
+depends_on: [L0_01]
+blocks: [L4_07]
+---
+
 # Task L4_04: Implement Auto-Update System
 
 > **Phase**: Polish
 > **Priority**: P3-Low
 > **Estimated effort**: 2.5 hours
+> **Wave**: 1
 
 ## Context
 wmux checks GitHub Releases for new versions, downloads in the background, and applies on next launch. PRD §14 describes the auto-update behavior. Architecture §9 specifies GitHub Releases API.

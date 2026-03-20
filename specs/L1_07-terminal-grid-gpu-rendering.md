@@ -1,8 +1,22 @@
+---
+task_id: L1_07
+title: "Implement Terminal Grid GPU Rendering Pipeline"
+status: pending
+priority: P0
+estimated_hours: 3
+wave: 3
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0002, ADR-0003]
+depends_on: [L1_01, L0_03]
+blocks: [L1_10]
+---
+
 # Task L1_07: Implement Terminal Grid GPU Rendering Pipeline
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 3 hours
+> **Wave**: 3
 
 ## Context
 

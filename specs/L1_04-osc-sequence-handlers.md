@@ -1,8 +1,22 @@
+---
+task_id: L1_04
+title: "Implement OSC Sequence Handlers and Terminal Event Bus"
+status: done
+priority: P1
+estimated_hours: 1.5
+wave: 4
+prd_features: [F-01, F-07, F-13]
+archi_sections: [ADR-0001]
+depends_on: [L1_02]
+blocks: [L1_10, L3_08, L3_14]
+---
+
 # Task L1_04: Implement OSC Sequence Handlers and Terminal Event Bus
 
 > **Phase**: Foundation
 > **Priority**: P1-High
 > **Estimated effort**: 1.5 hours
+> **Wave**: 4
 
 ## Context
 

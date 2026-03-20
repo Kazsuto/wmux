@@ -1,8 +1,22 @@
+---
+task_id: L2_08
+title: "Implement Sidebar UI Rendering"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 9
+prd_features: [F-02, F-05]
+archi_sections: [ADR-0001, ADR-0002, ADR-0003]
+depends_on: [L2_07, L0_03]
+blocks: [L2_14, L3_09, L3_14, L4_01, L4_05]
+---
+
 # Task L2_08: Implement Sidebar UI Rendering
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 9
 
 ## Context
 The sidebar is a vertical panel on the left side of the window showing the list of workspaces with metadata. It's a key differentiator from Windows Terminal and tmux. Each workspace entry shows: name, git branch, CWD, status badges, progress bars, and log entries. Architecture §4 Component Diagram shows the UI Layer with sidebar. PRD §5 describes the Sidebar Metadata System.

@@ -1,8 +1,22 @@
+---
+task_id: L2_04
+title: "Implement Multi-Pane GPU Rendering"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 8
+prd_features: [F-02]
+archi_sections: [ADR-0001, ADR-0002, ADR-0003]
+depends_on: [L2_02, L0_03]
+blocks: [L2_05, L4_02]
+---
+
 # Task L2_04: Implement Multi-Pane GPU Rendering
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 8
 
 ## Context
 With the PaneTree computing layout rects, each pane must be rendered in its allocated viewport region. The GPU renderer must clip each pane's terminal to its rect, render pane borders, show the focused pane highlight, and render tab bars for panes with multiple surfaces. Architecture §5 (wmux-render) manages all render state centrally. ADR-0002 mandates custom wgpu rendering.

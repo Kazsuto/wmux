@@ -1,8 +1,22 @@
+---
+task_id: L2_16
+title: "Implement CLI Domain Commands"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 11
+prd_features: [F-03]
+archi_sections: [ADR-0001, ADR-0005]
+depends_on: [L2_15, L2_12, L2_13, L2_14]
+blocks: [L4_07]
+---
+
 # Task L2_16: Implement CLI Domain Commands
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 11
 
 ## Context
 With the CLI foundation and all IPC handlers in place, this task implements the complete set of CLI subcommands that wrap the JSON-RPC API. Each subcommand constructs a JSON-RPC request, sends it via the pipe client, and formats the response. PRD §3 defines all API categories.

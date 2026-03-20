@@ -1,8 +1,22 @@
+---
+task_id: L1_09
+title: "Implement Mouse Selection, Copy/Paste, and Scroll"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 3
+prd_features: [F-01]
+archi_sections: [ADR-0001]
+depends_on: [L1_01, L1_06]
+blocks: [L1_10]
+---
+
 # Task L1_09: Implement Mouse Selection, Copy/Paste, and Scroll
 
 > **Phase**: Foundation
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 3
 
 ## Context
 

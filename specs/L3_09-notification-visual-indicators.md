@@ -1,8 +1,22 @@
+---
+task_id: L3_09
+title: "Implement Notification Visual Indicators"
+status: pending
+priority: P1
+estimated_hours: 2.5
+wave: 10
+prd_features: [F-07]
+archi_sections: [ADR-0001, ADR-0002]
+depends_on: [L3_08, L2_08]
+blocks: [L4_07]
+---
+
 # Task L3_09: Implement Notification Visual Indicators
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2.5 hours
+> **Wave**: 10
 
 ## Context
 Notifications need visual representation: blue rings around panes, badges on workspaces in the sidebar, and a notification panel overlay. PRD §7 describes rings, badges, panel, and navigation shortcuts (Ctrl+Shift+I for panel, Ctrl+Shift+U for jump to unread).

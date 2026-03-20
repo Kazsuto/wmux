@@ -1,8 +1,22 @@
+---
+task_id: L2_07
+title: "Implement Workspace Model and Lifecycle"
+status: pending
+priority: P0
+estimated_hours: 2
+wave: 8
+prd_features: [F-02]
+archi_sections: [ADR-0001]
+depends_on: [L2_02]
+blocks: [L2_08, L2_12, L3_01, L4_03]
+---
+
 # Task L2_07: Implement Workspace Model and Lifecycle
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 8
 
 ## Context
 Workspaces are the primary organizational unit — each appears as a vertical tab in the sidebar. Each workspace has its own PaneTree and metadata. Users create workspaces with Ctrl+N and switch with Ctrl+1-9. Architecture §5 specifies workspace_manager.rs. PRD §Modèle Conceptuel defines Workspace as "entrée dans la sidebar."

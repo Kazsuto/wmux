@@ -1,8 +1,22 @@
+---
+task_id: L3_13
+title: "Implement Shell Integration Hooks"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 3
+prd_features: [F-13]
+archi_sections: [ADR-0001]
+depends_on: [L1_06]
+blocks: [L4_07]
+---
+
 # Task L3_13: Implement Shell Integration Hooks
 
 > **Phase**: Integration
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 3
 
 ## Context
 Shell integration hooks are scripts sourced in the user's shell that emit OSC escape sequences for CWD tracking (OSC 7), prompt marks (OSC 133), and notifications. These enable the sidebar to show git branch, CWD, and prompt state. PRD §13 describes shell integration. Architecture §12 shows resources/shell-integration/.

@@ -1,8 +1,22 @@
+---
+task_id: L4_06
+title: "Implement Localization FR/EN"
+status: pending
+priority: P2
+estimated_hours: 2
+wave: 2
+prd_features: [F-16]
+archi_sections: [ADR-0001, ADR-0010]
+depends_on: [L3_11]
+blocks: [L4_07]
+---
+
 # Task L4_06: Implement Localization FR/EN
 
 > **Phase**: Polish
 > **Priority**: P2-Medium
 > **Estimated effort**: 2 hours
+> **Wave**: 2
 
 ## Context
 wmux supports French and English with auto-detection of system language. All user-visible strings come from locale TOML files. Architecture §3 Cross-Cutting Concerns specifies the i18n approach. PRD §16 requires 100% string coverage.

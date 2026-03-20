@@ -1,8 +1,22 @@
+---
+task_id: L2_14
+title: "Implement Sidebar Metadata Store and IPC Handlers"
+status: pending
+priority: P0
+estimated_hours: 2.5
+wave: 10
+prd_features: [F-03, F-05]
+archi_sections: [ADR-0001, ADR-0005, ADR-0008]
+depends_on: [L2_11, L2_08]
+blocks: [L2_16]
+---
+
 # Task L2_14: Implement Sidebar Metadata Store and IPC Handlers
 
 > **Phase**: Core
 > **Priority**: P0-Critical
 > **Estimated effort**: 2.5 hours
+> **Wave**: 10
 
 ## Context
 The sidebar metadata system is a key differentiator for AI agent workflows. Agents set status badges, progress bars, and log entries via the API to show their state in the sidebar. Architecture §6 defines the MetadataStore and data model. PRD §5 describes the Sidebar Metadata System in detail.

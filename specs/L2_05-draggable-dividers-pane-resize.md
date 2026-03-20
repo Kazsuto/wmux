@@ -1,8 +1,22 @@
+---
+task_id: L2_05
+title: "Implement Draggable Dividers and Pane Resize"
+status: pending
+priority: P1
+estimated_hours: 2
+wave: 9
+prd_features: [F-02]
+archi_sections: [ADR-0001, ADR-0007]
+depends_on: [L2_04]
+blocks: [L4_07]
+---
+
 # Task L2_05: Implement Draggable Dividers and Pane Resize
 
 > **Phase**: Core
 > **Priority**: P1-High
 > **Estimated effort**: 2 hours
+> **Wave**: 9
 
 ## Context
 Users need to resize panes by dragging the dividers between them. This requires mouse hit-testing on divider regions, cursor change on hover, and updating the PaneTree split ratio during drag. PRD §2 mentions "dividers draggables."

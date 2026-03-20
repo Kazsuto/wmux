@@ -1,8 +1,22 @@
+---
+task_id: L1_08
+title: "Implement Keyboard Input → PTY Dispatch"
+status: pending
+priority: P0
+estimated_hours: 2
+wave: 3
+prd_features: [F-01]
+archi_sections: [ADR-0001, ADR-0007]
+depends_on: [L1_06]
+blocks: [L1_10]
+---
+
 # Task L1_08: Implement Keyboard Input → PTY Dispatch
 
 > **Phase**: Foundation
 > **Priority**: P0-Critical
 > **Estimated effort**: 2 hours
+> **Wave**: 3
 
 ## Context
 
