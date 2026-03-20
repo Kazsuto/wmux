@@ -5,7 +5,9 @@ pub mod error;
 pub mod grid;
 pub mod mode;
 pub mod surface;
+pub mod terminal;
 pub mod types;
+pub mod vte_handler;
 
 pub use cell::{Cell, CellFlags, Row};
 pub use color::Color;
@@ -14,4 +16,5 @@ pub use error::CoreError;
 pub use grid::Grid;
 pub use mode::TerminalMode;
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};
+pub use terminal::Terminal;
 pub use types::{PaneId, SurfaceId, WindowId, WorkspaceId};

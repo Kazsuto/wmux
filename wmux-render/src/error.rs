@@ -16,6 +16,12 @@ pub enum RenderError {
 
     #[error("text render failed")]
     GlyphonRender(#[from] glyphon::RenderError),
+
+    #[error("GPU surface reported no supported texture formats")]
+    NoSupportedFormats,
+
+    #[error("GPU surface reported no supported alpha modes")]
+    NoSupportedAlphaModes,
 }
 
 #[cfg(test)]

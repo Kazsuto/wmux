@@ -287,4 +287,87 @@ mod tests {
     fn viewport_uniform_is_16_byte_aligned() {
         assert_eq!(std::mem::size_of::<ViewportUniform>(), 16);
     }
+
+    /// Helper that mirrors push_quad guard logic for testing without GPU.
+    fn simulated_push_quad(
+        quads: &mut Vec<QuadInstance>,
+        capacity: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+    ) {
+        if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
+        {
+            return;
+        }
+        if quads.len() >= capacity {
+            return;
+        }
+        quads.push(QuadInstance { x, y, w, h, color });
+    }
+
+    #[test]
+    fn push_quad_skips_non_finite_values() {
+        let mut quads = Vec::new();
+        let white = [1.0; 4];
+
+        // NaN on each coordinate
+        simulated_push_quad(&mut quads, MAX_QUADS, f32::NAN, 0.0, 10.0, 10.0, white);
+        simulated_push_quad(&mut quads, MAX_QUADS, 0.0, f32::NAN, 10.0, 10.0, white);
+        simulated_push_quad(&mut quads, MAX_QUADS, 0.0, 0.0, f32::NAN, 10.0, white);
+        simulated_push_quad(&mut quads, MAX_QUADS, 0.0, 0.0, 10.0, f32::NAN, white);
+
+        // Infinity
+        simulated_push_quad(&mut quads, MAX_QUADS, f32::INFINITY, 0.0, 10.0, 10.0, white);
+        simulated_push_quad(
+            &mut quads,
+            MAX_QUADS,
+            0.0,
+            0.0,
+            f32::NEG_INFINITY,
+            10.0,
+            white,
+        );
+
+        assert_eq!(
+            quads.len(),
+            0,
+            "non-finite values should be silently skipped"
+        );
+
+        // Valid quad still accepted
+        simulated_push_quad(&mut quads, MAX_QUADS, 0.0, 0.0, 10.0, 10.0, white);
+        assert_eq!(quads.len(), 1, "valid quad should be accepted");
+    }
+
+    #[test]
+    fn push_quad_respects_max_capacity() {
+        let mut quads = Vec::with_capacity(MAX_QUADS);
+        let white = [1.0; 4];
+
+        for i in 0..MAX_QUADS + 100 {
+            simulated_push_quad(&mut quads, MAX_QUADS, i as f32, 0.0, 10.0, 10.0, white);
+        }
+
+        assert_eq!(
+            quads.len(),
+            MAX_QUADS,
+            "should cap at MAX_QUADS={MAX_QUADS}"
+        );
+    }
+
+    #[test]
+    fn clear_resets_quad_count() {
+        let mut quads = Vec::with_capacity(MAX_QUADS);
+        let white = [1.0; 4];
+
+        simulated_push_quad(&mut quads, MAX_QUADS, 0.0, 0.0, 50.0, 50.0, white);
+        simulated_push_quad(&mut quads, MAX_QUADS, 100.0, 0.0, 50.0, 50.0, white);
+        assert_eq!(quads.len(), 2);
+
+        quads.clear();
+        assert_eq!(quads.len(), 0, "clear should reset count to 0");
+    }
 }

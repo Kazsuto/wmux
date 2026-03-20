@@ -19,7 +19,7 @@ pub enum PanelKind {
 }
 
 /// Metadata describing a surface (tab) within a pane.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SurfaceInfo {
     pub id: SurfaceId,
     pub kind: PanelKind,

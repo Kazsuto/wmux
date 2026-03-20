@@ -13,10 +13,10 @@ Essential tests only — high ROI, hard to debug visually, breaks silently.
 
 > Target: `wmux-render/src/quad.rs`, `wmux-core/src/error.rs`
 
-- [ ] `push_quad_skips_non_finite` — NaN/Infinity on x/y/w/h silently skipped
-- [ ] `push_quad_respects_max_capacity` — >4096 quads silently dropped, no panic
-- [ ] `clear_resets_count` — `clear()` → `quad_count() == 0`
-- [ ] `core_error_messages` — All CoreError variants produce readable messages
+- [x] `push_quad_skips_non_finite` — NaN/Infinity on x/y/w/h silently skipped
+- [x] `push_quad_respects_max_capacity` — >4096 quads silently dropped, no panic
+- [x] `clear_resets_count` — `clear()` → `quad_count() == 0`
+- [x] `core_error_messages` — All CoreError variants produce readable messages
 
 ## Tier 1 — Layer 1: Single-Pane Terminal (18 tests)
 

@@ -6,15 +6,22 @@ use glyphon::{
 use wgpu::{Device, MultisampleState, Queue, TextureFormat};
 
 pub struct GlyphonRenderer {
-    pub font_system: FontSystem,
-    pub swash_cache: SwashCache,
-    pub cache: Cache,
-    pub atlas: TextAtlas,
-    pub renderer: TextRenderer,
-    pub viewport: Viewport,
-    pub buffer: Buffer,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    /// Held alive for the atlas — not read directly.
+    _cache: Cache,
+    atlas: TextAtlas,
+    renderer: TextRenderer,
+    viewport: Viewport,
+    buffer: Buffer,
     width: u32,
     height: u32,
+}
+
+/// Default monospace text attributes for terminal rendering.
+#[inline]
+fn default_attrs() -> glyphon::Attrs<'static> {
+    glyphon::Attrs::new().family(glyphon::Family::Monospace)
 }
 
 impl GlyphonRenderer {
@@ -37,7 +44,7 @@ impl GlyphonRenderer {
         buffer.set_text(
             &mut font_system,
             "wmux - Windows Terminal Multiplexer\n\nGPU rendering with wgpu + glyphon is working!",
-            &glyphon::Attrs::new().family(glyphon::Family::Monospace),
+            &default_attrs(),
             glyphon::Shaping::Advanced,
             None,
         );
@@ -46,7 +53,7 @@ impl GlyphonRenderer {
         GlyphonRenderer {
             font_system,
             swash_cache,
-            cache,
+            _cache: cache,
             atlas,
             renderer,
             viewport,
@@ -76,7 +83,7 @@ impl GlyphonRenderer {
         self.buffer.set_text(
             &mut self.font_system,
             text,
-            &glyphon::Attrs::new().family(glyphon::Family::Monospace),
+            &default_attrs(),
             glyphon::Shaping::Advanced,
             None,
         );

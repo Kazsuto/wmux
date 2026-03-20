@@ -49,12 +49,12 @@ impl<'window> GpuContext<'window> {
             .find(|f| f.is_srgb())
             .or(surface_caps.formats.first())
             .copied()
-            .expect("GPU surface reported no supported texture formats");
+            .ok_or(RenderError::NoSupportedFormats)?;
 
         let alpha_mode = *surface_caps
             .alpha_modes
             .first()
-            .expect("GPU surface reported no supported alpha modes");
+            .ok_or(RenderError::NoSupportedAlphaModes)?;
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

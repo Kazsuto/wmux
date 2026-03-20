@@ -113,6 +113,22 @@ impl Grid {
         self.dirty[row as usize] = true;
     }
 
+    /// Fill columns `[col_start, col_end)` in `row` with clones of `cell`,
+    /// marking the row dirty once. More efficient than repeated `set_cell`
+    /// calls because it reuses allocations via `clone_from`.
+    pub fn fill_cells(&mut self, col_start: u16, col_end: u16, row: u16, cell: &Cell) {
+        if row >= self.rows || col_start >= self.cols {
+            return;
+        }
+        let end_col = col_end.min(self.cols) as usize;
+        let start = self.idx(col_start, row);
+        let end = self.idx(0, row) + end_col;
+        for c in &mut self.cells[start..end] {
+            c.clone_from(cell);
+        }
+        self.dirty[row as usize] = true;
+    }
+
     /// Reset all cells in `row` to default and mark it dirty.
     pub fn clear_row(&mut self, row: u16) {
         assert!(
@@ -284,6 +300,78 @@ impl Grid {
     pub fn set_cursor_pos(&mut self, col: u16, row: u16) {
         self.cursor.col = (col as usize).min(self.cols.saturating_sub(1) as usize);
         self.cursor.row = (row as usize).min(self.rows.saturating_sub(1) as usize);
+    }
+
+    /// Scroll rows `[top..=bottom]` up by `n`. The top `n` rows in the
+    /// region are discarded, remaining rows shift up, and the bottom `n`
+    /// rows are cleared. Marks affected rows dirty.
+    pub fn scroll_up_in_region(&mut self, top: u16, bottom: u16, n: u16) {
+        if top > bottom || bottom >= self.rows {
+            return;
+        }
+        let n = n.min(bottom - top + 1) as usize;
+        let stride = self.cols as usize;
+        let top = top as usize;
+        let bottom = bottom as usize;
+
+        // Shift rows up: copy row[top+n..=bottom] to row[top..=bottom-n].
+        // dst < src so forward iteration is safe with split_at_mut.
+        for dst_row in top..=bottom - n {
+            let src_row = dst_row + n;
+            let dst_start = dst_row * stride;
+            let src_start = src_row * stride;
+            let (left, right) = self.cells.split_at_mut(src_start);
+            left[dst_start..dst_start + stride].clone_from_slice(&right[..stride]);
+        }
+
+        // Clear the bottom n rows of the region.
+        for row in (bottom + 1 - n)..=bottom {
+            let start = row * stride;
+            for cell in &mut self.cells[start..start + stride] {
+                *cell = Cell::default();
+            }
+        }
+
+        // Mark affected rows dirty.
+        for row in top..=bottom {
+            self.dirty[row] = true;
+        }
+    }
+
+    /// Scroll rows `[top..=bottom]` down by `n`. The bottom `n` rows in
+    /// the region are discarded, remaining rows shift down, and the top
+    /// `n` rows are cleared. Marks affected rows dirty.
+    pub fn scroll_down_in_region(&mut self, top: u16, bottom: u16, n: u16) {
+        if top > bottom || bottom >= self.rows {
+            return;
+        }
+        let n = n.min(bottom - top + 1) as usize;
+        let stride = self.cols as usize;
+        let top = top as usize;
+        let bottom = bottom as usize;
+
+        // Shift rows down: copy row[top..=bottom-n] to row[top+n..=bottom].
+        // Reverse iteration so src is always below dst (dst > src).
+        for dst_row in (top + n..=bottom).rev() {
+            let src_row = dst_row - n;
+            let dst_start = dst_row * stride;
+            let src_start = src_row * stride;
+            let (left, right) = self.cells.split_at_mut(dst_start);
+            right[..stride].clone_from_slice(&left[src_start..src_start + stride]);
+        }
+
+        // Clear the top n rows of the region.
+        for row in top..top + n {
+            let start = row * stride;
+            for cell in &mut self.cells[start..start + stride] {
+                *cell = Cell::default();
+            }
+        }
+
+        // Mark affected rows dirty.
+        for row in top..=bottom {
+            self.dirty[row] = true;
+        }
     }
 
     /// Clamp cursor to current grid bounds.
@@ -597,5 +685,90 @@ mod tests {
         grid.resize(40, 12);
         assert_eq!(grid.cursor().col, 39);
         assert_eq!(grid.cursor().row, 11);
+    }
+
+    #[test]
+    fn scroll_up_in_region_shifts_content() {
+        let mut grid = Grid::new(4, 6);
+        for row in 0..6u16 {
+            let cell = Cell {
+                grapheme: CompactString::from(format!("{row}")),
+                ..Cell::default()
+            };
+            grid.set_cell(0, row, cell);
+        }
+        grid.take_dirty_rows();
+
+        // Scroll rows 1..=4 up by 1.
+        grid.scroll_up_in_region(1, 4, 1);
+
+        assert_eq!(grid.cell(0, 0).grapheme.as_str(), "0"); // untouched
+        assert_eq!(grid.cell(0, 1).grapheme.as_str(), "2"); // was row 2
+        assert_eq!(grid.cell(0, 2).grapheme.as_str(), "3");
+        assert_eq!(grid.cell(0, 3).grapheme.as_str(), "4");
+        assert_eq!(grid.cell(0, 4), &Cell::default()); // cleared
+        assert_eq!(grid.cell(0, 5).grapheme.as_str(), "5"); // untouched
+    }
+
+    #[test]
+    fn scroll_down_in_region_shifts_content() {
+        let mut grid = Grid::new(4, 6);
+        for row in 0..6u16 {
+            let cell = Cell {
+                grapheme: CompactString::from(format!("{row}")),
+                ..Cell::default()
+            };
+            grid.set_cell(0, row, cell);
+        }
+        grid.take_dirty_rows();
+
+        // Scroll rows 1..=4 down by 2.
+        grid.scroll_down_in_region(1, 4, 2);
+
+        assert_eq!(grid.cell(0, 0).grapheme.as_str(), "0"); // untouched
+        assert_eq!(grid.cell(0, 1), &Cell::default()); // cleared
+        assert_eq!(grid.cell(0, 2), &Cell::default()); // cleared
+        assert_eq!(grid.cell(0, 3).grapheme.as_str(), "1"); // was row 1
+        assert_eq!(grid.cell(0, 4).grapheme.as_str(), "2"); // was row 2
+        assert_eq!(grid.cell(0, 5).grapheme.as_str(), "5"); // untouched
+    }
+
+    #[test]
+    fn scroll_region_n_exceeds_size_clears_region() {
+        let mut grid = Grid::new(4, 4);
+        for row in 0..4u16 {
+            let cell = Cell {
+                grapheme: CompactString::from("X"),
+                ..Cell::default()
+            };
+            grid.set_cell(0, row, cell);
+        }
+
+        grid.scroll_up_in_region(1, 2, 100);
+
+        assert_eq!(grid.cell(0, 0).grapheme.as_str(), "X"); // untouched
+        assert_eq!(grid.cell(0, 1), &Cell::default()); // cleared
+        assert_eq!(grid.cell(0, 2), &Cell::default()); // cleared
+        assert_eq!(grid.cell(0, 3).grapheme.as_str(), "X"); // untouched
+    }
+
+    #[test]
+    fn scroll_region_invalid_bounds_is_noop() {
+        let mut grid = Grid::new(4, 4);
+        let cell = Cell {
+            grapheme: CompactString::from("A"),
+            ..Cell::default()
+        };
+        grid.set_cell(0, 0, cell);
+        grid.take_dirty_rows();
+
+        // top > bottom: no-op
+        grid.scroll_up_in_region(3, 1, 1);
+        assert_eq!(grid.cell(0, 0).grapheme.as_str(), "A");
+        assert!(grid.take_dirty_rows().is_empty());
+
+        // bottom >= rows: no-op
+        grid.scroll_down_in_region(0, 10, 1);
+        assert_eq!(grid.cell(0, 0).grapheme.as_str(), "A");
     }
 }

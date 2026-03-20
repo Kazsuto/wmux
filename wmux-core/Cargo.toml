@@ -11,6 +11,8 @@ uuid.workspace = true
 bitflags.workspace = true
 serde.workspace = true
 compact_str.workspace = true
+vte.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
