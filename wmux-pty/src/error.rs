@@ -2,8 +2,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PtyError {
-    #[error("{0}")]
-    General(String),
+    #[error("pty spawn failed")]
+    SpawnFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("shell not found: {0}")]
+    ShellNotFound(String),
+
+    #[error("pty resize failed")]
+    ResizeFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("clone reader failed")]
+    CloneReaderFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
