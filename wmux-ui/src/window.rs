@@ -6,11 +6,12 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowAttributes, WindowId},
 };
-use wmux_render::{GlyphonRenderer, GpuContext};
+use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline};
 
 struct AppState<'window> {
     window: Arc<Window>,
     gpu: GpuContext<'window>,
+    quads: QuadPipeline,
     text: GlyphonRenderer,
 }
 
@@ -38,6 +39,22 @@ impl<'window> App<'window> {
             .as_mut()
             .expect("render called before window initialization");
 
+        // Demo quads for visual verification (remove after terminal grid integration)
+        state
+            .quads
+            .push_quad(50.0, 50.0, 200.0, 100.0, [0.8, 0.2, 0.2, 1.0]);
+        state
+            .quads
+            .push_quad(300.0, 50.0, 200.0, 100.0, [0.2, 0.8, 0.2, 1.0]);
+        state
+            .quads
+            .push_quad(550.0, 50.0, 200.0, 100.0, [0.2, 0.2, 0.8, 1.0]);
+        state
+            .quads
+            .push_quad(175.0, 200.0, 200.0, 100.0, [0.8, 0.8, 0.2, 0.5]);
+
+        // Upload GPU data before render pass
+        state.quads.prepare(&state.gpu.queue);
         state.text.prepare(&state.gpu.device, &state.gpu.queue)?;
 
         let output = state.gpu.surface.get_current_texture()?;
@@ -76,11 +93,14 @@ impl<'window> App<'window> {
                 multiview_mask: None,
             });
 
+            // Backgrounds first, then text on top
+            state.quads.render(&mut render_pass);
             state.text.render(&mut render_pass)?;
         }
 
         state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        state.quads.clear();
 
         Ok(())
     }
@@ -105,6 +125,14 @@ impl<'window> ApplicationHandler for App<'window> {
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).expect("failed to initialize GPU");
 
+        let quads = QuadPipeline::new(
+            &gpu.device,
+            &gpu.queue,
+            gpu.format,
+            gpu.width(),
+            gpu.height(),
+        );
+
         let text = GlyphonRenderer::new(
             &gpu.device,
             &gpu.queue,
@@ -120,7 +148,12 @@ impl<'window> ApplicationHandler for App<'window> {
             "window created",
         );
 
-        self.state = Some(AppState { window, gpu, text });
+        self.state = Some(AppState {
+            window,
+            gpu,
+            quads,
+            text,
+        });
     }
 
     fn window_event(
@@ -140,6 +173,7 @@ impl<'window> ApplicationHandler for App<'window> {
                     let h = physical_size.height;
                     if w > 0 && h > 0 {
                         state.gpu.resize(w, h);
+                        state.quads.resize(&state.gpu.queue, w, h);
                         state.text.resize(&state.gpu.queue, w, h);
                         state.window.request_redraw();
                     }

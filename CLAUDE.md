@@ -91,7 +91,7 @@ Detailed rules in `.claude/rules/` (10 path-scoped files, loaded automatically).
 1. `cargo clippy --workspace -- -W clippy::all` (zero warnings)
 2. `cargo fmt --all`
 3. `cargo test --workspace`
-4. **Update CHANGELOG.md** — `## YYYY-MM-DD` section, one line per change, prefixes: `FIX:` / `FEATURE:` / `REFACTOR:` / `CHORE:`, present tense
+4. **Update CHANGELOG.md** (only for application code changes — skip docs/specs/architecture/config-only changes)
 
 ## Rules Files Reference
 
