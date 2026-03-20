@@ -272,6 +272,24 @@ impl Grid {
         self.dirty.iter_mut().for_each(|d| *d = true);
     }
 
+    /// Copy cells from the given row into a `Row` (Vec<Cell>).
+    ///
+    /// Used to capture rows before they scroll off the grid into the
+    /// scrollback buffer.
+    ///
+    /// # Panics
+    /// Panics if `row >= rows`.
+    pub fn extract_row(&self, row: u16) -> crate::cell::Row {
+        assert!(
+            row < self.rows,
+            "row out of bounds: {row} in {} rows",
+            self.rows
+        );
+        let start = self.idx(0, row);
+        let end = start + self.cols as usize;
+        self.cells[start..end].to_vec()
+    }
+
     /// Return the indices of all dirty rows and reset all dirty flags.
     pub fn take_dirty_rows(&mut self) -> Vec<u16> {
         let mut result = Vec::with_capacity(self.rows as usize);
@@ -405,6 +423,7 @@ mod tests {
             fg: Color::Rgb(255, 0, 0),
             bg: Color::Named(0),
             flags: CellFlags::BOLD,
+            hyperlink: None,
         };
         grid.set_cell(5, 10, cell.clone());
         assert_eq!(grid.cell(5, 10), &cell);

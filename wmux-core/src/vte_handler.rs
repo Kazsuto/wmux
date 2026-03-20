@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use compact_str::CompactString;
 use unicode_width::UnicodeWidthChar;
 
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
+use crate::event::{self, Hyperlink, PromptMark, TerminalEvent};
+use crate::grid::Grid;
 use crate::mode::TerminalMode;
-use crate::terminal::TermState;
+use crate::terminal::{AltScreenState, TermState};
 
 /// VTE handler that bridges the vte parser to terminal state.
 ///
@@ -27,6 +31,7 @@ impl<'a> VteHandler<'a> {
     fn linefeed(&mut self) {
         let row = self.state.grid.cursor().row as u16;
         if row == self.state.scroll_bottom {
+            self.capture_rows_to_scrollback(1);
             self.state
                 .grid
                 .scroll_up_in_region(self.state.scroll_top, self.state.scroll_bottom, 1);
@@ -35,15 +40,31 @@ impl<'a> VteHandler<'a> {
         }
     }
 
+    /// Capture the top `n` rows of the scroll region into scrollback,
+    /// but only when scrolling the full screen (scroll_top == 0) and
+    /// not on the alternate screen.
+    fn capture_rows_to_scrollback(&mut self, n: u16) {
+        if self.state.scroll_top != 0 || self.state.alt_screen.is_some() {
+            return;
+        }
+        let capture = n.min(self.state.grid.rows());
+        for row_idx in 0..capture {
+            let evicted = self.state.grid.extract_row(row_idx);
+            self.state.scrollback.push_row(evicted);
+        }
+        self.state.scrollback.reset_viewport();
+    }
+
     /// Build a blank cell using the current background color (for erase
     /// operations).
     #[inline]
     fn erase_cell(&self) -> Cell {
         Cell {
-            grapheme: CompactString::from(" "),
+            grapheme: CompactString::const_new(" "),
             fg: self.state.attrs.fg,
             bg: self.state.attrs.bg,
             flags: CellFlags::empty(),
+            hyperlink: None,
         }
     }
 
@@ -249,9 +270,8 @@ impl<'a> VteHandler<'a> {
                 [6] => self.state.modes.insert(TerminalMode::ORIGIN),
                 [7] => self.state.modes.insert(TerminalMode::WRAPAROUND),
                 [25] => self.state.grid.cursor_mut().visible = true,
-                [47 | 1047 | 1049] => {
-                    tracing::debug!("alt screen requested (placeholder, not implemented)");
-                }
+                [47 | 1047] => self.enter_alt_screen(false),
+                [1049] => self.enter_alt_screen(true),
                 [1000 | 1002 | 1003] => {
                     self.state.modes.insert(TerminalMode::MOUSE_REPORTING);
                 }
@@ -268,9 +288,8 @@ impl<'a> VteHandler<'a> {
                 [6] => self.state.modes.remove(TerminalMode::ORIGIN),
                 [7] => self.state.modes.remove(TerminalMode::WRAPAROUND),
                 [25] => self.state.grid.cursor_mut().visible = false,
-                [47 | 1047 | 1049] => {
-                    tracing::debug!("alt screen reset (placeholder, not implemented)");
-                }
+                [47 | 1047] => self.exit_alt_screen(false),
+                [1049] => self.exit_alt_screen(true),
                 [1000 | 1002 | 1003] => {
                     self.state.modes.remove(TerminalMode::MOUSE_REPORTING);
                 }
@@ -278,6 +297,69 @@ impl<'a> VteHandler<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// Enter alternate screen buffer.
+    ///
+    /// Saves the current main grid, cursor, attrs, and scrollback viewport.
+    /// Replaces the grid with a fresh one. If `save_cursor` is true
+    /// (DECSET 1049), also saves/resets cursor position.
+    fn enter_alt_screen(&mut self, save_cursor: bool) {
+        // Already in alt screen — no-op.
+        if self.state.alt_screen.is_some() {
+            return;
+        }
+
+        let cols = self.state.grid.cols();
+        let rows = self.state.grid.rows();
+        let cursor = *self.state.grid.cursor();
+
+        let saved = AltScreenState {
+            grid: std::mem::replace(&mut self.state.grid, Grid::new(cols, rows)),
+            cursor,
+            attrs: self.state.attrs.clone(),
+            saved_cursor: self.state.saved_cursor,
+            viewport_offset: self.state.scrollback.viewport_offset(),
+            scroll_top: self.state.scroll_top,
+            scroll_bottom: self.state.scroll_bottom,
+        };
+        self.state.alt_screen = Some(saved);
+
+        // Reset state for alt screen.
+        if save_cursor {
+            self.state.saved_cursor = cursor;
+        }
+        self.state.grid.set_cursor_pos(0, 0);
+        self.state.scroll_top = 0;
+        self.state.scroll_bottom = rows.saturating_sub(1);
+        self.state.pending_wrap = false;
+        self.state.scrollback.reset_viewport();
+    }
+
+    /// Exit alternate screen buffer.
+    ///
+    /// Restores the saved main grid, cursor, attrs, and viewport.
+    /// Discards the alternate screen grid. If `restore_cursor` is true
+    /// (DECRST 1049), also restores cursor position.
+    fn exit_alt_screen(&mut self, restore_cursor: bool) {
+        let Some(saved) = self.state.alt_screen.take() else {
+            return;
+        };
+
+        self.state.grid = saved.grid;
+        self.state.attrs = saved.attrs;
+        self.state.saved_cursor = saved.saved_cursor;
+        self.state.scroll_top = saved.scroll_top;
+        self.state.scroll_bottom = saved.scroll_bottom;
+        self.state
+            .scrollback
+            .set_viewport_offset(saved.viewport_offset);
+
+        if restore_cursor {
+            let c = saved.cursor;
+            *self.state.grid.cursor_mut() = c;
+        }
+        self.state.pending_wrap = false;
     }
 
     // ── SGR parsing ─────────────────────────────────────────────────
@@ -400,6 +482,151 @@ impl<'a> VteHandler<'a> {
             _ => {}
         }
     }
+
+    // ── OSC helpers ─────────────────────────────────────────────────
+
+    /// Extract an OSC param as a UTF-8 string.
+    #[inline]
+    fn utf8_param<'p>(params: &[&'p [u8]], idx: usize) -> Option<&'p str> {
+        params.get(idx).and_then(|b| std::str::from_utf8(b).ok())
+    }
+
+    /// Try-send a terminal event. Drops the event if the channel is full.
+    fn emit_event(&self, event: TerminalEvent) {
+        if let Some(tx) = &self.state.event_tx {
+            if tx.try_send(event).is_err() {
+                tracing::warn!("terminal event channel full, dropping event");
+            }
+        }
+    }
+
+    /// OSC 7 — current working directory.
+    ///
+    /// Format: `\x1b]7;file://host/path\x07`
+    fn osc_cwd(&mut self, params: &[&[u8]]) {
+        let Some(uri_str) = Self::utf8_param(params, 1) else {
+            return;
+        };
+        if let Some(path) = event::parse_file_uri(uri_str) {
+            self.emit_event(TerminalEvent::CwdChanged(path));
+        }
+    }
+
+    /// OSC 8 — hyperlink.
+    ///
+    /// Format: `\x1b]8;params;uri\x07` (empty URI closes the link).
+    fn osc_hyperlink(&mut self, params: &[&[u8]]) {
+        let Some(uri) = Self::utf8_param(params, 2) else {
+            // Malformed or missing URI — close any active link.
+            self.state.current_hyperlink = None;
+            return;
+        };
+
+        if uri.is_empty() {
+            // Empty URI closes the hyperlink.
+            self.state.current_hyperlink = None;
+            return;
+        }
+
+        // Parse optional `id=value` from the params field.
+        let id = Self::utf8_param(params, 1).and_then(|p| {
+            p.split(':')
+                .find_map(|kv| kv.strip_prefix("id=").map(String::from))
+        });
+
+        self.state.current_hyperlink = Some(Arc::new(Hyperlink {
+            id,
+            uri: uri.to_string(),
+        }));
+    }
+
+    /// OSC 9 — iTerm2 notification.
+    ///
+    /// Format: `\x1b]9;body\x07`
+    fn osc_notification_iterm(&mut self, params: &[&[u8]]) {
+        let Some(body) = Self::utf8_param(params, 1) else {
+            return;
+        };
+        self.emit_event(TerminalEvent::Notification {
+            title: None,
+            body: body.to_string(),
+            id: None,
+        });
+    }
+
+    /// OSC 99 — kitty notification.
+    ///
+    /// Format: `\x1b]99;i=id:d=0;title\x07` or `\x1b]99;i=id:d=1;body\x07`
+    /// vte splits on `;` so: params = [b"99", b"i=id:d=0", b"title"]
+    fn osc_notification_kitty(&mut self, params: &[&[u8]]) {
+        let Some(kvs) = Self::utf8_param(params, 1) else {
+            return;
+        };
+        let Some(payload) = Self::utf8_param(params, 2) else {
+            return;
+        };
+
+        let mut id: Option<String> = None;
+        let mut is_body = false;
+        for kv in kvs.split(':') {
+            if let Some(val) = kv.strip_prefix("i=") {
+                id = Some(val.to_string());
+            } else if kv == "d=1" {
+                is_body = true;
+            }
+        }
+
+        // Kitty uses d=0 (default) for title, d=1 for body.
+        let (title, body) = if is_body {
+            (None, payload.to_string())
+        } else {
+            (Some(payload.to_string()), String::new())
+        };
+
+        self.emit_event(TerminalEvent::Notification { title, body, id });
+    }
+
+    /// OSC 133 — prompt mark.
+    ///
+    /// Format: `\x1b]133;X\x07` where X is A, B, C, or D.
+    fn osc_prompt_mark(&mut self, params: &[&[u8]]) {
+        if params.len() < 2 || params[1].is_empty() {
+            return;
+        }
+
+        let mark = match params[1][0] {
+            b'A' => PromptMark::PromptStart,
+            b'B' => PromptMark::CommandStart,
+            b'C' => PromptMark::OutputStart,
+            b'D' => PromptMark::CommandEnd,
+            _ => return,
+        };
+
+        self.emit_event(TerminalEvent::PromptMark(mark));
+    }
+
+    /// OSC 777 — rxvt notification.
+    ///
+    /// Format: `\x1b]777;notify;title;body\x07`
+    /// vte splits on `;`: params = [b"777", b"notify", b"title", b"body"]
+    fn osc_notification_rxvt(&mut self, params: &[&[u8]]) {
+        // params[1] should be "notify".
+        if params.get(1).copied() != Some(b"notify".as_slice()) {
+            return;
+        }
+
+        let Some(title) = Self::utf8_param(params, 2) else {
+            return;
+        };
+
+        let body = Self::utf8_param(params, 3).unwrap_or("");
+
+        self.emit_event(TerminalEvent::Notification {
+            title: Some(title.to_string()),
+            body: body.to_string(),
+            id: None,
+        });
+    }
 }
 
 // ── vte::Perform ────────────────────────────────────────────────────
@@ -430,6 +657,7 @@ impl vte::Perform for VteHandler<'_> {
                     fg: self.state.attrs.fg,
                     bg: self.state.attrs.bg,
                     flags: CellFlags::empty(),
+                    hyperlink: None,
                 };
                 self.state.grid.set_cell(col, row, blank);
                 self.state.grid.cursor_mut().col = 0;
@@ -444,10 +672,14 @@ impl vte::Perform for VteHandler<'_> {
 
         // Write the cell.
         let cell = Cell {
-            grapheme: CompactString::from(c.to_string()),
+            grapheme: {
+                let mut buf = [0u8; 4];
+                CompactString::from(c.encode_utf8(&mut buf) as &str)
+            },
             fg: self.state.attrs.fg,
             bg: self.state.attrs.bg,
             flags: self.state.attrs.flags,
+            hyperlink: self.state.current_hyperlink.clone(),
         };
         self.state.grid.set_cell(col, row, cell);
 
@@ -458,6 +690,7 @@ impl vte::Perform for VteHandler<'_> {
                 fg: self.state.attrs.fg,
                 bg: self.state.attrs.bg,
                 flags: CellFlags::WIDE_SPACER,
+                hyperlink: self.state.current_hyperlink.clone(),
             };
             self.state.grid.set_cell(col + 1, row, spacer);
         }
@@ -570,9 +803,10 @@ impl vte::Perform for VteHandler<'_> {
                 self.state.grid.delete_chars(n);
             }
 
-            // Scroll.
+            // Scroll up (CSI S).
             'S' => {
                 let n = Self::param(params, 0, 1);
+                self.capture_rows_to_scrollback(n);
                 self.state.grid.scroll_up_in_region(
                     self.state.scroll_top,
                     self.state.scroll_bottom,
@@ -645,8 +879,29 @@ impl vte::Perform for VteHandler<'_> {
         }
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
-        // OSC handling deferred to Task L1_04.
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if params.is_empty() {
+            return;
+        }
+
+        // First param is the OSC number as ASCII digits.
+        let osc_num = match std::str::from_utf8(params[0])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+        {
+            Some(n) => n,
+            None => return,
+        };
+
+        match osc_num {
+            7 => self.osc_cwd(params),
+            8 => self.osc_hyperlink(params),
+            9 => self.osc_notification_iterm(params),
+            99 => self.osc_notification_kitty(params),
+            133 => self.osc_prompt_mark(params),
+            777 => self.osc_notification_rxvt(params),
+            _ => {} // Unknown OSC — silently ignore.
+        }
     }
 
     fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
@@ -934,5 +1189,222 @@ mod tests {
         // CUU should clamp to row 0 (outside region).
         term.process(b"\x1b[10A");
         assert_eq!(term.grid().cursor().row, 0);
+    }
+
+    // ── OSC tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn osc7_emits_cwd_changed() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]7;file://DESKTOP/C:/Users/me/project\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::CwdChanged(std::path::PathBuf::from("C:\\Users\\me\\project"))
+        );
+    }
+
+    #[test]
+    fn osc7_with_spaces() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]7;file:///C:/my%20dir/proj\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::CwdChanged(std::path::PathBuf::from("C:\\my dir\\proj"))
+        );
+    }
+
+    #[test]
+    fn osc7_empty_path_ignored() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        // Only "7" param, no URI.
+        term.process(b"\x1b]7\x07");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn osc9_emits_notification() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]9;Build complete\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::Notification {
+                title: None,
+                body: "Build complete".to_string(),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn osc99_kitty_notification_title() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        // d=0 means this payload is the title.
+        term.process(b"\x1b]99;i=notify1:d=0;Build done\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::Notification {
+                title: Some("Build done".to_string()),
+                body: String::new(),
+                id: Some("notify1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn osc99_kitty_notification_body() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        // d=1 means this payload is the body.
+        term.process(b"\x1b]99;i=notify1:d=1;Details here\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::Notification {
+                title: None,
+                body: "Details here".to_string(),
+                id: Some("notify1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn osc99_malformed_no_panic() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        // Missing payload — only "99" param.
+        term.process(b"\x1b]99\x07");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn osc133_prompt_marks() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+
+        term.process(b"\x1b]133;A\x07");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            TerminalEvent::PromptMark(PromptMark::PromptStart)
+        );
+
+        term.process(b"\x1b]133;B\x07");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            TerminalEvent::PromptMark(PromptMark::CommandStart)
+        );
+
+        term.process(b"\x1b]133;C\x07");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            TerminalEvent::PromptMark(PromptMark::OutputStart)
+        );
+
+        term.process(b"\x1b]133;D\x07");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            TerminalEvent::PromptMark(PromptMark::CommandEnd)
+        );
+    }
+
+    #[test]
+    fn osc133_unknown_mark_ignored() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]133;Z\x07");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn osc777_rxvt_notification() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]777;notify;Task;All tests pass\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::Notification {
+                title: Some("Task".to_string()),
+                body: "All tests pass".to_string(),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn osc777_without_body() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]777;notify;Done\x07");
+        let event = rx.try_recv().unwrap();
+        assert_eq!(
+            event,
+            TerminalEvent::Notification {
+                title: Some("Done".to_string()),
+                body: String::new(),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn osc777_non_notify_ignored() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]777;something;else\x07");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn osc8_hyperlink_on_cells() {
+        let (mut term, _rx) = Terminal::with_event_channel(80, 24);
+        // Open hyperlink.
+        term.process(b"\x1b]8;id=link1;https://example.com\x07");
+        term.process(b"ABC");
+        // Close hyperlink.
+        term.process(b"\x1b]8;;\x07");
+        term.process(b"D");
+
+        // Cells A, B, C should have the hyperlink.
+        let link = term.grid().cell(0, 0).hyperlink.as_ref().unwrap();
+        assert_eq!(link.uri, "https://example.com");
+        assert_eq!(link.id.as_deref(), Some("link1"));
+
+        let link_b = term.grid().cell(1, 0).hyperlink.as_ref().unwrap();
+        // Same Arc — shared reference.
+        assert!(Arc::ptr_eq(link, link_b));
+
+        // Cell D should have no hyperlink.
+        assert!(term.grid().cell(3, 0).hyperlink.is_none());
+    }
+
+    #[test]
+    fn osc8_empty_uri_closes_link() {
+        let (mut term, _rx) = Terminal::with_event_channel(80, 24);
+        term.process(b"\x1b]8;;https://example.com\x07");
+        term.process(b"A");
+        assert!(term.grid().cell(0, 0).hyperlink.is_some());
+
+        // Close.
+        term.process(b"\x1b]8;;\x07");
+        term.process(b"B");
+        assert!(term.grid().cell(1, 0).hyperlink.is_none());
+    }
+
+    #[test]
+    fn unknown_osc_silently_ignored() {
+        let (mut term, mut rx) = Terminal::with_event_channel(80, 24);
+        // OSC 52 (clipboard) — not handled, should not panic.
+        term.process(b"\x1b]52;c;SGVsbG8=\x07");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn event_channel_not_required() {
+        // Terminal without event channel — OSC sequences should not panic.
+        let mut term = Terminal::new(80, 24);
+        term.process(b"\x1b]7;file:///C:/test\x07");
+        term.process(b"\x1b]9;hello\x07");
+        term.process(b"\x1b]133;A\x07");
+        term.process(b"\x1b]8;;https://x.com\x07");
+        term.process(b"A");
+        term.process(b"\x1b]8;;\x07");
+        // No panic = success.
     }
 }

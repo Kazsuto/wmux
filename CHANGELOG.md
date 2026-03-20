@@ -2,6 +2,8 @@
 
 ## 2026-03-20
 
+FEATURE: Add OSC sequence handlers and terminal event bus to wmux-core — OSC 7 (CWD change with file URI parsing and Windows path conversion), OSC 9/99/777 (iTerm2/kitty/rxvt notifications), OSC 133 (shell prompt marks A/B/C/D), OSC 8 (hyperlinks stored per-cell via Arc<Hyperlink>); TerminalEvent enum with bounded tokio mpsc channel (try_send, backpressure-safe); 20 new unit tests
+FEATURE: Add Scrollback ring buffer (VecDeque<Row>, configurable max 4000 lines, viewport offset tracking, read_text API) and alternate screen buffer (DECSET 47/1047/1049 enter/exit with grid+cursor save/restore) to wmux-core — Grid::extract_row for row capture, VteHandler pushes evicted rows to scrollback on linefeed/CSI-S, alt screen isolates scrollback; 16 new unit tests
 REFACTOR: Add Grid::fill_cells for bulk erase without per-cell clone — eliminates ~1920 CompactString clones per full-screen erase
 REFACTOR: Replace .expect() panics with RenderError variants in GpuContext::new — library crate no longer panics on missing GPU formats
 REFACTOR: Encapsulate GlyphonRenderer fields (7 pub → private), extract default_attrs() helper

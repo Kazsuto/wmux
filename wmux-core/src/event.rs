@@ -1,0 +1,256 @@
+use std::path::PathBuf;
+
+/// Prompt mark types from OSC 133.
+///
+/// Shell integration uses these to delimit prompt regions, command input,
+/// and command output — enabling features like click-to-rerun and
+/// navigation between prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PromptMark {
+    /// `A` — prompt start (before the prompt text).
+    PromptStart,
+    /// `B` — command start (after the user presses Enter).
+    CommandStart,
+    /// `C` — output start (command begins producing output).
+    OutputStart,
+    /// `D` — command end (with optional exit code).
+    CommandEnd,
+}
+
+/// A hyperlink attached to one or more terminal cells (OSC 8).
+///
+/// Shared via `Arc<Hyperlink>` across all cells belonging to the same
+/// hyperlink span so that clicking any cell in the run follows the link.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Hyperlink {
+    /// Optional identifier grouping disjoint cells into a single link
+    /// (e.g. a wrapped URL that spans multiple rows).
+    pub id: Option<String>,
+    /// The target URI.
+    pub uri: String,
+}
+
+/// Events emitted by the terminal for consumption by the application layer.
+///
+/// Produced inside `osc_dispatch` and sent over a bounded
+/// `tokio::sync::mpsc` channel. The application (UI, notification store,
+/// sidebar metadata) subscribes to these events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalEvent {
+    /// Working directory changed (OSC 7).
+    CwdChanged(PathBuf),
+
+    /// Notification from the shell (OSC 9, 99, 777).
+    Notification {
+        title: Option<String>,
+        body: String,
+        /// Kitty notification id (OSC 99 `i=` parameter).
+        id: Option<String>,
+    },
+
+    /// Shell prompt mark (OSC 133).
+    PromptMark(PromptMark),
+}
+
+/// Parse a `file://` URI into a [`PathBuf`].
+///
+/// Handles the common forms emitted by shells:
+/// - `file://hostname/path` (Unix-style)
+/// - `file:///C:/path` or `file://hostname/C:/path` (Windows-style)
+///
+/// Returns `None` for malformed or non-file URIs.
+pub(crate) fn parse_file_uri(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+
+    // Skip the hostname (everything up to the next `/`).
+    let path_start = rest.find('/')?;
+    let path = &rest[path_start..];
+
+    // On Windows, convert `/C:/foo` → `C:\foo`.
+    // The leading `/` before a drive letter is an artifact of the URI.
+    let path = if path.len() >= 3 {
+        let bytes = path.as_bytes();
+        if bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+            &path[1..]
+        } else {
+            path
+        }
+    } else {
+        path
+    };
+
+    // Percent-decode common sequences (%20 → space, etc.).
+    let decoded = percent_decode(path);
+    let normalized = decoded.replace('/', "\\");
+    Some(PathBuf::from(normalized))
+}
+
+/// Minimal percent-decoding for file URIs.
+///
+/// Collects decoded bytes first, then converts from UTF-8, so that
+/// multi-byte percent-encoded sequences (e.g. `%E4%B8%96`) decode
+/// correctly instead of being interpreted as individual Latin-1 chars.
+fn percent_decode(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut iter = input.bytes();
+    while let Some(b) = iter.next() {
+        if b == b'%' {
+            match (iter.next(), iter.next()) {
+                (Some(hi), Some(lo)) => {
+                    let hex = [hi, lo];
+                    if let Some(val) = std::str::from_utf8(&hex)
+                        .ok()
+                        .and_then(|s| u8::from_str_radix(s, 16).ok())
+                    {
+                        bytes.push(val);
+                    } else {
+                        // Not valid hex — emit all three bytes literally.
+                        bytes.push(b'%');
+                        bytes.push(hi);
+                        bytes.push(lo);
+                    }
+                }
+                (Some(hi), None) => {
+                    // Trailing `%X` — emit literally.
+                    bytes.push(b'%');
+                    bytes.push(hi);
+                }
+                _ => {
+                    // Trailing `%` — emit literally.
+                    bytes.push(b'%');
+                }
+            }
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_file_uri ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_windows_path() {
+        let uri = "file://DESKTOP-ABC/C:/Users/me/project";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\Users\\me\\project"));
+    }
+
+    #[test]
+    fn parse_windows_path_localhost() {
+        let uri = "file:///C:/Users/me/project";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\Users\\me\\project"));
+    }
+
+    #[test]
+    fn parse_path_with_spaces() {
+        let uri = "file:///C:/Users/my%20user/my%20project";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\Users\\my user\\my project"));
+    }
+
+    #[test]
+    fn parse_unix_style_path() {
+        let uri = "file://hostname/home/user/project";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("\\home\\user\\project"));
+    }
+
+    #[test]
+    fn empty_path_returns_root() {
+        let uri = "file:///";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("\\"));
+    }
+
+    #[test]
+    fn non_file_uri_returns_none() {
+        assert!(parse_file_uri("https://example.com").is_none());
+    }
+
+    #[test]
+    fn malformed_uri_returns_none() {
+        assert!(parse_file_uri("not a uri").is_none());
+    }
+
+    #[test]
+    fn percent_decode_multibyte_utf8() {
+        // %E4%B8%96 = U+4E16 "世"
+        let uri = "file:///C:/%E4%B8%96";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\世"));
+    }
+
+    #[test]
+    fn percent_decode_malformed_preserves_bytes() {
+        // %GG is not valid hex — should be emitted literally.
+        let uri = "file:///C:/a%GGb";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\a%GGb"));
+    }
+
+    #[test]
+    fn percent_decode_trailing_percent() {
+        let uri = "file:///C:/test%";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\test%"));
+    }
+
+    #[test]
+    fn percent_decode_trailing_single_hex() {
+        let uri = "file:///C:/test%2";
+        let path = parse_file_uri(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:\\test%2"));
+    }
+
+    // ── PromptMark ──────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_mark_copy() {
+        let mark = PromptMark::PromptStart;
+        let copy = mark;
+        assert_eq!(mark, copy);
+    }
+
+    // ── Hyperlink ───────────────────────────────────────────────────
+
+    #[test]
+    fn hyperlink_with_id() {
+        let link = Hyperlink {
+            id: Some("link1".into()),
+            uri: "https://example.com".into(),
+        };
+        assert_eq!(link.id.as_deref(), Some("link1"));
+    }
+
+    #[test]
+    fn hyperlink_without_id() {
+        let link = Hyperlink {
+            id: None,
+            uri: "https://example.com".into(),
+        };
+        assert!(link.id.is_none());
+    }
+
+    // ── TerminalEvent ───────────────────────────────────────────────
+
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+
+    #[test]
+    fn terminal_event_is_send_and_sync() {
+        _assert_send::<TerminalEvent>();
+        _assert_sync::<TerminalEvent>();
+    }
+
+    #[test]
+    fn hyperlink_is_send_and_sync() {
+        _assert_send::<Hyperlink>();
+        _assert_sync::<Hyperlink>();
+    }
+}

@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use bitflags::bitflags;
 use compact_str::CompactString;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::color::Color;
+use crate::event::Hyperlink;
 
 bitflags! {
     /// Terminal cell attribute flags.
@@ -54,6 +57,9 @@ pub struct Cell {
     pub bg: Color,
     /// Attribute flags (bold, italic, etc.).
     pub flags: CellFlags,
+    /// Hyperlink target (OSC 8). Shared across cells in the same link span.
+    #[serde(skip)]
+    pub hyperlink: Option<Arc<Hyperlink>>,
 }
 
 impl Default for Cell {
@@ -63,6 +69,7 @@ impl Default for Cell {
             fg: Color::Named(7), // white
             bg: Color::Named(0), // black
             flags: CellFlags::empty(),
+            hyperlink: None,
         }
     }
 }
@@ -146,6 +153,7 @@ mod tests {
             fg: Color::Rgb(255, 0, 0),
             bg: Color::Indexed(42),
             flags: CellFlags::BOLD | CellFlags::UNDERLINE,
+            hyperlink: None,
         };
         let json = serde_json::to_string(&cell).unwrap();
         let back: Cell = serde_json::from_str(&json).unwrap();

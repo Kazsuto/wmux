@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use crate::cell::CellFlags;
 use crate::color::Color;
 use crate::cursor::CursorState;
+use crate::event::{Hyperlink, TerminalEvent};
 use crate::grid::Grid;
 use crate::mode::TerminalMode;
+use crate::scrollback::Scrollback;
 use crate::vte_handler::VteHandler;
 
 /// Current SGR (Select Graphic Rendition) attributes applied to new cells.
@@ -23,6 +27,17 @@ impl Default for Attrs {
     }
 }
 
+/// Saved state of the main screen while alternate screen is active.
+pub(crate) struct AltScreenState {
+    pub grid: Grid,
+    pub cursor: CursorState,
+    pub attrs: Attrs,
+    pub saved_cursor: CursorState,
+    pub viewport_offset: usize,
+    pub scroll_top: u16,
+    pub scroll_bottom: u16,
+}
+
 /// Internal terminal state operated on by [`VteHandler`].
 ///
 /// Separated from [`Terminal`] so the vte parser and state can be
@@ -36,6 +51,13 @@ pub(crate) struct TermState {
     pub scroll_bottom: u16,
     pub pending_wrap: bool,
     pub tabs: Vec<bool>,
+    pub scrollback: Scrollback,
+    /// Saved main screen state when alternate screen is active.
+    pub alt_screen: Option<AltScreenState>,
+    /// Channel for emitting terminal events (OSC-sourced).
+    pub event_tx: Option<tokio::sync::mpsc::Sender<TerminalEvent>>,
+    /// Active hyperlink set by OSC 8 (applied to subsequently printed cells).
+    pub current_hyperlink: Option<Arc<Hyperlink>>,
 }
 
 /// Terminal emulator state machine.
@@ -62,7 +84,15 @@ impl Terminal {
     ///
     /// Initialises the grid, default modes (WRAPAROUND on), tab stops
     /// every 8 columns, and scroll region spanning the full screen.
+    /// Default scrollback capacity (lines).
+    const DEFAULT_SCROLLBACK: usize = 4000;
+
     pub fn new(cols: u16, rows: u16) -> Self {
+        Self::with_scrollback(cols, rows, Self::DEFAULT_SCROLLBACK)
+    }
+
+    /// Create a new terminal with custom scrollback capacity.
+    pub fn with_scrollback(cols: u16, rows: u16, scrollback_lines: usize) -> Self {
         Self {
             parser: vte::Parser::new(),
             state: TermState {
@@ -74,8 +104,33 @@ impl Terminal {
                 scroll_bottom: rows.saturating_sub(1),
                 pending_wrap: false,
                 tabs: init_tab_stops(cols),
+                scrollback: Scrollback::new(scrollback_lines),
+                alt_screen: None,
+                event_tx: None,
+                current_hyperlink: None,
             },
         }
+    }
+
+    /// Set the event channel sender for terminal events (OSC-sourced).
+    ///
+    /// Events are sent via `try_send` so this never blocks terminal
+    /// processing even when the receiver falls behind.
+    pub fn set_event_sender(&mut self, tx: tokio::sync::mpsc::Sender<TerminalEvent>) {
+        self.state.event_tx = Some(tx);
+    }
+
+    /// Create a terminal pre-wired with an event channel (capacity 256).
+    ///
+    /// Returns the terminal and the receiving end of the channel.
+    pub fn with_event_channel(
+        cols: u16,
+        rows: u16,
+    ) -> (Self, tokio::sync::mpsc::Receiver<TerminalEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let mut term = Self::new(cols, rows);
+        term.state.event_tx = Some(tx);
+        (term, rx)
     }
 
     /// Feed raw bytes from the PTY into the VTE parser.
@@ -121,13 +176,116 @@ impl Terminal {
     }
 
     /// Resize the terminal. Resets scroll region to the full screen,
-    /// reinitialises tab stops, and clamps the cursor.
+    /// reinitialises tab stops, and clamps the cursor. Also resizes
+    /// the alternate screen grid if active.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.state.grid.resize(cols, rows);
         self.state.scroll_top = 0;
         self.state.scroll_bottom = rows.saturating_sub(1);
         self.state.pending_wrap = false;
         self.state.tabs = init_tab_stops(cols);
+        if let Some(ref mut alt) = self.state.alt_screen {
+            alt.grid.resize(cols, rows);
+            // Clamp saved cursors to new dimensions to prevent out-of-bounds
+            // panics when exiting alt screen after a resize.
+            let max_col = cols.saturating_sub(1) as usize;
+            let max_row = rows.saturating_sub(1) as usize;
+            alt.cursor.col = alt.cursor.col.min(max_col);
+            alt.cursor.row = alt.cursor.row.min(max_row);
+            alt.saved_cursor.col = alt.saved_cursor.col.min(max_col);
+            alt.saved_cursor.row = alt.saved_cursor.row.min(max_row);
+            alt.scroll_top = 0;
+            alt.scroll_bottom = rows.saturating_sub(1);
+        }
+    }
+
+    /// Whether the terminal is currently in alternate screen mode.
+    #[inline]
+    pub fn is_alt_screen(&self) -> bool {
+        self.state.alt_screen.is_some()
+    }
+
+    /// Immutable reference to the scrollback buffer.
+    #[inline]
+    pub fn scrollback(&self) -> &Scrollback {
+        &self.state.scrollback
+    }
+
+    /// Current viewport offset (0 = live, positive = scrolled up).
+    #[inline]
+    pub fn viewport_offset(&self) -> usize {
+        self.state.scrollback.viewport_offset()
+    }
+
+    /// Scroll the viewport up by `n` lines.
+    pub fn scroll_viewport_up(&mut self, n: usize) {
+        let current = self.state.scrollback.viewport_offset();
+        self.state.scrollback.set_viewport_offset(current + n);
+    }
+
+    /// Scroll the viewport down by `n` lines (towards live terminal).
+    pub fn scroll_viewport_down(&mut self, n: usize) {
+        let current = self.state.scrollback.viewport_offset();
+        self.state
+            .scrollback
+            .set_viewport_offset(current.saturating_sub(n));
+    }
+
+    /// Reset viewport to bottom (live terminal).
+    pub fn reset_viewport(&mut self) {
+        self.state.scrollback.reset_viewport();
+    }
+
+    /// Read text from the terminal, combining scrollback and visible grid.
+    ///
+    /// Positive indices start from the first scrollback row (0).
+    /// The visible grid rows follow after all scrollback rows.
+    /// Negative indices count from the end (last visible row).
+    pub fn read_text(&self, start: isize, end: isize) -> String {
+        let sb_len = self.state.scrollback.len() as isize;
+        let grid_rows = self.state.grid.rows() as isize;
+        let total = sb_len + grid_rows;
+
+        let resolve = |idx: isize| -> usize {
+            if idx < 0 {
+                (total + idx).max(0) as usize
+            } else {
+                idx as usize
+            }
+        };
+
+        let s = resolve(start);
+        let e = resolve(end).min(total as usize);
+
+        if s >= e {
+            return String::new();
+        }
+
+        // Pre-allocate: estimate cols chars per row + 1 newline.
+        let cols = self.state.grid.cols() as usize;
+        let mut result = String::with_capacity((e - s) * (cols + 1));
+        for i in s..e {
+            if i > s {
+                result.push('\n');
+            }
+            if (i as isize) < sb_len {
+                // Row from scrollback.
+                if let Some(row) = self.state.scrollback.get_row(i) {
+                    for cell in row {
+                        result.push_str(cell.grapheme.as_str());
+                    }
+                }
+            } else {
+                // Row from visible grid.
+                let grid_row = (i as isize - sb_len) as u16;
+                if grid_row < self.state.grid.rows() {
+                    for col in 0..self.state.grid.cols() {
+                        result.push_str(self.state.grid.cell(col, grid_row).grapheme.as_str());
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -272,5 +430,116 @@ mod tests {
         term.process(b"\x1b[");
         term.process(b"OK");
         assert_eq!(term.grid().cell(0, 0).grapheme.as_str(), "K");
+    }
+
+    #[test]
+    fn scrollback_captures_on_linefeed_at_bottom() {
+        let mut term = Terminal::new(4, 3);
+        // Fill all 3 rows.
+        term.process(b"AAAA\r\nBBBB\r\nCCCC");
+        assert_eq!(term.scrollback().len(), 0);
+
+        // Linefeed at bottom of screen should push row 0 to scrollback.
+        term.process(b"\r\n");
+        assert_eq!(term.scrollback().len(), 1);
+        assert_eq!(
+            term.scrollback().get_row(0).unwrap()[0].grapheme.as_str(),
+            "A"
+        );
+    }
+
+    #[test]
+    fn scrollback_max_enforced() {
+        let mut term = Terminal::with_scrollback(4, 2, 3);
+        // Push 5 rows through — only last 3 should be in scrollback.
+        for c in b"AAAA\nBBBB\nCCCC\nDDDD\nEEEE" {
+            term.process(&[*c]);
+        }
+        assert!(term.scrollback().len() <= 3);
+    }
+
+    #[test]
+    fn alt_screen_enter_exit() {
+        let mut term = Terminal::new(4, 3);
+        term.process(b"MAIN");
+        assert!(!term.is_alt_screen());
+
+        // Enter alt screen (DECSET 1049).
+        term.process(b"\x1b[?1049h");
+        assert!(term.is_alt_screen());
+        // Grid should be fresh.
+        assert_eq!(term.grid().cell(0, 0).grapheme.as_str(), " ");
+        // Write something on alt screen.
+        term.process(b"ALT!");
+
+        // Exit alt screen (DECRST 1049).
+        term.process(b"\x1b[?1049l");
+        assert!(!term.is_alt_screen());
+        // Original grid restored.
+        assert_eq!(term.grid().cell(0, 0).grapheme.as_str(), "M");
+    }
+
+    #[test]
+    fn alt_screen_no_scrollback() {
+        let mut term = Terminal::new(4, 2);
+        term.process(b"\x1b[?1049h");
+        let before = term.scrollback().len();
+        // Fill and scroll on alt screen.
+        term.process(b"AAAA\nBBBB\nCCCC");
+        // Scrollback should not grow on alt screen.
+        assert_eq!(term.scrollback().len(), before);
+        term.process(b"\x1b[?1049l");
+    }
+
+    #[test]
+    fn exit_alt_screen_without_enter_is_noop() {
+        let mut term = Terminal::new(80, 24);
+        term.process(b"Hello");
+        term.process(b"\x1b[?1049l");
+        assert!(!term.is_alt_screen());
+        assert_eq!(term.grid().cell(0, 0).grapheme.as_str(), "H");
+    }
+
+    #[test]
+    fn viewport_offset_operations() {
+        let mut term = Terminal::new(4, 2);
+        // Push some rows into scrollback.
+        term.process(b"AA\nBB\nCC\nDD\nEE");
+        assert!(term.scrollback().len() > 0);
+
+        term.scroll_viewport_up(2);
+        assert_eq!(term.viewport_offset(), 2);
+
+        term.scroll_viewport_down(1);
+        assert_eq!(term.viewport_offset(), 1);
+
+        term.reset_viewport();
+        assert_eq!(term.viewport_offset(), 0);
+    }
+
+    #[test]
+    fn read_text_includes_scrollback_and_grid() {
+        let mut term = Terminal::with_scrollback(3, 2, 100);
+        // Push some content that scrolls.
+        term.process(b"AAA\nBBB\nCCC\nDDD");
+        // Scrollback should have some rows, grid has 2 visible rows.
+        let sb_len = term.scrollback().len();
+        assert!(sb_len > 0);
+
+        // read_text(-1, total) should return the last visible row.
+        let last = term.read_text(-1, (sb_len + 2) as isize);
+        assert!(!last.is_empty());
+    }
+
+    #[test]
+    fn resize_also_resizes_alt_grid() {
+        let mut term = Terminal::new(80, 24);
+        term.process(b"\x1b[?1049h");
+        term.resize(40, 12);
+        assert_eq!(term.cols(), 40);
+        assert_eq!(term.rows(), 12);
+        // Saved main grid should also be resized.
+        assert!(term.state.alt_screen.is_some());
+        assert_eq!(term.state.alt_screen.as_ref().unwrap().grid.cols(), 40);
     }
 }
