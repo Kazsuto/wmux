@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize, PtySystem};
 
 use crate::error::PtyError;
-use crate::shell::detect_shell;
+use crate::shell::{detect_shell, ShellType};
+
+const HOOK_POWERSHELL: &str = include_str!("../../resources/shell-integration/wmux.ps1");
+const HOOK_BASH: &str = include_str!("../../resources/shell-integration/wmux.bash");
+const HOOK_ZSH: &str = include_str!("../../resources/shell-integration/wmux.zsh");
 
 /// Configuration for spawning a new PTY session.
 #[derive(Debug, Clone)]
@@ -111,6 +115,76 @@ impl PtyHandle {
     }
 }
 
+/// Infer [`ShellType`] from a shell executable path.
+fn shell_type_from_path(path: &Path) -> ShellType {
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "pwsh" => ShellType::Pwsh,
+        "powershell" => ShellType::PowerShell,
+        "bash" => ShellType::Bash,
+        _ => ShellType::Cmd,
+    }
+}
+
+/// Write shell integration hook scripts to the user config directory.
+///
+/// Returns the directory containing the written hook files.
+/// Uses `std::fs` (sync) intentionally — this is called from a synchronous spawn context
+/// and the writes are one-time, tiny files.
+fn ensure_hook_files() -> Result<PathBuf, PtyError> {
+    let config = dirs::config_dir()
+        .ok_or_else(|| PtyError::ShellNotFound("config directory not found".to_string()))?;
+    let hook_dir = config.join("wmux").join("shell-integration");
+    std::fs::create_dir_all(&hook_dir)?;
+    std::fs::write(hook_dir.join("wmux.ps1"), HOOK_POWERSHELL)?;
+    std::fs::write(hook_dir.join("wmux.bash"), HOOK_BASH)?;
+    std::fs::write(hook_dir.join("wmux.zsh"), HOOK_ZSH)?;
+    Ok(hook_dir)
+}
+
+/// Configure the `CommandBuilder` to source the wmux shell integration hook on startup.
+fn inject_shell_hooks(cmd: &mut CommandBuilder, shell_type: &ShellType, hook_dir: &Path) {
+    match shell_type {
+        ShellType::Pwsh | ShellType::PowerShell => {
+            let hook_path = hook_dir.join("wmux.ps1");
+            // Escape single quotes in the path (PowerShell convention: '' inside '...')
+            let hook_path_str = hook_path.to_string_lossy().replace('\'', "''");
+            // -NoExit keeps PowerShell interactive after running -Command
+            // -ExecutionPolicy Bypass allows loading an unsigned script for this session
+            cmd.arg("-NoExit");
+            cmd.arg("-ExecutionPolicy");
+            cmd.arg("Bypass");
+            cmd.arg("-Command");
+            cmd.arg(format!(". '{hook_path_str}'"));
+            tracing::debug!(hook = %hook_path.display(), "injected PowerShell shell integration hook");
+        }
+        ShellType::Bash => {
+            let hook_path = hook_dir.join("wmux.bash");
+            // Create a wrapper rcfile: source ~/.bashrc first, then the wmux hook.
+            // This replaces the default rcfile via --rcfile without losing the user's config.
+            let wrapper = std::env::temp_dir().join("wmux_bash_rc.sh");
+            let content = format!(
+                "[ -f ~/.bashrc ] && . ~/.bashrc\n. '{}'\n",
+                hook_path.display()
+            );
+            if let Err(e) = std::fs::write(&wrapper, content) {
+                tracing::warn!(error = %e, "failed to write bash wrapper rcfile, skipping hook injection");
+                return;
+            }
+            tracing::debug!(hook = %hook_path.display(), "injected Bash shell integration hook");
+            cmd.arg("--rcfile");
+            cmd.arg(wrapper);
+        }
+        ShellType::Cmd => {
+            tracing::debug!("cmd.exe does not support shell integration hooks, skipping");
+        }
+    }
+}
+
 /// Manages PTY lifecycle: shell detection, spawning, and handle creation.
 pub struct PtyManager {
     pty_system: Box<dyn PtySystem + Send>,
@@ -133,10 +207,11 @@ impl PtyManager {
     /// Spawn a new PTY session with the given configuration.
     pub fn spawn(&self, config: SpawnConfig) -> Result<PtyHandle, PtyError> {
         // Detect or use configured shell
-        let shell_path = match config.shell {
+        let (shell_path, shell_type) = match config.shell {
             Some(path) => {
                 tracing::info!(shell = %path.display(), "using configured shell");
-                path
+                let st = shell_type_from_path(&path);
+                (path, st)
             }
             None => {
                 let info = detect_shell()?;
@@ -145,7 +220,7 @@ impl PtyManager {
                     path = %info.path.display(),
                     "using detected shell"
                 );
-                info.path
+                (info.path, info.shell_type)
             }
         };
 
@@ -180,6 +255,12 @@ impl PtyManager {
         // Inject WMUX_* variables from config
         for (key, value) in &config.env {
             cmd.env(key, value);
+        }
+
+        // Inject shell integration hooks (OSC 7 CWD tracking, OSC 133 prompt marks)
+        match ensure_hook_files() {
+            Ok(hook_dir) => inject_shell_hooks(&mut cmd, &shell_type, &hook_dir),
+            Err(e) => tracing::warn!(error = %e, "failed to set up shell integration hook files"),
         }
 
         // Open PTY pair
@@ -236,6 +317,35 @@ impl Default for PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_content_not_empty() {
+        assert!(!HOOK_POWERSHELL.is_empty());
+        assert!(!HOOK_BASH.is_empty());
+        assert!(!HOOK_ZSH.is_empty());
+    }
+
+    #[test]
+    fn shell_type_from_path_detection() {
+        assert_eq!(shell_type_from_path(Path::new("pwsh.exe")), ShellType::Pwsh);
+        assert_eq!(
+            shell_type_from_path(Path::new("powershell.exe")),
+            ShellType::PowerShell
+        );
+        assert_eq!(shell_type_from_path(Path::new("bash.exe")), ShellType::Bash);
+        assert_eq!(shell_type_from_path(Path::new("cmd.exe")), ShellType::Cmd);
+        // Unknown shell falls back to Cmd
+        assert_eq!(shell_type_from_path(Path::new("fish")), ShellType::Cmd);
+    }
+
+    #[test]
+    #[ignore] // Writes to user config directory — run with: cargo test -- --ignored
+    fn ensure_hook_files_writes_all_scripts() {
+        let hook_dir = ensure_hook_files().expect("failed to write hook files");
+        assert!(hook_dir.join("wmux.ps1").exists());
+        assert!(hook_dir.join("wmux.bash").exists());
+        assert!(hook_dir.join("wmux.zsh").exists());
+    }
 
     #[test]
     fn spawn_config_defaults() {

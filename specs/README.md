@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 15 done, 0 in progress, 35 pending (30% complete)
+> **Current progress**: 22 done, 0 in progress, 28 pending (44% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -65,18 +65,18 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > 5/5 done
 
-### Wave 3 — VTE, Scrollback, Rendering, Input & Browser DOM (needs Wave 2) — CURRENT
+### Wave 3 — VTE, Scrollback, Rendering, Input & Browser DOM (needs Wave 2) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
 | [L1_02](L1_02-vte-parser-integration.md) | VTE Parser Integration | P0 | 3h | L1_01 | ✅ |
 | [L1_03](L1_03-scrollback-ring-buffer.md) | Scrollback Ring Buffer | P0 | 2h | L1_01 | ✅ |
-| [L1_07](L1_07-terminal-grid-gpu-rendering.md) | Terminal Grid GPU Rendering | P0 | 3h | L1_01, L0_03 | ⬜ |
-| [L1_08](L1_08-keyboard-input-pty-dispatch.md) | Keyboard Input → PTY Dispatch | P0 | 2h | L1_06 | ⬜ |
-| [L1_09](L1_09-mouse-selection-copypaste.md) | Mouse Selection, Copy/Paste | P1 | 2.5h | L1_01, L1_06 | ⬜ |
-| [L3_06](L3_06-browser-dom-automation.md) | Browser DOM Automation | P1 | 3h | L3_05 | ⬜ |
-| [L3_13](L3_13-shell-integration-hooks.md) | Shell Integration Hooks | P1 | 2h | L1_06 | ⬜ |
+| [L1_07](L1_07-terminal-grid-gpu-rendering.md) | Terminal Grid GPU Rendering | P0 | 3h | L1_01, L0_03 | ✅ |
+| [L1_08](L1_08-keyboard-input-pty-dispatch.md) | Keyboard Input → PTY Dispatch | P0 | 2h | L1_06 | ✅ |
+| [L1_09](L1_09-mouse-selection-copypaste.md) | Mouse Selection, Copy/Paste | P1 | 2.5h | L1_01, L1_06 | ✅ |
+| [L3_06](L3_06-browser-dom-automation.md) | Browser DOM Automation | P1 | 3h | L3_05 | ✅ |
+| [L3_13](L3_13-shell-integration-hooks.md) | Shell Integration Hooks | P1 | 2h | L1_06 | ✅ |
 
-> `/apex implement wave 3 in teams mode`
+> 7/7 done
 
 ### Wave 4 — OSC Handlers (needs Wave 3) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -185,9 +185,9 @@ Run `/create-tasks status` to see current wave and next actions.
 | L1_04 | [OSC Sequence Handlers](L1_04-osc-sequence-handlers.md) | P1 | 1.5h | 4 | ✅ | L1_02 |
 | L1_05 | [ConPTY Shell Spawning](L1_05-conpty-shell-spawning.md) | P0 | 2h | 1 | ✅ | L0_01 |
 | L1_06 | [PTY Async I/O](L1_06-pty-async-io.md) | P0 | 1.5h | 2 | ✅ | L1_05 |
-| L1_07 | [Terminal Grid GPU Rendering](L1_07-terminal-grid-gpu-rendering.md) | P0 | 3h | 3 | ⬜ | L1_01, L0_03 |
-| L1_08 | [Keyboard Input → PTY Dispatch](L1_08-keyboard-input-pty-dispatch.md) | P0 | 2h | 3 | ⬜ | L1_06 |
-| L1_09 | [Mouse Selection, Copy/Paste](L1_09-mouse-selection-copypaste.md) | P1 | 2.5h | 3 | ⬜ | L1_01, L1_06 |
+| L1_07 | [Terminal Grid GPU Rendering](L1_07-terminal-grid-gpu-rendering.md) | P0 | 3h | 3 | ✅ | L1_01, L0_03 |
+| L1_08 | [Keyboard Input → PTY Dispatch](L1_08-keyboard-input-pty-dispatch.md) | P0 | 2h | 3 | ✅ | L1_06 |
+| L1_09 | [Mouse Selection, Copy/Paste](L1_09-mouse-selection-copypaste.md) | P1 | 2.5h | 3 | ✅ | L1_01, L1_06 |
 | L1_10 | [Single-Pane Integration](L1_10-single-pane-terminal-integration.md) | P0 | 2.5h | 5 | ⬜ | L1_02–L1_09 |
 
 ### Layer 2 — Core
@@ -218,14 +218,14 @@ Run `/create-tasks status` to see current wave and next actions.
 | L3_03 | [WebView2 COM Init](L3_03-webview2-com-initialization.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
 | L3_04 | [WebView2 Browser Panel](L3_04-webview2-browser-panel.md) | P1 | 2.5h | 8 | ⬜ | L3_03, L2_02 |
 | L3_05 | [Browser Nav + JS Eval](L3_05-browser-navigation-eval-api.md) | P1 | 2h | 2 | ✅ | L3_03 |
-| L3_06 | [Browser DOM Automation](L3_06-browser-dom-automation.md) | P1 | 3h | 3 | ⬜ | L3_05 |
+| L3_06 | [Browser DOM Automation](L3_06-browser-dom-automation.md) | P1 | 3h | 3 | ✅ | L3_05 |
 | L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ⬜ | L2_11, L3_05, L3_06 |
 | L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ⬜ | L1_04 |
 | L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ⬜ | L3_08, L2_08 |
 | L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ⬜ | L3_08 |
 | L3_11 | [Ghostty Config Parser](L3_11-ghostty-config-parser.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
 | L3_12 | [Theme Engine](L3_12-theme-engine-dark-light.md) | P1 | 2h | 2 | ✅ | L3_11 |
-| L3_13 | [Shell Integration](L3_13-shell-integration-hooks.md) | P1 | 2h | 3 | ⬜ | L1_06 |
+| L3_13 | [Shell Integration](L3_13-shell-integration-hooks.md) | P1 | 2h | 3 | ✅ | L1_06 |
 | L3_14 | [Git/Port Detection](L3_14-git-branch-detection.md) | P2 | 2h | 10 | ⬜ | L2_08, L1_04 |
 
 ### Layer 4 — Polish
@@ -255,14 +255,14 @@ graph TD
     L0_02 --> L1_01["✅ L1_01: Cell Grid"]
     L1_01 --> L1_02["✅ L1_02: VTE Parser"]
     L1_01 --> L1_03["✅ L1_03: Scrollback"]
-    L1_01 --> L1_07["⬜ L1_07: Grid Rendering"]
-    L1_01 --> L1_09["⬜ L1_09: Mouse/Clipboard"]
+    L1_01 --> L1_07["✅ L1_07: Grid Rendering"]
+    L1_01 --> L1_09["✅ L1_09: Mouse/Clipboard"]
     L0_03 --> L1_07
     L1_02 --> L1_04["✅ L1_04: OSC Handlers"]
     L1_05 --> L1_06["✅ L1_06: PTY Async I/O"]
-    L1_06 --> L1_08["⬜ L1_08: Keyboard Input"]
+    L1_06 --> L1_08["✅ L1_08: Keyboard Input"]
     L1_06 --> L1_09
-    L1_06 --> L3_13["⬜ L3_13: Shell Hooks"]
+    L1_06 --> L3_13["✅ L3_13: Shell Hooks"]
 
     L1_02 --> L1_10["⬜ L1_10: Single-Pane Integration"]
     L1_03 --> L1_10
@@ -303,7 +303,7 @@ graph TD
     L3_03 --> L3_04["⬜ L3_04: Browser Panel"]
     L2_02 --> L3_04
     L3_03 --> L3_05["✅ L3_05: Browser Nav/Eval"]
-    L3_05 --> L3_06["⬜ L3_06: Browser DOM"]
+    L3_05 --> L3_06["✅ L3_06: Browser DOM"]
     L2_11 --> L3_07["⬜ L3_07: Browser IPC"]
     L3_05 --> L3_07
     L3_06 --> L3_07
@@ -333,7 +333,7 @@ graph TD
 | 0 | Scaffold Foundation | 1 | 1 | 0 | 0 | Complete |
 | 1 | Core Types & Foundations | 6 | 6 | 0 | 0 | Complete |
 | 2 | Grid, PTY I/O, Browser Nav | 5 | 5 | 0 | 0 | Complete |
-| 3 | VTE, Scrollback, Rendering | 7 | 2 | 0 | 5 | **Active** |
+| 3 | VTE, Scrollback, Rendering | 7 | 7 | 0 | 0 | Complete |
 | 4 | OSC Handlers | 1 | 1 | 0 | 0 | Complete |
 | 5 | Terminal Integration | 2 | 0 | 0 | 2 | Waiting |
 | 6 | AppState Actor & Toast | 2 | 0 | 0 | 2 | Waiting |
@@ -343,10 +343,10 @@ graph TD
 | 10 | Metadata IPC, Polish | 6 | 0 | 0 | 6 | Waiting |
 | 11 | CLI Commands | 1 | 0 | 0 | 1 | Waiting |
 | 12 | Packaging | 1 | 0 | 0 | 1 | Waiting |
-| **Total** | | **50** | **15** | **0** | **35** | **30%** |
+| **Total** | | **50** | **22** | **0** | **28** | **44%** |
 
 **Estimated total effort**: 111 hours (range: 100–125 hours)
-**Estimated remaining**: ~83.5 hours
+**Estimated remaining**: ~66 hours
 **Critical path**: L0_01 → L0_02 → L1_01 → L1_02 → L1_04 → L1_10 → L2_01 → L2_02 → L2_07 → L2_08 → L2_14 → L2_16 (~30h sequential)
 
 ---
@@ -392,7 +392,7 @@ graph TD
 - **Execution waves**: 13 (waves 0–12)
 - **Max parallelism**: 8 tasks (waves 8 and 9)
 - **Estimated total effort**: 111 hours
-- **Estimated remaining**: ~83.5 hours
+- **Estimated remaining**: ~66 hours
 
 ### Effort by Wave
 | Wave | Tasks | Hours | Cumulative |
@@ -417,9 +417,9 @@ graph TD
 - **After Wave 10**: Browser, notifications, config, session persistence (~80% cmux parity)
 - **After Wave 12 (L4_07)**: Production-ready MVP release
 
-### Next Actions (Current Wave 3)
-Wave 2 complete. Execute Wave 3 (5 pending tasks):
-1. `/apex implement wave 3 in teams mode` — L1_07, L1_08, L1_09, L3_06, L3_13
+### Next Actions (Current Wave 5)
+Wave 3 complete. Execute Wave 5 (2 pending tasks):
+1. `/apex implement wave 5 in teams mode` — L1_10, L3_08
 
 ---
 

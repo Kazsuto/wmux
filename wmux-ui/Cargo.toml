@@ -5,9 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wmux-core.workspace = true
 wmux-render.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+arboard.workspace = true

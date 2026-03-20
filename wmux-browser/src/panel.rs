@@ -227,6 +227,205 @@ impl BrowserPanel {
             .ok_or(BrowserError::ControllerNotAvailable)?;
         automation::is_webview_focused(controller)
     }
+
+    // ── DOM interaction ───────────────────────────────────────────────────────
+
+    /// Click the element matching `selector`.
+    pub fn click(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::click(webview, selector)
+    }
+
+    /// Double-click the element matching `selector`.
+    pub fn dblclick(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::dblclick(webview, selector)
+    }
+
+    /// Hover over the element matching `selector`.
+    pub fn hover(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::hover(webview, selector)
+    }
+
+    /// Focus the element matching `selector`.
+    pub fn focus_element(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::focus_element(webview, selector)
+    }
+
+    /// Check the checkbox/radio matching `selector`.
+    pub fn check(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::check(webview, selector)
+    }
+
+    /// Uncheck the checkbox/radio matching `selector`.
+    pub fn uncheck(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::uncheck(webview, selector)
+    }
+
+    /// Scroll the element matching `selector` into view.
+    pub fn scroll_into_view(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::scroll_into_view(webview, selector)
+    }
+
+    /// Clear and fill the input matching `selector` with `value`.
+    pub fn fill(&self, selector: &str, value: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::fill(webview, selector, value)
+    }
+
+    /// Type `text` character-by-character into the element matching `selector`.
+    pub fn type_text(&self, selector: &str, text: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::type_text(webview, selector, text)
+    }
+
+    /// Dispatch a keyboard event for `key` on the active element.
+    pub fn press_key(&self, key: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::press_key(webview, key)
+    }
+
+    /// Set the value of a `<select>` element matching `selector`.
+    pub fn select_option(&self, selector: &str, value: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::select_option(webview, selector, value)
+    }
+
+    /// Scroll the page to absolute coordinates `(x, y)`.
+    pub fn scroll_page(&self, x: i32, y: i32) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::scroll_page(webview, x, y)
+    }
+
+    /// Return an accessibility snapshot of the DOM as a JSON tree.
+    pub fn snapshot(&self) -> Result<serde_json::Value, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::snapshot(webview)
+    }
+
+    /// Capture a screenshot (not yet implemented — returns an error).
+    pub fn screenshot(&self) -> Result<String, BrowserError> {
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::screenshot(controller, webview)
+    }
+
+    /// Get an attribute or property from the element matching `selector`.
+    pub fn get_attribute(
+        &self,
+        selector: &str,
+        attribute: &str,
+    ) -> Result<serde_json::Value, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::get_attribute(webview, selector, attribute)
+    }
+
+    /// Check element state: "checked", "disabled", "visible", "editable", "selected", "focused".
+    pub fn is_state(&self, selector: &str, state: &str) -> Result<bool, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::is_state(webview, selector, state)
+    }
+
+    /// Return an array of element descriptors matching `selector`.
+    pub fn find_elements(&self, selector: &str) -> Result<serde_json::Value, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::find_elements(webview, selector)
+    }
+
+    /// Inject a temporary red outline on the element matching `selector`.
+    pub fn highlight(&self, selector: &str) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::highlight(webview, selector)
+    }
+
+    /// Inject an init script that captures console output and window errors.
+    pub fn setup_console_capture(&self) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::setup_console_capture(webview)
+    }
+
+    /// Read and clear captured console messages.
+    pub fn read_console(&self) -> Result<serde_json::Value, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::read_console(webview)
+    }
+
+    /// Read captured window errors.
+    pub fn read_errors(&self) -> Result<serde_json::Value, BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+        automation::read_errors(webview)
+    }
 }
 
 impl Default for BrowserPanel {
@@ -299,5 +498,68 @@ mod tests {
     fn attach_and_navigate() {
         // This test requires a real COM environment, HWND, and WebView2 runtime.
         // Run with: cargo test -p wmux-browser -- --ignored
+    }
+
+    #[test]
+    fn click_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.click("button"),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn fill_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.fill("input", "value"),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn snapshot_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.snapshot(),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn screenshot_without_controller_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.screenshot(),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn find_elements_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.find_elements("div"),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn read_console_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.read_console(),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn is_state_without_webview_returns_error() {
+        let panel = BrowserPanel::new();
+        assert!(matches!(
+            panel.is_state("input", "checked"),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
     }
 }

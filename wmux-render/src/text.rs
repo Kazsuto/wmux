@@ -120,6 +120,48 @@ impl GlyphonRenderer {
         Ok(())
     }
 
+    /// Prepare an arbitrary set of text areas using this renderer's shared GPU resources.
+    ///
+    /// Used by `TerminalRenderer` to prepare per-row glyphon buffers without exposing
+    /// individual fields (which would require splitting the borrow).
+    pub fn prepare_text_areas<'a>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        text_areas: impl IntoIterator<Item = glyphon::TextArea<'a>>,
+    ) -> Result<(), crate::RenderError> {
+        self.renderer.prepare(
+            device,
+            queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        )?;
+        Ok(())
+    }
+
+    pub fn font_system(&mut self) -> &mut glyphon::FontSystem {
+        &mut self.font_system
+    }
+
+    pub fn swash_cache(&mut self) -> &mut glyphon::SwashCache {
+        &mut self.swash_cache
+    }
+
+    pub fn atlas(&mut self) -> &mut glyphon::TextAtlas {
+        &mut self.atlas
+    }
+
+    pub fn text_renderer(&mut self) -> &mut glyphon::TextRenderer {
+        &mut self.renderer
+    }
+
+    pub fn viewport(&mut self) -> &mut glyphon::Viewport {
+        &mut self.viewport
+    }
+
     #[inline]
     pub fn render<'pass>(
         &'pass self,
