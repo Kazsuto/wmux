@@ -2,6 +2,7 @@
 
 ## 2026-03-20
 
+FEATURE: Add Grid struct to wmux-core — flat Vec<Cell> with stride-based indexing, per-row dirty tracking, cursor integration, scroll/resize/insert/delete operations; 21 unit tests
 FEATURE: Add QuadPipeline for GPU-accelerated colored rectangle rendering — instanced wgpu pipeline with WGSL shader, batch API (push_quad/prepare/render/clear), 4096-quad capacity, pixel-to-NDC viewport uniform, alpha blending
 FIX: Cap QuadPipeline push_quad at buffer capacity to prevent unbounded Vec growth
 FIX: Filter NaN/infinity values in push_quad to prevent GPU rendering artifacts
