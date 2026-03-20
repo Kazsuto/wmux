@@ -2,8 +2,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
-    #[error("{0}")]
-    General(String),
+    #[error("grid position out of bounds: row={row}, col={col}")]
+    OutOfBounds { row: usize, col: usize },
+
+    #[error("invalid scroll region: top={top}, bottom={bottom}")]
+    InvalidScrollRegion { top: usize, bottom: usize },
+
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

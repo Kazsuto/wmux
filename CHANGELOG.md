@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-03-20
+
+REFACTOR: Replace Cell.grapheme String with CompactString (compact_str v0.8) — eliminate heap allocation for graphemes ≤24 bytes, improve cache locality for terminal grid
+REFACTOR: Replace CoreError::General(String) catch-all with domain-specific variants — OutOfBounds, InvalidScrollRegion, InvalidConfig
+CHORE: Add Eq derive to Cell and SurfaceInfo (all fields are Eq)
+CHORE: Add Hash derive to CursorState (all fields are Hash)
+CHORE: Add #[must_use] to ID new() and from_uuid() constructors in define_id! macro
+
+CHORE: Update ARCHITECTURE.md v3.0→v3.1 — add 5 missing wmux-core files to project structure tree (color.rs, cursor.rs, mode.rs, types.rs, surface.rs), fix stale crate status note, update specs/ from (planned) to (50 tasks, 5 layers)
+CHORE: Move PRD.md to docs/PRD.md, update references in CLAUDE.md and ARCHITECTURE.md
+REFACTOR: Split ARCHITECTURE.md (1,254 lines) into modular sub-files — system-diagrams.md, data-architecture.md, dependency-map.md, component-relations.md, feature-files.md — spine retains ~430 lines with stub links
+FEATURE: Add docs/architecture/INDEX.md — compact architecture index (~55 lines) for @-import in CLAUDE.md
+REFACTOR: Optimize CLAUDE.md — remove redundant tech stack (now in INDEX.md), fix stale counts (14→16 features, 29→50 tasks), add @docs/architecture/INDEX.md import, remove discoverable commands
+CHORE: Update ARCHITECTURE.md cross-references to link to extracted sub-files, add sub-files to project structure listing and maintenance section
+
+FEATURE: Add dependency-centric sections support to create-architecture skill — §13 Feature Dependency Map, §14 Inter-Component Relations, §15 Critical Files per Feature with generation guide, template sections, questions, and maintenance workflow for multi-module projects
+FEATURE: Add Feature Dependency Map (§12), Inter-Component Relations (§13), and Critical Files per Feature (§14) sections to ARCHITECTURE.md — dependency-centric views covering all 16 PRD features, 9 crates, 12 relation categories, and file-level status tracking
+FEATURE: Add domain model types to wmux-core (L0_02) — WindowId, WorkspaceId, PaneId, SurfaceId newtypes (UUID, Copy+Eq+Hash), Cell struct with grapheme cluster model, CellFlags/TerminalMode bitflags with manual serde, Color enum (Named/Indexed/Rgb), CursorShape/CursorState, SplitDirection, PanelKind, SurfaceInfo, Row type alias; 34 unit tests covering serde roundtrips, trait bounds, defaults, edge cases
+FIX: Widen CellFlags from u8 to u16 for future extensibility, add BLINK flag (SGR 5)
+FIX: Use from_bits_truncate() for CellFlags/TerminalMode serde deserialization (forward-compat with newer versions)
+FIX: ID Default returns nil UUID instead of random — deterministic, satisfies principle of least surprise
+REFACTOR: Add Default derives to SplitDirection (Horizontal) and PanelKind (Terminal)
+CHORE: Add uuid and bitflags workspace dependencies, serde_json dev-dependency for wmux-core
+
 ## 2026-03-19
 
 FIX: Replace unchecked index access on surface_caps.formats[0] and alpha_modes[0] with .first().expect() in GpuContext::new()
