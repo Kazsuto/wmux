@@ -1,6 +1,6 @@
 # Technical Architecture: wmux — Windows Terminal Multiplexer
 
-> **Version**: 3.1 | **Status**: Accepted | **Owner**: wmux team | **Last updated**: 2026-03-20
+> **Version**: 3.2 | **Status**: Accepted | **Owner**: wmux team | **Last updated**: 2026-03-21
 
 ## 1. Goals and Non-Goals
 
@@ -231,7 +231,7 @@ Maps each PRD feature to its implementing source files with implementation statu
 
 ## 15. Project Structure (Target)
 
-> **Note**: This is the target project structure. Crates with implemented source files: wmux-core (domain model types, cell, color, cursor, mode, surface — 8 files, 110+ tests), wmux-render (GPU context, text renderer), wmux-ui (winit event loop), wmux-app (entry point). Remaining crates have error types only. See CHANGELOG.md for current implementation progress. See [Critical Files per Feature](feature-files.md) for file-level status (`[EXISTS]`/`[STUB]`/`[PLANNED]`) per PRD feature.
+> **Note**: Current implementation status — all 9 Rust crates are implemented with 18,300+ lines of code and 150+ unit tests (Waves 0-7 complete, 28/50 specs). See CHANGELOG.md for detailed progress. See [Critical Files per Feature](feature-files.md) for file-level status (`[EXISTS]`/`[STUB]`/`[PLANNED]`) per PRD feature.
 
 ```
 wmux/
@@ -262,18 +262,23 @@ wmux/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
-│       ├── cell.rs               # Cell struct with grapheme + attributes (EXISTS)
-│       ├── color.rs              # Color model: Named/Indexed/Rgb (EXISTS)
-│       ├── cursor.rs             # CursorShape + CursorState (EXISTS)
-│       ├── mode.rs               # TerminalMode bitflags (EXISTS)
-│       ├── types.rs              # Domain IDs: PaneId, SurfaceId, etc. (EXISTS)
-│       ├── surface.rs            # SplitDirection, PanelKind, SurfaceInfo (EXISTS)
-│       ├── error.rs              # CoreError enum (EXISTS)
+│       ├── cell.rs               # Cell struct with grapheme + attributes
+│       ├── color.rs              # Color model: Named/Indexed/Rgb
+│       ├── cursor.rs             # CursorShape + CursorState
+│       ├── mode.rs               # TerminalMode bitflags
+│       ├── types.rs              # Domain IDs: PaneId, SurfaceId, etc.
+│       ├── surface.rs            # SplitDirection, PanelKind, SurfaceInfo
+│       ├── error.rs              # CoreError enum
 │       ├── terminal.rs           # Terminal state machine
 │       ├── grid.rs               # Cell grid (contiguous Vec<Cell> per row)
 │       ├── scrollback.rs         # Ring buffer (VecDeque)
 │       ├── vte_handler.rs        # vte::Perform implementation
+│       ├── event.rs              # TerminalEvent, Hyperlink, PromptMark types
+│       ├── selection.rs          # Selection model (Normal/Word/Line)
+│       ├── app_state.rs          # AppState actor (command dispatch, pane lifecycle)
+│       ├── pane_registry.rs      # PaneRegistry (PaneId → PaneState mapping)
 │       ├── pane_tree.rs          # Binary split tree
+│       ├── rect.rs               # Rect geometry + split utilities
 │       ├── workspace.rs          # Workspace model
 │       ├── workspace_manager.rs  # Workspace lifecycle
 │       ├── focus.rs              # Focus routing logic
@@ -283,6 +288,7 @@ wmux/
 │   └── src/
 │       ├── lib.rs
 │       ├── manager.rs            # PtyManager (spawn, I/O, resize)
+│       ├── actor.rs              # PtyActorHandle (async I/O bridge)
 │       ├── shell.rs              # Shell detection (pwsh → powershell → cmd)
 │       └── error.rs
 ├── wmux-render/                  # GPU rendering pipeline
@@ -292,14 +298,18 @@ wmux/
 │       ├── gpu.rs                # GpuContext (wgpu surface, device, queue)
 │       ├── text.rs               # GlyphonRenderer (text atlas, buffer, render)
 │       ├── quad.rs               # QuadPipeline (colored rectangles)
+│       ├── terminal.rs           # TerminalRenderer (per-frame grid rendering)
 │       ├── shader.wgsl           # WGSL shaders for quads
 │       └── error.rs              # RenderError enum
 ├── wmux-ui/                      # Window management, layout, input
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
-│       ├── app.rs                # App (winit ApplicationHandler)
-│       ├── input.rs              # Keyboard/mouse event dispatch
+│       ├── window.rs             # App (winit ApplicationHandler)
+│       ├── input.rs              # Keyboard input → VT byte sequences
+│       ├── mouse.rs              # MouseHandler (selection, click, scroll)
+│       ├── event.rs              # WmuxEvent enum
+│       ├── toast.rs              # ToastService (Windows Toast WinRT API)
 │       ├── sidebar.rs            # Sidebar rendering
 │       ├── split_container.rs    # Split pane layout + dividers
 │       ├── overlay.rs            # Command palette, search, notifications panel
@@ -331,22 +341,26 @@ wmux/
 │   └── src/
 │       ├── lib.rs
 │       ├── manager.rs            # BrowserManager (lifecycle, HWND)
+│       ├── panel.rs              # BrowserPanel (HWND wrapper, bounds/visibility)
 │       ├── automation.rs         # click, fill, eval, screenshot
-│       ├── com.rs                # Safe RAII wrappers for COM
+│       ├── com.rs                # ComGuard RAII wrapper for COM
 │       └── error.rs
 ├── wmux-config/                  # Configuration parsing
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
+│       ├── config.rs             # Config struct (settings with validation)
 │       ├── parser.rs             # Ghostty-compat config parser
-│       ├── theme.rs              # Theme/color palette loading
+│       ├── theme.rs              # ThemeEngine (bundled themes, dark/light detect)
+│       ├── locale.rs             # Locale detection + TOML string loading
 │       ├── font.rs               # Font configuration
 │       ├── keymap.rs             # Keybinding configuration
 │       └── error.rs
 ├── wmux-app/                     # Main application binary
 │   ├── Cargo.toml
 │   └── src/
-│       └── main.rs               # Entry point (wiring only)
+│       ├── main.rs               # Entry point (wiring only)
+│       └── updater.rs            # UpdateChecker (semver, GitHub Releases)
 └── daemon/                       # Go SSH remote daemon (reused from cmux)
     └── remote/
         └── cmd/wmuxd-remote/
@@ -356,27 +370,27 @@ wmux/
 
 > **See also**: [Feature Dependency Map](dependency-map.md) for the full crate/component tree that maps onto these phases. Each phase corresponds to one or more layers in the feature tree.
 
-### Phase 0: Infrastructure (Week 1)
-1. winit/tokio event loop threading model integration
-2. `thiserror` + `tracing` infrastructure for all crates (error types, structured logging)
+### Phase 0: Infrastructure (Week 1) — ✅ Complete
+1. ~~winit/tokio event loop threading model integration~~
+2. ~~`thiserror` + `tracing` infrastructure for all crates (error types, structured logging)~~
 
-### Phase 1: Foundation — Working Terminal (Weeks 2-9)
-1. Terminal cell grid data structure with attributes and dirty tracking
-2. VTE escape sequence parser → grid operations (vte `Perform` trait)
-3. Terminal event bus (OSC sequences → application events)
-4. Scrollback ring buffer (4K lines, VecDeque)
-5. ConPTY shell spawning via portable-pty 0.9
-6. Terminal rendering pipeline (grid cells → GPU glyphon rendering)
-7. Keyboard input → PTY byte sequences
-8. Mouse selection, copy/paste, scroll, mouse reporting
-9. Phase 1 integration: wire all into a working single-pane terminal
+### Phase 1: Foundation — Working Terminal (Weeks 2-9) — ✅ Complete
+1. ~~Terminal cell grid data structure with attributes and dirty tracking~~
+2. ~~VTE escape sequence parser → grid operations (vte `Perform` trait)~~
+3. ~~Terminal event bus (OSC sequences → application events)~~
+4. ~~Scrollback ring buffer (4K lines, VecDeque)~~
+5. ~~ConPTY shell spawning via portable-pty 0.9~~
+6. ~~Terminal rendering pipeline (grid cells → GPU glyphon rendering)~~
+7. ~~Keyboard input → PTY byte sequences~~
+8. ~~Mouse selection, copy/paste, scroll, mouse reporting~~
+9. ~~Phase 1 integration: wire all into a working single-pane terminal~~
 
 **Milestone**: A functional terminal (like minimal Alacritty)
 
-### Phase 2: Multiplexer (Weeks 6-12)
-1. AppState refactor + QuadPipeline + multi-pane rendering
-2. PaneId/WorkspaceId types + PaneRegistry
-3. Binary tree pane layout engine + focus routing
+### Phase 2: Multiplexer (Weeks 6-12) — 🔄 In Progress (3/7)
+1. ~~AppState refactor + QuadPipeline + multi-pane rendering~~
+2. ~~PaneId/WorkspaceId types + PaneRegistry~~
+3. ~~Binary tree pane layout engine~~ + focus routing
 4. Global keyboard shortcut priority dispatcher
 5. Draggable dividers, pane rendering, resize
 6. Workspace lifecycle, switching, metadata
@@ -384,9 +398,9 @@ wmux/
 
 **Milestone**: A native terminal multiplexer (like tmux)
 
-### Phase 3: IPC & CLI (Weeks 9-14)
-1. AppState actor (bounded channel) + IPC wiring
-2. Named Pipes server + JSON-RPC v2 protocol
+### Phase 3: IPC & CLI (Weeks 9-14) — 🔄 In Progress (2/6)
+1. ~~AppState actor (bounded channel) + IPC wiring~~
+2. ~~Named Pipes server + JSON-RPC v2 protocol~~
 3. HMAC-SHA256 auth + security modes
 4. CLI client (`wmux.exe`) with core commands
 5. Handler trait, Router, RpcError, ConnectionCtx

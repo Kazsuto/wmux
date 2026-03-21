@@ -24,6 +24,7 @@ impl Scrollback {
     ///
     /// `max_lines` is clamped to an internal hard limit (100,000) to
     /// prevent misconfiguration from causing unbounded memory growth.
+    #[must_use]
     pub fn new(max_lines: usize) -> Self {
         let max_lines = max_lines.min(MAX_SCROLLBACK_LIMIT);
         Self {

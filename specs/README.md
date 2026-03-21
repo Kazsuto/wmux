@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 26 done, 0 in progress, 24 pending (52% complete)
+> **Current progress**: 28 done, 0 in progress, 22 pending (56% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -101,13 +101,13 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > `/apex implement wave 6 in teams mode`
 
-### Wave 7 — PaneTree Layout & IPC Server (needs Wave 6)
+### Wave 7 — PaneTree Layout & IPC Server (needs Wave 6) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L2_02](L2_02-pane-tree-layout-engine.md) | PaneTree Binary Split Layout | P0 | 2.5h | L2_01, L0_02 | ⬜ |
-| [L2_09](L2_09-named-pipes-server-jsonrpc.md) | Named Pipes Server + JSON-RPC v2 | P0 | 3h | L2_01 | ⬜ |
+| [L2_02](L2_02-pane-tree-layout-engine.md) | PaneTree Binary Split Layout | P0 | 2.5h | L2_01, L0_02 | ✅ |
+| [L2_09](L2_09-named-pipes-server-jsonrpc.md) | Named Pipes Server + JSON-RPC v2 | P0 | 3h | L2_01 | ✅ |
 
-> `/apex implement wave 7 in teams mode`
+> 2/2 done
 
 ### Wave 8 — UI Layout, IPC Handlers, CLI & Browser Panel (needs Wave 7)
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -194,14 +194,14 @@ Run `/create-tasks status` to see current wave and next actions.
 | # | Task | Priority | Effort | Wave | Status | Depends On |
 |---|------|----------|--------|------|--------|------------|
 | L2_01 | [AppState Actor](L2_01-appstate-actor-multi-pane-architecture.md) | P0 | 2.5h | 6 | ✅ | L1_10 |
-| L2_02 | [PaneTree Layout](L2_02-pane-tree-layout-engine.md) | P0 | 2.5h | 7 | ⬜ | L2_01, L0_02 |
+| L2_02 | [PaneTree Layout](L2_02-pane-tree-layout-engine.md) | P0 | 2.5h | 7 | ✅ | L2_01, L0_02 |
 | L2_03 | [Focus Routing](L2_03-focus-routing-keyboard-shortcuts.md) | P0 | 2h | 8 | ⬜ | L2_02 |
 | L2_04 | [Multi-Pane Rendering](L2_04-multi-pane-gpu-rendering.md) | P0 | 2.5h | 8 | ⬜ | L2_02, L0_03 |
 | L2_05 | [Draggable Dividers](L2_05-draggable-dividers-pane-resize.md) | P1 | 2h | 9 | ⬜ | L2_04 |
 | L2_06 | [Surface Tabs](L2_06-surface-tab-system.md) | P1 | 2h | 8 | ⬜ | L2_02 |
 | L2_07 | [Workspace Lifecycle](L2_07-workspace-lifecycle.md) | P0 | 2h | 8 | ⬜ | L2_02 |
 | L2_08 | [Sidebar UI](L2_08-sidebar-ui-rendering.md) | P0 | 2.5h | 9 | ⬜ | L2_07, L0_03 |
-| L2_09 | [Named Pipes Server](L2_09-named-pipes-server-jsonrpc.md) | P0 | 3h | 7 | ⬜ | L2_01 |
+| L2_09 | [Named Pipes Server](L2_09-named-pipes-server-jsonrpc.md) | P0 | 3h | 7 | ✅ | L2_01 |
 | L2_10 | [IPC Authentication](L2_10-ipc-authentication.md) | P1 | 2h | 8 | ⬜ | L2_09 |
 | L2_11 | [IPC Handler/Router](L2_11-ipc-handler-trait-router.md) | P0 | 2h | 8 | ⬜ | L2_09 |
 | L2_12 | [Workspace/Surface IPC](L2_12-workspace-surface-ipc-handlers.md) | P0 | 2.5h | 9 | ⬜ | L2_11, L2_07 |

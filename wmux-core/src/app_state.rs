@@ -1,11 +1,17 @@
+use std::fmt;
+
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cell::Row;
+use crate::error::CoreError;
 use crate::event::TerminalEvent;
 use crate::grid::Grid;
 use crate::mode::TerminalMode;
 use crate::notification::{Notification, NotificationEvent, NotificationSource, NotificationStore};
 use crate::pane_registry::{PaneRegistry, PaneState};
+use crate::pane_tree::PaneTree;
+use crate::rect::Rect;
+use crate::surface::SplitDirection;
 use crate::types::PaneId;
 
 /// Channel capacity for the main command channel (ADR-0008).
@@ -62,8 +68,102 @@ pub enum AppCommand {
         reply: oneshot::Sender<String>,
     },
 
+    /// Split a pane, creating a new pane. Returns the new PaneId.
+    SplitPane {
+        pane_id: PaneId,
+        direction: SplitDirection,
+        reply: oneshot::Sender<Result<PaneId, CoreError>>,
+    },
+
+    /// Swap two panes in the layout tree.
+    SwapPanes { a: PaneId, b: PaneId },
+
+    /// Get the current layout as pane-rect pairs.
+    GetLayout {
+        viewport: Rect,
+        reply: oneshot::Sender<Vec<(PaneId, Rect)>>,
+    },
+
     /// Shut down the actor.
     Shutdown,
+}
+
+impl fmt::Debug for AppCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RegisterPane { pane_id, .. } => f
+                .debug_struct("RegisterPane")
+                .field("pane_id", pane_id)
+                .finish_non_exhaustive(),
+            Self::ClosePane { pane_id } => f
+                .debug_struct("ClosePane")
+                .field("pane_id", pane_id)
+                .finish(),
+            Self::ProcessPtyOutput { pane_id, data } => f
+                .debug_struct("ProcessPtyOutput")
+                .field("pane_id", pane_id)
+                .field("len", &data.len())
+                .finish(),
+            Self::SendInput { pane_id, data } => f
+                .debug_struct("SendInput")
+                .field("pane_id", pane_id)
+                .field("len", &data.len())
+                .finish(),
+            Self::ResizePane {
+                pane_id,
+                cols,
+                rows,
+            } => f
+                .debug_struct("ResizePane")
+                .field("pane_id", pane_id)
+                .field("cols", cols)
+                .field("rows", rows)
+                .finish(),
+            Self::FocusPane { pane_id } => f
+                .debug_struct("FocusPane")
+                .field("pane_id", pane_id)
+                .finish(),
+            Self::GetRenderData { pane_id, .. } => f
+                .debug_struct("GetRenderData")
+                .field("pane_id", pane_id)
+                .finish_non_exhaustive(),
+            Self::ScrollViewport { pane_id, delta } => f
+                .debug_struct("ScrollViewport")
+                .field("pane_id", pane_id)
+                .field("delta", delta)
+                .finish(),
+            Self::ResetViewport { pane_id } => f
+                .debug_struct("ResetViewport")
+                .field("pane_id", pane_id)
+                .finish(),
+            Self::MarkExited { pane_id, success } => f
+                .debug_struct("MarkExited")
+                .field("pane_id", pane_id)
+                .field("success", success)
+                .finish(),
+            Self::ExtractSelection { pane_id, .. } => f
+                .debug_struct("ExtractSelection")
+                .field("pane_id", pane_id)
+                .finish_non_exhaustive(),
+            Self::SplitPane {
+                pane_id, direction, ..
+            } => f
+                .debug_struct("SplitPane")
+                .field("pane_id", pane_id)
+                .field("direction", direction)
+                .finish_non_exhaustive(),
+            Self::SwapPanes { a, b } => f
+                .debug_struct("SwapPanes")
+                .field("a", a)
+                .field("b", b)
+                .finish(),
+            Self::GetLayout { viewport, .. } => f
+                .debug_struct("GetLayout")
+                .field("viewport", viewport)
+                .finish_non_exhaustive(),
+            Self::Shutdown => write!(f, "Shutdown"),
+        }
+    }
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -107,6 +207,23 @@ pub struct PaneRenderData {
     pub modes: TerminalMode,
     /// Whether the shell process has exited.
     pub process_exited: bool,
+}
+
+impl fmt::Debug for PaneRenderData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaneRenderData")
+            .field("grid", &self.grid)
+            .field("dirty_rows_count", &self.dirty_rows.len())
+            .field("viewport_offset", &self.viewport_offset)
+            .field("scrollback_len", &self.scrollback_len)
+            .field(
+                "scrollback_visible_count",
+                &self.scrollback_visible_rows.len(),
+            )
+            .field("modes", &self.modes)
+            .field("process_exited", &self.process_exited)
+            .finish_non_exhaustive()
+    }
 }
 
 // ─── Handle ──────────────────────────────────────────────────────────────────
@@ -231,6 +348,54 @@ impl AppStateHandle {
         rx.await.ok()
     }
 
+    /// Split a pane, creating a new pane in the given direction.
+    /// Returns the new pane's ID.
+    pub async fn split_pane(
+        &self,
+        pane_id: PaneId,
+        direction: SplitDirection,
+    ) -> Result<PaneId, CoreError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::SplitPane {
+                pane_id,
+                direction,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| CoreError::CannotSplit("actor shut down".to_string()))?;
+        rx.await
+            .map_err(|_| CoreError::CannotSplit("actor dropped reply".to_string()))?
+    }
+
+    /// Swap two panes in the layout tree. Fire-and-forget.
+    pub fn swap_panes(&self, a: PaneId, b: PaneId) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::SwapPanes { a, b })
+            .is_err()
+        {
+            tracing::warn!("command channel full, SwapPanes dropped");
+        }
+    }
+
+    /// Get the current layout as pane-rect pairs.
+    pub async fn get_layout(&self, viewport: Rect) -> Vec<(PaneId, Rect)> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::GetLayout {
+                viewport,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
     /// Shut down the actor. Fire-and-forget.
     pub fn shutdown(&self) {
         let _ = self.cmd_tx.try_send(AppCommand::Shutdown);
@@ -246,6 +411,7 @@ impl AppStateHandle {
         let actor = AppStateActor {
             registry: PaneRegistry::new(),
             notification_store: NotificationStore::new(),
+            pane_tree: None,
             cmd_rx,
             event_tx,
         };
@@ -262,6 +428,7 @@ impl AppStateHandle {
 struct AppStateActor {
     registry: PaneRegistry,
     notification_store: NotificationStore,
+    pane_tree: Option<PaneTree>,
     cmd_rx: mpsc::Receiver<AppCommand>,
     event_tx: mpsc::Sender<AppEvent>,
 }
@@ -273,9 +440,22 @@ impl AppStateActor {
             match cmd {
                 AppCommand::RegisterPane { pane_id, state } => {
                     self.registry.register(pane_id, *state);
+                    // Initialize pane_tree on first pane registration.
+                    // Subsequent panes must be added via SplitPane first, which
+                    // creates a tree node and returns the new PaneId. The caller
+                    // then calls RegisterPane with that ID to attach terminal state.
+                    if self.pane_tree.is_none() {
+                        self.pane_tree = Some(PaneTree::new(pane_id));
+                    }
                 }
                 AppCommand::ClosePane { pane_id } => {
                     self.registry.remove(pane_id);
+                    // Keep pane_tree in sync — remove the leaf and promote sibling.
+                    if let Some(tree) = &mut self.pane_tree {
+                        if let Err(e) = tree.close_pane(pane_id) {
+                            tracing::warn!(error = %e, "failed to close pane in tree");
+                        }
+                    }
                 }
                 AppCommand::ProcessPtyOutput { pane_id, data } => {
                     self.handle_pty_output(pane_id, &data);
@@ -321,6 +501,35 @@ impl AppStateActor {
                         })
                         .unwrap_or_default();
                     let _ = reply.send(text);
+                }
+                AppCommand::SplitPane {
+                    pane_id,
+                    direction,
+                    reply,
+                } => {
+                    let result = if let Some(tree) = &mut self.pane_tree {
+                        tree.split_pane(pane_id, direction)
+                    } else {
+                        Err(CoreError::PaneNotFound {
+                            pane_id: pane_id.to_string(),
+                        })
+                    };
+                    let _ = reply.send(result);
+                }
+                AppCommand::SwapPanes { a, b } => {
+                    if let Some(tree) = &mut self.pane_tree {
+                        if let Err(e) = tree.swap_panes(a, b) {
+                            tracing::warn!(error = %e, "SwapPanes failed");
+                        }
+                    }
+                }
+                AppCommand::GetLayout { viewport, reply } => {
+                    let layout = if let Some(tree) = &self.pane_tree {
+                        tree.layout(viewport)
+                    } else {
+                        Vec::new()
+                    };
+                    let _ = reply.send(layout);
                 }
                 AppCommand::Shutdown => {
                     tracing::info!("AppState actor shutting down");

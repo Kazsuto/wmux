@@ -210,12 +210,19 @@ impl UpdateChecker {
     /// Check if a staged update exe exists in the update directory.
     /// Returns the path to the highest-versioned pending update that is
     /// newer than the current version, if any.
-    /// Callers in async contexts should wrap this in `spawn_blocking`.
-    pub fn check_pending_update(&self) -> Option<PathBuf> {
-        let entries = std::fs::read_dir(&self.update_dir).ok()?;
+    pub async fn check_pending_update(&self) -> Option<PathBuf> {
+        let mut entries = tokio::fs::read_dir(&self.update_dir).await.ok()?;
         let mut candidates: Vec<(Version, PathBuf)> = Vec::new();
 
-        for entry in entries.flatten() {
+        loop {
+            let entry = match entries.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::debug!(error = %e, "skipping update directory entry");
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 

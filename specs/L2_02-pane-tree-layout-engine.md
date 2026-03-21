@@ -1,7 +1,7 @@
 ---
 task_id: L2_02
 title: "Implement PaneTree Binary Split Layout Engine"
-status: pending
+status: done
 priority: P0
 estimated_hours: 2.5
 wave: 7

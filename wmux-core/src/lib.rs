@@ -8,6 +8,8 @@ pub mod grid;
 pub mod mode;
 pub mod notification;
 pub mod pane_registry;
+pub mod pane_tree;
+pub mod rect;
 pub mod scrollback;
 pub mod selection;
 pub mod surface;
@@ -28,6 +30,8 @@ pub use notification::{
     NotificationStore,
 };
 pub use pane_registry::{PaneRegistry, PaneState};
+pub use pane_tree::PaneTree;
+pub use rect::Rect;
 pub use scrollback::Scrollback;
 pub use selection::{Selection, SelectionMode, SelectionPoint};
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};

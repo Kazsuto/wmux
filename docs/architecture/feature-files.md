@@ -16,27 +16,36 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | `wmux-core/src/mode.rs` | wmux-core | Terminal modes (insert, wrap, origin, alt screen) | [EXISTS] |
 | `wmux-core/src/types.rs` | wmux-core | Domain ID types (PaneId, SurfaceId, etc.) | [EXISTS] |
 | `wmux-core/src/error.rs` | wmux-core | CoreError enum | [EXISTS] |
-| `wmux-core/src/terminal.rs` | wmux-core | Terminal state machine | [PLANNED] |
-| `wmux-core/src/grid.rs` | wmux-core | Cell grid (contiguous Vec\<Cell\> per row) | [PLANNED] |
-| `wmux-core/src/scrollback.rs` | wmux-core | Ring buffer (VecDeque, 4K lines) | [PLANNED] |
-| `wmux-core/src/vte_handler.rs` | wmux-core | vte::Perform implementation | [PLANNED] |
-| `wmux-pty/src/manager.rs` | wmux-pty | PtyManager (spawn, I/O, resize) | [PLANNED] |
-| `wmux-pty/src/shell.rs` | wmux-pty | Shell detection (pwsh → powershell → cmd) | [PLANNED] |
+| `wmux-core/src/terminal.rs` | wmux-core | Terminal state machine | [EXISTS] |
+| `wmux-core/src/grid.rs` | wmux-core | Cell grid (contiguous Vec\<Cell\> per row) | [EXISTS] |
+| `wmux-core/src/scrollback.rs` | wmux-core | Ring buffer (VecDeque, 4K lines) | [EXISTS] |
+| `wmux-core/src/vte_handler.rs` | wmux-core | vte::Perform implementation (CSI, OSC, DSR, DA1) | [EXISTS] |
+| `wmux-core/src/event.rs` | wmux-core | TerminalEvent, Hyperlink, PromptMark types | [EXISTS] |
+| `wmux-core/src/selection.rs` | wmux-core | Selection model (Normal/Word/Line) + text extraction | [EXISTS] |
+| `wmux-pty/src/manager.rs` | wmux-pty | PtyManager (spawn, I/O, resize) | [EXISTS] |
+| `wmux-pty/src/shell.rs` | wmux-pty | Shell detection (pwsh → powershell → cmd) | [EXISTS] |
+| `wmux-pty/src/actor.rs` | wmux-pty | PtyActorHandle async I/O bridge | [EXISTS] |
 | `wmux-pty/src/error.rs` | wmux-pty | PtyError enum | [EXISTS] |
 | `wmux-render/src/gpu.rs` | wmux-render | GpuContext (wgpu surface, device, queue) | [EXISTS] |
 | `wmux-render/src/text.rs` | wmux-render | GlyphonRenderer (text atlas, buffer, render) | [EXISTS] |
-| `wmux-render/src/quad.rs` | wmux-render | QuadPipeline (colored rectangles) | [PLANNED] |
-| `wmux-render/src/shader.wgsl` | wmux-render | WGSL shaders for quads | [PLANNED] |
+| `wmux-render/src/quad.rs` | wmux-render | QuadPipeline (colored rectangles, cursor, selection) | [EXISTS] |
+| `wmux-render/src/shader.wgsl` | wmux-render | WGSL shaders for quads | [EXISTS] |
+| `wmux-render/src/terminal.rs` | wmux-render | TerminalRenderer (per-frame grid rendering, dirty rows) | [EXISTS] |
 | `wmux-render/src/error.rs` | wmux-render | RenderError enum | [EXISTS] |
 | `wmux-ui/src/window.rs` | wmux-ui | App (winit ApplicationHandler) | [EXISTS] |
-| `wmux-ui/src/input.rs` | wmux-ui | Keyboard/mouse event dispatch | [PLANNED] |
+| `wmux-ui/src/input.rs` | wmux-ui | Keyboard input → VT byte sequences | [EXISTS] |
+| `wmux-ui/src/mouse.rs` | wmux-ui | MouseHandler (selection, click, scroll, SGR reporting) | [EXISTS] |
+| `wmux-ui/src/event.rs` | wmux-ui | WmuxEvent enum (AppEvent forwarding) | [EXISTS] |
 | `wmux-ui/src/error.rs` | wmux-ui | UiError enum | [EXISTS] |
 
 ## PRD 2 — Multiplexer (Split Panes + Workspaces + Surfaces)
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-core/src/pane_tree.rs` | wmux-core | Binary split tree layout engine | [PLANNED] |
+| `wmux-core/src/pane_tree.rs` | wmux-core | Binary split tree layout engine | [EXISTS] |
+| `wmux-core/src/rect.rs` | wmux-core | Rect geometry + split_horizontal/vertical | [EXISTS] |
+| `wmux-core/src/app_state.rs` | wmux-core | AppState actor (command dispatch, pane lifecycle) | [EXISTS] |
+| `wmux-core/src/pane_registry.rs` | wmux-core | PaneRegistry (PaneId → PaneState mapping) | [EXISTS] |
 | `wmux-core/src/workspace.rs` | wmux-core | Workspace model | [PLANNED] |
 | `wmux-core/src/workspace_manager.rs` | wmux-core | Workspace lifecycle (create, select, close) | [PLANNED] |
 | `wmux-core/src/focus.rs` | wmux-core | Focus routing logic (directional nav) | [PLANNED] |
@@ -45,8 +54,8 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | `wmux-ui/src/window.rs` | wmux-ui | App with multi-pane rendering | [EXISTS] |
 | `wmux-ui/src/split_container.rs` | wmux-ui | Split pane layout + dividers | [PLANNED] |
 | `wmux-ui/src/sidebar.rs` | wmux-ui | Sidebar rendering (workspace list) | [PLANNED] |
-| `wmux-ui/src/input.rs` | wmux-ui | Keyboard shortcuts for split/focus/navigate | [PLANNED] |
-| `wmux-render/src/quad.rs` | wmux-render | Divider, selection, and background quads | [PLANNED] |
+| `wmux-ui/src/input.rs` | wmux-ui | Keyboard shortcuts for split/focus/navigate | [EXISTS] |
+| `wmux-render/src/quad.rs` | wmux-render | Divider, selection, and background quads | [EXISTS] |
 | `wmux-render/src/gpu.rs` | wmux-render | Multi-pane viewport scissoring | [EXISTS] |
 | `wmux-render/src/text.rs` | wmux-render | Per-pane text rendering | [EXISTS] |
 
@@ -54,10 +63,10 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-ipc/src/server.rs` | wmux-ipc | Named Pipe server (tokio async) | [PLANNED] |
-| `wmux-ipc/src/protocol.rs` | wmux-ipc | JSON-RPC v2 codec | [PLANNED] |
+| `wmux-ipc/src/server.rs` | wmux-ipc | Named Pipe server (tokio async, 30s timeout, 1MB limit) | [EXISTS] |
+| `wmux-ipc/src/protocol.rs` | wmux-ipc | JSON-RPC v2 codec (cmux-compatible) | [EXISTS] |
 | `wmux-ipc/src/auth.rs` | wmux-ipc | HMAC-SHA256 authentication | [PLANNED] |
-| `wmux-ipc/src/router.rs` | wmux-ipc | Method dispatch (Handler trait) | [PLANNED] |
+| `wmux-ipc/src/router.rs` | wmux-ipc | Method dispatch (Handler trait, system.ping built-in) | [EXISTS] |
 | `wmux-ipc/src/handlers/mod.rs` | wmux-ipc | Handler module re-exports | [PLANNED] |
 | `wmux-ipc/src/handlers/system.rs` | wmux-ipc | system.* handlers | [PLANNED] |
 | `wmux-ipc/src/handlers/workspace.rs` | wmux-ipc | workspace.* handlers | [PLANNED] |
@@ -71,9 +80,10 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-browser/src/manager.rs` | wmux-browser | BrowserManager (lifecycle, HWND) | [PLANNED] |
-| `wmux-browser/src/com.rs` | wmux-browser | Safe RAII wrappers for COM | [PLANNED] |
-| `wmux-browser/src/automation.rs` | wmux-browser | click, fill, eval, screenshot | [PLANNED] |
+| `wmux-browser/src/manager.rs` | wmux-browser | BrowserManager (COM init, environment, user data dir) | [EXISTS] |
+| `wmux-browser/src/com.rs` | wmux-browser | ComGuard RAII wrapper (CoInitializeEx STA) | [EXISTS] |
+| `wmux-browser/src/automation.rs` | wmux-browser | 21 DOM + navigation methods (click, fill, eval, snapshot) | [EXISTS] |
+| `wmux-browser/src/panel.rs` | wmux-browser | BrowserPanel (ICoreWebView2Controller, bounds/visibility) | [EXISTS] |
 | `wmux-browser/src/error.rs` | wmux-browser | BrowserError enum | [EXISTS] |
 | `wmux-ipc/src/handlers/browser.rs` | wmux-ipc | browser.* IPC handlers | [PLANNED] |
 
@@ -81,7 +91,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-core/src/notification.rs` | wmux-core | MetadataStore (statuses, progress, logs) | [PLANNED] |
+| `wmux-core/src/notification.rs` | wmux-core | NotificationStore (statuses, progress, logs, lifecycle) | [EXISTS] |
 | `wmux-ui/src/sidebar.rs` | wmux-ui | Sidebar metadata rendering | [PLANNED] |
 | `wmux-ipc/src/handlers/sidebar.rs` | wmux-ipc | sidebar.* IPC handlers | [PLANNED] |
 | `wmux-core/src/types.rs` | wmux-core | StatusEntry, ProgressEntry, LogEntry types | [EXISTS] |
@@ -90,14 +100,15 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-core/src/grid.rs` | wmux-core | Grid content extraction for read_text | [PLANNED] |
+| `wmux-core/src/grid.rs` | wmux-core | Grid content extraction for read_text | [EXISTS] |
 | `wmux-ipc/src/handlers/surface.rs` | wmux-ipc | surface.read_text handler | [PLANNED] |
 
 ## PRD 7 — Notifications
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-core/src/notification.rs` | wmux-core | NotificationStore + lifecycle | [PLANNED] |
+| `wmux-core/src/notification.rs` | wmux-core | NotificationStore + lifecycle | [EXISTS] |
+| `wmux-ui/src/toast.rs` | wmux-ui | ToastService (Windows Toast API via WinRT) | [EXISTS] |
 | `wmux-ui/src/overlay.rs` | wmux-ui | Notification panel overlay (Ctrl+Shift+I) | [PLANNED] |
 | `wmux-ipc/src/handlers/notification.rs` | wmux-ipc | notification.* IPC handlers | [PLANNED] |
 | `wmux-ui/src/sidebar.rs` | wmux-ui | Badge counters on workspace entries | [PLANNED] |
@@ -107,7 +118,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
 | `wmux-core/src/workspace.rs` | wmux-core | Serializable workspace state | [PLANNED] |
-| `wmux-core/src/pane_tree.rs` | wmux-core | Serializable pane tree | [PLANNED] |
+| `wmux-core/src/pane_tree.rs` | wmux-core | Serializable pane tree | [EXISTS] |
 | `wmux-app/src/main.rs` | wmux-app | Auto-save timer + restore on launch | [EXISTS] |
 | `wmux-core/src/types.rs` | wmux-core | Session schema version | [EXISTS] |
 
@@ -124,8 +135,9 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
-| `wmux-config/src/parser.rs` | wmux-config | Ghostty-compat config parser | [PLANNED] |
-| `wmux-config/src/theme.rs` | wmux-config | Theme/color palette loading | [PLANNED] |
+| `wmux-config/src/parser.rs` | wmux-config | Ghostty-compat config parser | [EXISTS] |
+| `wmux-config/src/config.rs` | wmux-config | Config struct (font_size, scrollback_limit, bounds) | [EXISTS] |
+| `wmux-config/src/theme.rs` | wmux-config | ThemeEngine (6 bundled themes, dark/light detection) | [EXISTS] |
 | `wmux-config/src/font.rs` | wmux-config | Font configuration (DirectWrite) | [PLANNED] |
 | `wmux-config/src/keymap.rs` | wmux-config | Keybinding configuration | [PLANNED] |
 | `wmux-config/src/error.rs` | wmux-config | ConfigError enum | [EXISTS] |
@@ -145,7 +157,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
 | `wmux-ui/src/overlay.rs` | wmux-ui | Search overlay rendering (Ctrl+F) | [PLANNED] |
-| `wmux-core/src/scrollback.rs` | wmux-core | Searchable scrollback buffer | [PLANNED] |
+| `wmux-core/src/scrollback.rs` | wmux-core | Searchable scrollback buffer | [EXISTS] |
 | `wmux-render/src/text.rs` | wmux-render | Match highlight rendering | [EXISTS] |
 
 ## PRD 13 — Shell Integration & Git Detection
@@ -155,7 +167,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | `resources/shell-integration/wmux.ps1` | resources | PowerShell hook script | [PLANNED] |
 | `resources/shell-integration/wmux.bash` | resources | Bash hook script | [PLANNED] |
 | `resources/shell-integration/wmux.zsh` | resources | Zsh hook script | [PLANNED] |
-| `wmux-core/src/vte_handler.rs` | wmux-core | OSC 7/133 sequence processing | [PLANNED] |
+| `wmux-core/src/vte_handler.rs` | wmux-core | OSC 7/133 sequence processing | [EXISTS] |
 | `wmux-ui/src/sidebar.rs` | wmux-ui | Git branch + dirty + ports display | [PLANNED] |
 | `wmux-core/src/lib.rs` | wmux-core | Git/port detection logic | [STUB] |
 
@@ -164,6 +176,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
 | `wmux-app/src/main.rs` | wmux-app | Update timer + download manager | [EXISTS] |
+| `wmux-app/src/updater.rs` | wmux-app | UpdateChecker (semver, GitHub Releases, atomic update) | [EXISTS] |
 | `wmux-cli/src/commands/update.rs` | wmux-cli | `wmux update check/install` commands | [PLANNED] |
 | `wmux-ui/src/window.rs` | wmux-ui | Update pill/badge in title bar | [EXISTS] |
 
@@ -172,7 +185,7 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 | Critical File | Crate | Role | Status |
 |---------------|-------|------|--------|
 | `wmux-ui/src/window.rs` | wmux-ui | DWM API calls for Mica/Acrylic + fallback | [EXISTS] |
-| `wmux-config/src/theme.rs` | wmux-config | Opacity/alpha values from theme config | [PLANNED] |
+| `wmux-config/src/theme.rs` | wmux-config | Opacity/alpha values from theme config | [EXISTS] |
 
 ## PRD 16 — Localization FR/EN
 
@@ -180,4 +193,4 @@ Mapping from each **PRD feature** to the **source files** that implement it. Use
 |---------------|-------|------|--------|
 | `resources/locales/en.toml` | resources | English UI strings | [PLANNED] |
 | `resources/locales/fr.toml` | resources | French UI strings | [PLANNED] |
-| `wmux-config/src/lib.rs` | wmux-config | Locale detection + string loading | [STUB] |
+| `wmux-config/src/locale.rs` | wmux-config | Locale detection + TOML string loading + system language | [EXISTS] |

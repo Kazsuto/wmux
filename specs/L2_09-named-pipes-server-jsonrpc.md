@@ -1,7 +1,7 @@
 ---
 task_id: L2_09
 title: "Implement Named Pipes Server and JSON-RPC v2 Protocol"
-status: pending
+status: done
 priority: P0
 estimated_hours: 3
 wave: 7

@@ -11,6 +11,15 @@ pub enum CoreError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
+    #[error("pane not found: {pane_id}")]
+    PaneNotFound { pane_id: String },
+
+    #[error("cannot split pane: {0}")]
+    CannotSplit(String),
+
+    #[error("cannot close pane: {0}")]
+    CannotClose(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -50,6 +59,27 @@ mod tests {
         assert!(
             io_err.to_string().contains("file gone"),
             "Io should display inner error message"
+        );
+
+        let pane_not_found = CoreError::PaneNotFound {
+            pane_id: "abc-123".into(),
+        };
+        let msg = pane_not_found.to_string();
+        assert!(msg.contains("abc-123"), "should contain pane_id: {msg}");
+        assert!(
+            msg.contains("pane not found"),
+            "should contain 'pane not found': {msg}"
+        );
+
+        let cannot_split = CoreError::CannotSplit("already at minimum size".into());
+        let msg = cannot_split.to_string();
+        assert!(
+            msg.contains("already at minimum size"),
+            "should contain reason: {msg}"
+        );
+        assert!(
+            msg.contains("cannot split pane"),
+            "should contain prefix: {msg}"
         );
     }
 }

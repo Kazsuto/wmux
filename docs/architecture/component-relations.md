@@ -53,6 +53,8 @@ The PaneTree drives all layout — changing it affects rendering, browser panels
 | Workspace Manager | `uses` | PaneTree | Each workspace owns one PaneTree |
 | Surface Tabs | `uses` | PaneTree leaf | Each leaf pane contains N surfaces (tabs) |
 | AppState Actor | `uses` | PaneTree | Mutations (split, close, resize) go through actor |
+| AppState Actor | `uses` | PaneRegistry | HashMap lookup for pane state mutations |
+| AppState Actor | `uses` | NotificationStore | Centralized notification lifecycle management |
 
 ## 13.4 IPC and CLI Relations
 
@@ -101,6 +103,7 @@ Notifications flow from multiple sources through a central store to multiple dis
 | Notification Store | `triggers` | Sidebar UI | Badge counters on workspace entries |
 | Notification Store | `triggers` | Notification Panel | Overlay list (Ctrl+Shift+I) |
 | Notification Store | `triggers` | Pane Visual Indicators | Blue ring, tab glow effects |
+| Toast Service (wmux-ui) | `uses` | Windows Toast API (WinRT) | Desktop notification with AUMID setup |
 | PID Sweep Timer | `uses` | Notification Store | Clear stale statuses from dead processes (30s) |
 
 ## 13.7 Configuration and Theme Relations
