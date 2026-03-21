@@ -221,6 +221,26 @@ impl MouseHandler {
         }
     }
 
+    /// Copy pre-extracted text to the system clipboard.
+    ///
+    /// Used in the actor pattern where text is read from the actor
+    /// rather than directly from the grid.
+    pub fn copy_text_to_clipboard(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(text) {
+                    tracing::warn!(error = %e, "failed to copy to clipboard");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open clipboard");
+            }
+        }
+    }
+
     /// Paste text from the system clipboard.
     ///
     /// Returns the clipboard content, or `None` if the clipboard is empty

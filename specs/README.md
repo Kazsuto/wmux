@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 24 done, 0 in progress, 26 pending (48% complete)
+> **Current progress**: 26 done, 0 in progress, 24 pending (52% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -93,11 +93,11 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > 2/2 done
 
-### Wave 6 — AppState Actor & Toast Notifications (needs Wave 5)
+### Wave 6 — AppState Actor & Toast Notifications (needs Wave 5) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L2_01](L2_01-appstate-actor-multi-pane-architecture.md) | AppState Actor + Multi-Pane Architecture | P0 | 2.5h | L1_10 | ⬜ |
-| [L3_10](L3_10-windows-toast-notifications.md) | Windows Toast Notifications | P1 | 2h | L3_08 | ⬜ |
+| [L2_01](L2_01-appstate-actor-multi-pane-architecture.md) | AppState Actor + Multi-Pane Architecture | P0 | 2.5h | L1_10 | ✅ |
+| [L3_10](L3_10-windows-toast-notifications.md) | Windows Toast Notifications | P1 | 2h | L3_08 | ✅ |
 
 > `/apex implement wave 6 in teams mode`
 
@@ -193,7 +193,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ### Layer 2 — Core
 | # | Task | Priority | Effort | Wave | Status | Depends On |
 |---|------|----------|--------|------|--------|------------|
-| L2_01 | [AppState Actor](L2_01-appstate-actor-multi-pane-architecture.md) | P0 | 2.5h | 6 | ⬜ | L1_10 |
+| L2_01 | [AppState Actor](L2_01-appstate-actor-multi-pane-architecture.md) | P0 | 2.5h | 6 | ✅ | L1_10 |
 | L2_02 | [PaneTree Layout](L2_02-pane-tree-layout-engine.md) | P0 | 2.5h | 7 | ⬜ | L2_01, L0_02 |
 | L2_03 | [Focus Routing](L2_03-focus-routing-keyboard-shortcuts.md) | P0 | 2h | 8 | ⬜ | L2_02 |
 | L2_04 | [Multi-Pane Rendering](L2_04-multi-pane-gpu-rendering.md) | P0 | 2.5h | 8 | ⬜ | L2_02, L0_03 |
@@ -222,7 +222,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ⬜ | L2_11, L3_05, L3_06 |
 | L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ✅ | L1_04 |
 | L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ⬜ | L3_08, L2_08 |
-| L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ⬜ | L3_08 |
+| L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ✅ | L3_08 |
 | L3_11 | [Ghostty Config Parser](L3_11-ghostty-config-parser.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
 | L3_12 | [Theme Engine](L3_12-theme-engine-dark-light.md) | P1 | 2h | 2 | ✅ | L3_11 |
 | L3_13 | [Shell Integration](L3_13-shell-integration-hooks.md) | P1 | 2h | 3 | ✅ | L1_06 |

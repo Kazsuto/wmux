@@ -2,6 +2,7 @@ mod updater;
 
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
+use wmux_core::AppStateHandle;
 use wmux_ui::App;
 
 fn main() -> Result<()> {
@@ -18,7 +19,12 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     let _guard = rt.enter();
 
-    App::run(rt.handle().clone()).context("application terminated with error")?;
+    // Spawn AppState actor — owns all terminal/pane state.
+    let (app_event_tx, app_event_rx) = tokio::sync::mpsc::channel(64);
+    let app_state = AppStateHandle::spawn(app_event_tx);
+
+    App::run(rt.handle().clone(), app_state, app_event_rx)
+        .context("application terminated with error")?;
 
     Ok(())
 }

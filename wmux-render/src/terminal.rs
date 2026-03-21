@@ -201,6 +201,97 @@ impl TerminalRenderer {
         glyphon.render(render_pass)
     }
 
+    /// Update dirty rows from a render snapshot (actor pattern).
+    ///
+    /// Same logic as [`update`] but reads from a cloned `Grid` and
+    /// pre-extracted scrollback rows instead of live references.
+    ///
+    /// - `grid`: cloned grid (dirty flags will be consumed via `take_dirty_rows`).
+    /// - `viewport_offset`: scrollback viewport position.
+    /// - `scrollback_len`: total scrollback row count.
+    /// - `scrollback_visible_rows`: only the rows visible in the current viewport
+    ///   (index 0 = topmost visible scrollback row).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_from_snapshot(
+        &mut self,
+        grid: &Grid,
+        dirty_rows: &[u16],
+        viewport_offset: usize,
+        scrollback_visible_rows: &[wmux_core::cell::Row],
+        font_system: &mut glyphon::FontSystem,
+        quad_pipeline: &mut QuadPipeline,
+    ) {
+        // Advance cursor blink.
+        if self.last_blink.elapsed().as_millis() >= BLINK_INTERVAL_MS {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink = Instant::now();
+        }
+
+        let rows = self.rows as usize;
+        let cols = self.cols as usize;
+        let cw = self.metrics.cell_width;
+        let ch = self.metrics.cell_height;
+
+        let scroll_changed = viewport_offset != self.last_viewport_offset;
+        self.last_viewport_offset = viewport_offset;
+
+        // If viewport moved, re-render all rows; otherwise use provided dirty list.
+        let all_rows: Vec<u16>;
+        let dirty: &[u16] = if scroll_changed {
+            all_rows = (0..self.rows).collect();
+            &all_rows
+        } else {
+            dirty_rows
+        };
+
+        for &row_idx in dirty {
+            let r = row_idx as usize;
+            let y = r as f32 * ch;
+
+            self.cell_buf.clear();
+
+            let found = if viewport_offset > 0 {
+                let sb_rows_shown = viewport_offset.min(rows);
+                if r < sb_rows_shown {
+                    if r < scrollback_visible_rows.len() {
+                        self.cell_buf.extend_from_slice(&scrollback_visible_rows[r]);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    let grid_row = (r - sb_rows_shown) as u16;
+                    self.collect_grid_row(grid, grid_row, cols)
+                }
+            } else {
+                self.collect_grid_row(grid, row_idx, cols)
+            };
+
+            if !found {
+                continue;
+            }
+
+            self.cell_buf.truncate(cols);
+
+            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, y);
+
+            if r < self.row_buffers.len() {
+                update_row_buffer(
+                    &mut self.row_buffers[r],
+                    font_system,
+                    &self.cell_buf,
+                    cols as f32 * cw,
+                    ch,
+                );
+            }
+        }
+
+        let cursor = grid.cursor();
+        if cursor.visible && self.cursor_visible {
+            push_cursor_quad(cursor, cw, ch, quad_pipeline);
+        }
+    }
+
     /// Resize the terminal — rebuilds all row buffers for the new dimensions.
     pub fn resize(&mut self, cols: u16, rows: u16, font_system: &mut glyphon::FontSystem) {
         self.cols = cols;

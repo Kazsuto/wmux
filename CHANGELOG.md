@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+REFACTOR: Apply Rust best practices to Wave 6 code — fix actor stalling: change handle_send_input/handle_resize from .send().await (blocks entire actor if PTY channel full) to try_send() with warning logs (async-no-blocking rule); add #[must_use] on AppStateHandle::spawn(); pre-allocate scrollback_visible_rows with Vec::with_capacity(sb_rows_shown) in build_render_data hot path, add #[inline] on cross-crate hot-path methods (AppStateHandle::send_input/process_pty_output/scroll_viewport/reset_viewport, PaneRegistry::get/get_mut), derive Debug on AppStateHandle, pre-allocate sanitize_env_value with String::with_capacity
+
+FEATURE: Refactor to AppState actor architecture (L2_01) — AppState runs in dedicated tokio task owning all terminal/pane state via PaneRegistry (HashMap<PaneId, PaneState>); AppCommand enum routes all mutations through bounded(256) channel; PaneRenderData snapshot (cloned Grid + visible scrollback rows + terminal modes) enables UI rendering without shared state; AppEvent channel (PaneNeedsRedraw, NotificationAdded, PaneExited) notifies UI via EventLoopProxy forwarding task; winit event loop refactored to UiState (rendering + input only) sending commands via AppStateHandle; no Arc<Mutex> anywhere; 5 async unit tests
+FEATURE: Add Windows Toast notifications (L3_10) — WinRT Toast API via windows 0.62 crate (UI_Notifications, Data_Xml_Dom, Win32_UI_Shell features); AUMID setup via SetCurrentProcessExplicitAppUserModelID; ToastService shows toast with title+body from Notification struct; XML template with entity escaping; custom command execution via WMUX_NOTIFICATION_COMMAND env var with WMUX_NOTIFICATION_TITLE/BODY/WORKSPACE_ID/SURFACE_ID; suppression handled by actor (only unsuppressed notifications forwarded to UI); 4 unit tests (2 ignored for Windows desktop)
+
 REFACTOR: Apply Rust best practices to Wave 5 code — replace fragile filter.is_none()||filter.unwrap() with is_none_or in NotificationStore::list, derive Copy on NotificationSource and Debug on NotificationStore, derive Clone+Copy on InputHandler (ZST), pre-allocate SGR mouse report buffers with Vec::with_capacity(16) and write! (skip String intermediary) in sgr_press/sgr_release/sgr_wheel and window wheel handler, add #[inline] to sgr_press/sgr_release/sgr_wheel hot-path helpers
 
 ## 2026-03-20

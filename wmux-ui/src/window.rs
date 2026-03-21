@@ -1,6 +1,7 @@
 use crate::event::WmuxEvent;
 use crate::input::InputHandler;
 use crate::mouse::{MouseAction, MouseButton, MouseHandler};
+use crate::toast::{self, ToastService};
 use crate::UiError;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -11,12 +12,15 @@ use winit::{
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
 };
-use wmux_core::{Terminal, TerminalMode};
+use wmux_core::{AppEvent, AppStateHandle, PaneId, PaneState, Terminal, TerminalMode};
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
 use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline, TerminalMetrics, TerminalRenderer};
 
-/// All state created during window initialization.
-struct AppState<'window> {
+/// UI-thread state created during window initialization.
+///
+/// Contains only rendering and input state. All terminal/pane state
+/// lives in the AppState actor and is accessed via snapshots.
+struct UiState<'window> {
     // Rendering
     window: Arc<Window>,
     gpu: GpuContext<'window>,
@@ -25,65 +29,61 @@ struct AppState<'window> {
     terminal_renderer: TerminalRenderer,
     metrics: TerminalMetrics,
 
-    // Terminal
-    terminal: Terminal,
-    terminal_event_rx: tokio::sync::mpsc::Receiver<wmux_core::TerminalEvent>,
-
     // Input
     input: InputHandler,
     mouse: MouseHandler,
     modifiers: ModifiersState,
     cursor_pos: (f64, f64),
 
-    // PTY bridge channels
-    pty_write_tx: mpsc::Sender<Vec<u8>>,
-    pty_resize_tx: mpsc::Sender<(u16, u16)>,
-    pty_output_rx: mpsc::Receiver<Vec<u8>>,
+    // Notifications
+    toast_service: ToastService,
 
-    // Process state
+    // Active pane tracking
+    focused_pane: PaneId,
+    cols: u16,
+    rows: u16,
     process_exited: bool,
+    /// Cached terminal modes from the last render snapshot.
+    terminal_modes: TerminalMode,
 }
 
-impl AppState<'_> {
-    /// Drain all buffered PTY output into the terminal state machine,
-    /// then forward any terminal write-back responses (DSR, DA1) to the PTY.
-    fn drain_pty_output(&mut self) {
-        while let Ok(data) = self.pty_output_rx.try_recv() {
-            self.terminal.process(&data);
-        }
+impl UiState<'_> {
+    /// Render a frame: get render data from actor, update renderer, draw.
+    fn render(
+        &mut self,
+        app_state: &AppStateHandle,
+        rt: &tokio::runtime::Handle,
+    ) -> Result<(), UiError> {
+        // Request render data from the actor (blocks until response).
+        let render_data = rt.block_on(app_state.get_render_data(self.focused_pane));
 
-        while let Ok(event) = self.terminal_event_rx.try_recv() {
-            if let wmux_core::TerminalEvent::PtyWrite(bytes) = event {
-                let _ = self.pty_write_tx.try_send(bytes);
-            }
-        }
-    }
+        if let Some(data) = render_data {
+            self.process_exited = data.process_exited;
+            self.terminal_modes = data.modes;
 
-    /// Render a frame: drain PTY output, update terminal, draw.
-    fn render(&mut self) -> Result<(), UiError> {
-        self.drain_pty_output();
+            // Update terminal renderer from snapshot.
+            self.terminal_renderer.update_from_snapshot(
+                &data.grid,
+                &data.dirty_rows,
+                data.viewport_offset,
+                &data.scrollback_visible_rows,
+                self.glyphon.font_system(),
+                &mut self.quads,
+            );
 
-        // Update terminal renderer — dirty rows → glyphon buffers + background quads
-        let (grid, scrollback) = self.terminal.grid_and_scrollback();
-        self.terminal_renderer.update(
-            grid,
-            scrollback,
-            self.glyphon.font_system(),
-            &mut self.quads,
-        );
-
-        // Selection highlight overlay
-        if let Some(sel) = self.mouse.selection() {
-            let (start, end) = sel.normalized();
-            let cols = self.terminal.cols() as usize;
-            for row in start.row..=end.row {
-                let col_start = if row == start.row { start.col } else { 0 };
-                let col_end = if row == end.row { end.col + 1 } else { cols };
-                let x = col_start as f32 * self.metrics.cell_width;
-                let y = row as f32 * self.metrics.cell_height;
-                let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
-                let h = self.metrics.cell_height;
-                self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
+            // Selection highlight overlay (selection lives on UI thread).
+            if let Some(sel) = self.mouse.selection() {
+                let (start, end) = sel.normalized();
+                let cols = self.cols as usize;
+                for row in start.row..=end.row {
+                    let col_start = if row == start.row { start.col } else { 0 };
+                    let col_end = if row == end.row { end.col + 1 } else { cols };
+                    let x = col_start as f32 * self.metrics.cell_width;
+                    let y = row as f32 * self.metrics.cell_height;
+                    let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
+                    let h = self.metrics.cell_height;
+                    self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
+                }
             }
         }
 
@@ -146,18 +146,17 @@ impl AppState<'_> {
         Ok(())
     }
 
-    /// Convert the current cursor pixel position to cell coordinates,
-    /// clamped to valid terminal bounds.
+    /// Convert the current cursor pixel position to cell coordinates.
     fn cursor_cell(&self) -> (usize, usize) {
-        let max_col = (self.terminal.cols() as usize).saturating_sub(1);
-        let max_row = (self.terminal.rows() as usize).saturating_sub(1);
+        let max_col = (self.cols as usize).saturating_sub(1);
+        let max_row = (self.rows as usize).saturating_sub(1);
         let col = (self.cursor_pos.0.max(0.0) as f32 / self.metrics.cell_width) as usize;
         let row = (self.cursor_pos.1.max(0.0) as f32 / self.metrics.cell_height) as usize;
         (col.min(max_col), row.min(max_row))
     }
 
     /// Process a mouse action returned by the mouse handler.
-    fn handle_mouse_action(&mut self, action: MouseAction) {
+    fn handle_mouse_action(&mut self, action: MouseAction, app_state: &AppStateHandle) {
         match action {
             MouseAction::None => {}
             MouseAction::SelectionStarted
@@ -166,39 +165,39 @@ impl AppState<'_> {
                 self.window.request_redraw();
             }
             MouseAction::Report(bytes) => {
-                let _ = self.pty_write_tx.try_send(bytes);
+                app_state.send_input(self.focused_pane, bytes);
             }
-            MouseAction::Scroll(new_offset) => {
-                let current = self.terminal.viewport_offset();
-                if new_offset > current {
-                    self.terminal.scroll_viewport_up(new_offset - current);
-                } else {
-                    self.terminal.scroll_viewport_down(current - new_offset);
-                }
+            MouseAction::Scroll(_) => {
+                // Scroll is handled directly in mouse wheel event handler.
                 self.window.request_redraw();
             }
         }
     }
 }
 
-/// Main application — owns the winit event loop and terminal state.
+/// Main application — owns the winit event loop and AppState handle.
 pub struct App<'window> {
-    state: Option<AppState<'window>>,
+    state: Option<UiState<'window>>,
+    app_state: AppStateHandle,
+    app_event_rx: Option<mpsc::Receiver<AppEvent>>,
     rt_handle: tokio::runtime::Handle,
     proxy: EventLoopProxy<WmuxEvent>,
 }
 
 impl<'window> App<'window> {
     /// Create the event loop and run the application.
-    ///
-    /// `rt_handle` must come from a tokio runtime created before the
-    /// event loop — winit owns the main thread.
-    pub fn run(rt_handle: tokio::runtime::Handle) -> Result<(), UiError> {
+    pub fn run(
+        rt_handle: tokio::runtime::Handle,
+        app_state: AppStateHandle,
+        app_event_rx: mpsc::Receiver<AppEvent>,
+    ) -> Result<(), UiError> {
         let event_loop = EventLoop::<WmuxEvent>::with_user_event().build()?;
         let proxy = event_loop.create_proxy();
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         let mut app = App {
             state: None,
+            app_state,
+            app_event_rx: Some(app_event_rx),
             rt_handle,
             proxy,
         };
@@ -250,6 +249,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let rows = rows.max(1);
 
         let terminal_renderer = TerminalRenderer::new(glyphon.font_system(), cols, rows);
+
+        // Initialize Windows Toast notification support.
+        toast::init_aumid();
+        let toast_service = ToastService::new();
+
+        // Create terminal with event channel (owned by actor via PaneState).
         let (terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
 
         // Spawn PTY
@@ -261,12 +266,23 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         };
         let handle = manager.spawn(config).expect("failed to spawn PTY");
 
-        // Bridge channels between tokio (PTY) and winit (main thread)
-        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(256);
+        // Bridge channels between PTY actor and AppState actor.
         let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(256);
         let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(4);
 
-        let proxy = self.proxy.clone();
+        // Pre-generate pane ID and register with actor.
+        let pane_id = PaneId::new();
+        let pane_state = PaneState {
+            terminal,
+            terminal_event_rx,
+            pty_write_tx: write_tx,
+            pty_resize_tx: resize_tx,
+            process_exited: false,
+        };
+        self.app_state.register_pane(pane_id, pane_state);
+
+        // PTY bridge task: reads PTY output → sends to AppState actor.
+        let app_state_clone = self.app_state.clone();
         self.rt_handle.spawn(async move {
             let mut actor = PtyActorHandle::spawn(handle);
             loop {
@@ -274,13 +290,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     event = actor.next_event() => {
                         match event {
                             Some(PtyEvent::Output(data)) => {
-                                if output_tx.send(data).await.is_err() {
-                                    break;
-                                }
-                                let _ = proxy.send_event(WmuxEvent::PtyOutput);
+                                app_state_clone.process_pty_output(pane_id, data);
                             }
                             Some(PtyEvent::Exited { success }) => {
-                                let _ = proxy.send_event(WmuxEvent::PtyExited { success });
+                                app_state_clone.mark_exited(pane_id, success);
                                 break;
                             }
                             None => break,
@@ -309,32 +322,59 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             tracing::info!("PTY bridge task ended");
         });
 
+        // Event forwarding task: reads AppEvent → sends WmuxEvent via EventLoopProxy.
+        if let Some(mut event_rx) = self.app_event_rx.take() {
+            let proxy_fwd = self.proxy.clone();
+            self.rt_handle.spawn(async move {
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        AppEvent::PaneNeedsRedraw(_) => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::PtyOutput);
+                        }
+                        AppEvent::NotificationAdded {
+                            notification,
+                            suppressed,
+                        } => {
+                            if !suppressed {
+                                let _ = proxy_fwd.send_event(WmuxEvent::ShowToast(notification));
+                            }
+                        }
+                        AppEvent::PaneExited { success, .. } => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::PtyExited { success });
+                        }
+                    }
+                }
+                tracing::info!("event forwarding task ended");
+            });
+        }
+
         tracing::info!(
             cols,
             rows,
             width = gpu.width(),
             height = gpu.height(),
             format = ?gpu.format,
-            "terminal initialized",
+            pane_id = %pane_id,
+            "terminal initialized (actor pattern)",
         );
 
-        self.state = Some(AppState {
+        self.state = Some(UiState {
             window,
             gpu,
             quads,
             glyphon,
             terminal_renderer,
             metrics,
-            terminal,
-            terminal_event_rx,
             input: InputHandler::new(),
             mouse: MouseHandler::new(),
             modifiers: ModifiersState::default(),
             cursor_pos: (0.0, 0.0),
-            pty_write_tx: write_tx,
-            pty_resize_tx: resize_tx,
-            pty_output_rx: output_rx,
+            toast_service,
+            focused_pane: pane_id,
+            cols,
+            rows,
             process_exited: false,
+            terminal_modes: TerminalMode::empty(),
         });
     }
 
@@ -348,15 +388,13 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             WmuxEvent::PtyExited { success } => {
                 if let Some(state) = self.state.as_mut() {
                     state.process_exited = true;
-                    // Write exit message into terminal
-                    let msg = if success {
-                        "\r\n[Process exited]\r\n"
-                    } else {
-                        "\r\n[Process exited with error]\r\n"
-                    };
-                    state.terminal.process(msg.as_bytes());
                     state.window.request_redraw();
                     tracing::info!(success, "shell process exited");
+                }
+            }
+            WmuxEvent::ShowToast(notification) => {
+                if let Some(state) = self.state.as_ref() {
+                    state.toast_service.show(&notification);
                 }
             }
         }
@@ -376,6 +414,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         match event {
             WindowEvent::CloseRequested => {
                 tracing::info!("window close requested");
+                self.app_state.shutdown();
                 event_loop.exit();
             }
 
@@ -394,37 +433,35 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     let new_cols = new_cols.max(1);
                     let new_rows = new_rows.max(1);
 
-                    if new_cols != state.terminal.cols() || new_rows != state.terminal.rows() {
-                        state.terminal.resize(new_cols, new_rows);
+                    if new_cols != state.cols || new_rows != state.rows {
+                        state.cols = new_cols;
+                        state.rows = new_rows;
                         state.terminal_renderer.resize(
                             new_cols,
                             new_rows,
                             state.glyphon.font_system(),
                         );
-                        let _ = state.pty_resize_tx.try_send((new_rows, new_cols));
+                        // Resize via actor (handles terminal + PTY).
+                        self.app_state
+                            .resize_pane(state.focused_pane, new_cols, new_rows);
                     }
 
                     state.window.request_redraw();
                 }
             }
 
-            WindowEvent::RedrawRequested => {
-                match state.render() {
-                    Ok(()) => {}
-                    Err(UiError::Surface(
-                        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated,
-                    )) => {
-                        // Reconfigure surface and retry
-                        let w = state.gpu.width();
-                        let h = state.gpu.height();
-                        state.gpu.resize(w, h);
-                        state.window.request_redraw();
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "render failed");
-                    }
+            WindowEvent::RedrawRequested => match state.render(&self.app_state, &self.rt_handle) {
+                Ok(()) => {}
+                Err(UiError::Surface(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+                    let w = state.gpu.width();
+                    let h = state.gpu.height();
+                    state.gpu.resize(w, h);
+                    state.window.request_redraw();
                 }
-            }
+                Err(e) => {
+                    tracing::error!(error = %e, "render failed");
+                }
+            },
 
             WindowEvent::ModifiersChanged(modifiers) => {
                 state.modifiers = modifiers.state();
@@ -435,7 +472,6 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
-                // Don't accept keyboard input after process exit (except scrolling)
                 if state.process_exited {
                     return;
                 }
@@ -443,9 +479,17 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 // Copy: Ctrl+Shift+C
                 if state.modifiers.control_key() && state.modifiers.shift_key() {
                     if event.physical_key == PhysicalKey::Code(KeyCode::KeyC) {
-                        state
-                            .mouse
-                            .copy_selection(state.terminal.grid(), state.terminal.scrollback());
+                        // For copy, send selection to actor to extract text.
+                        if let Some(sel) = state.mouse.selection() {
+                            let sel_clone = sel.clone();
+                            let text = self.rt_handle.block_on(
+                                self.app_state
+                                    .extract_selection(state.focused_pane, sel_clone),
+                            );
+                            if let Some(text) = text {
+                                state.mouse.copy_text_to_clipboard(&text);
+                            }
+                        }
                         return;
                     }
                     // Paste: Ctrl+Shift+V
@@ -453,23 +497,23 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         if let Some(text) = state.mouse.paste_from_clipboard() {
                             let bytes = state
                                 .input
-                                .wrap_bracketed_paste(&text, state.terminal.modes());
-                            let _ = state.pty_write_tx.try_send(bytes);
+                                .wrap_bracketed_paste(&text, state.terminal_modes);
+                            self.app_state.send_input(state.focused_pane, bytes);
                             state.window.request_redraw();
                         }
                         return;
                     }
                 }
 
-                // Regular key input → PTY
+                // Regular key input → actor → PTY
                 if let Some(bytes) =
                     state
                         .input
-                        .handle_key_event(&event, &state.modifiers, state.terminal.modes())
+                        .handle_key_event(&event, &state.modifiers, state.terminal_modes)
                 {
-                    state.terminal.reset_viewport();
+                    self.app_state.reset_viewport(state.focused_pane);
                     state.mouse.clear_selection();
-                    let _ = state.pty_write_tx.try_send(bytes);
+                    self.app_state.send_input(state.focused_pane, bytes);
                     state.window.request_redraw();
                 }
             }
@@ -486,10 +530,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     _ => return,
                 };
 
-                let mouse_mode = state
-                    .terminal
-                    .modes()
-                    .contains(TerminalMode::MOUSE_REPORTING);
+                let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
                 let shift = state.modifiers.shift_key();
                 let (col, row) = state.cursor_cell();
 
@@ -502,25 +543,19 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     }
                 };
 
-                state.handle_mouse_action(action);
+                state.handle_mouse_action(action, &self.app_state);
             }
 
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_pos = (position.x, position.y);
                 let (col, row) = state.cursor_cell();
-                let mouse_mode = state
-                    .terminal
-                    .modes()
-                    .contains(TerminalMode::MOUSE_REPORTING);
+                let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
                 let action = state.mouse.handle_mouse_motion(col, row, mouse_mode);
-                state.handle_mouse_action(action);
+                state.handle_mouse_action(action, &self.app_state);
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let mouse_mode = state
-                    .terminal
-                    .modes()
-                    .contains(TerminalMode::MOUSE_REPORTING);
+                let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
 
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
@@ -528,7 +563,6 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 };
 
                 if mouse_mode {
-                    // In mouse reporting mode, send SGR wheel events
                     let (col, row) = state.cursor_cell();
                     let button: u8 = if lines > 0.0 { 64 } else { 65 };
                     let report = {
@@ -537,15 +571,19 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         let _ = write!(buf, "\x1b[<{};{};{}M", button, col + 1, row + 1);
                         buf
                     };
-                    let _ = state.pty_write_tx.try_send(report);
+                    self.app_state.send_input(state.focused_pane, report);
                 } else {
-                    // Normal scroll — adjust viewport
-                    let viewport_offset = state.terminal.viewport_offset();
-                    let scrollback_len = state.terminal.scrollback().len();
-                    let action = state
-                        .mouse
-                        .handle_scroll(lines, viewport_offset, scrollback_len);
-                    state.handle_mouse_action(action);
+                    // Scroll viewport via actor (3 lines per scroll notch).
+                    const SCROLL_LINES: i32 = 3;
+                    let delta = if lines > 0.0 {
+                        (lines.ceil() as i32) * SCROLL_LINES
+                    } else {
+                        (lines.floor() as i32) * SCROLL_LINES
+                    };
+                    if delta != 0 {
+                        self.app_state.scroll_viewport(state.focused_pane, delta);
+                        state.window.request_redraw();
+                    }
                 }
             }
 
