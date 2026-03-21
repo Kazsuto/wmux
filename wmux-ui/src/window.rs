@@ -1,6 +1,7 @@
 use crate::event::WmuxEvent;
 use crate::input::InputHandler;
 use crate::mouse::{MouseAction, MouseButton, MouseHandler};
+use crate::shortcuts::{ShortcutAction, ShortcutMap};
 use crate::toast::{self, ToastService};
 use crate::UiError;
 use std::sync::Arc;
@@ -9,10 +10,14 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
-    keyboard::{KeyCode, ModifiersState, PhysicalKey},
+    keyboard::ModifiersState,
     window::{Window, WindowAttributes, WindowId},
 };
-use wmux_core::{AppEvent, AppStateHandle, PaneId, PaneState, Terminal, TerminalMode};
+use wmux_core::surface::SplitDirection;
+use wmux_core::surface_manager::{Surface, SurfaceManager};
+use wmux_core::{
+    AppEvent, AppStateHandle, FocusDirection, PaneId, PaneState, Terminal, TerminalMode,
+};
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
 use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline, TerminalMetrics, TerminalRenderer};
 
@@ -32,6 +37,7 @@ struct UiState<'window> {
     // Input
     input: InputHandler,
     mouse: MouseHandler,
+    shortcuts: ShortcutMap,
     modifiers: ModifiersState,
     cursor_pos: (f64, f64),
 
@@ -48,20 +54,69 @@ struct UiState<'window> {
 }
 
 impl UiState<'_> {
-    /// Render a frame: get render data from actor, update renderer, draw.
+    /// Render a frame: get layout from actor, draw borders, render focused pane.
     fn render(
         &mut self,
         app_state: &AppStateHandle,
         rt: &tokio::runtime::Handle,
     ) -> Result<(), UiError> {
-        // Request render data from the actor (blocks until response).
+        let surface_viewport =
+            wmux_core::rect::Rect::new(0.0, 0.0, self.gpu.width() as f32, self.gpu.height() as f32);
+
+        // Get pane layout from the actor (blocks briefly).
+        let layout = rt.block_on(app_state.get_layout(surface_viewport));
+
+        // Build PaneViewport descriptors for border rendering.
+        let viewports: Vec<wmux_render::PaneViewport> = layout
+            .iter()
+            .map(|(id, rect)| wmux_render::PaneViewport {
+                pane_id: *id,
+                rect: *rect,
+                focused: *id == self.focused_pane,
+                tab_count: 1,
+                tab_titles: vec![],
+                active_tab: 0,
+                zoomed: false,
+            })
+            .collect();
+
+        // Draw 1px borders for all panes (focused pane gets accent colour).
+        let pane_renderer = wmux_render::PaneRenderer::new();
+        pane_renderer.render_pane_borders(
+            &mut self.quads,
+            &viewports,
+            [0.3, 0.3, 0.35, 1.0],
+            [0.2, 0.6, 0.9, 1.0],
+        );
+
+        // Dark background fill for non-focused panes.
+        for vp in &viewports {
+            if !vp.focused {
+                self.quads.push_quad(
+                    vp.rect.x,
+                    vp.rect.y,
+                    vp.rect.width,
+                    vp.rect.height,
+                    [0.08, 0.08, 0.1, 1.0],
+                );
+            }
+        }
+
+        // Determine the focused pane rect (falls back to full surface for single-pane).
+        let focused_rect = viewports
+            .iter()
+            .find(|vp| vp.focused)
+            .map(|vp| vp.rect)
+            .unwrap_or(surface_viewport);
+
+        // Request render data for the focused pane only.
         let render_data = rt.block_on(app_state.get_render_data(self.focused_pane));
 
         if let Some(data) = render_data {
             self.process_exited = data.process_exited;
             self.terminal_modes = data.modes;
 
-            // Update terminal renderer from snapshot.
+            // Render terminal content at the focused pane's origin.
             self.terminal_renderer.update_from_snapshot(
                 &data.grid,
                 &data.dirty_rows,
@@ -69,17 +124,18 @@ impl UiState<'_> {
                 &data.scrollback_visible_rows,
                 self.glyphon.font_system(),
                 &mut self.quads,
+                (focused_rect.x, focused_rect.y),
             );
 
-            // Selection highlight overlay (selection lives on UI thread).
+            // Selection highlight overlay, offset by the pane's origin.
             if let Some(sel) = self.mouse.selection() {
                 let (start, end) = sel.normalized();
                 let cols = self.cols as usize;
                 for row in start.row..=end.row {
                     let col_start = if row == start.row { start.col } else { 0 };
                     let col_end = if row == end.row { end.col + 1 } else { cols };
-                    let x = col_start as f32 * self.metrics.cell_width;
-                    let y = row as f32 * self.metrics.cell_height;
+                    let x = focused_rect.x + col_start as f32 * self.metrics.cell_width;
+                    let y = focused_rect.y + row as f32 * self.metrics.cell_height;
                     let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
                     let h = self.metrics.cell_height;
                     self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
@@ -87,7 +143,7 @@ impl UiState<'_> {
             }
         }
 
-        // Upload GPU data
+        // Upload GPU data.
         self.quads.prepare(&self.gpu.queue);
         self.terminal_renderer.prepare(
             &self.gpu.device,
@@ -95,9 +151,11 @@ impl UiState<'_> {
             &mut self.glyphon,
             self.gpu.width(),
             self.gpu.height(),
+            (focused_rect.x, focused_rect.y),
+            focused_rect,
         )?;
 
-        // Render pass
+        // Render pass.
         let output = self.gpu.surface.get_current_texture()?;
         let view = output
             .texture
@@ -133,7 +191,7 @@ impl UiState<'_> {
                 multiview_mask: None,
             });
 
-            // Backgrounds + cursor + selection first, then text on top
+            // Backgrounds + borders + cursor + selection first, then text on top.
             self.quads.render(&mut render_pass);
             self.terminal_renderer
                 .render(&mut render_pass, &self.glyphon)?;
@@ -175,6 +233,94 @@ impl UiState<'_> {
     }
 }
 
+/// Spawn a new terminal + PTY for `pane_id`, register it with the AppState actor,
+/// and start the PTY bridge task.
+///
+/// This is a fire-and-forget helper: it spawns blocking work inside
+/// `rt_handle` and returns immediately. Any spawn failure is logged.
+fn spawn_pane_pty(
+    pane_id: PaneId,
+    cols: u16,
+    rows: u16,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+) {
+    // Create terminal with event channel (owned by actor via PaneState).
+    let (terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
+
+    // Bounded bridge channels between PTY actor and AppState actor.
+    let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(4);
+
+    // Register pane with the actor before spawning the PTY so that any early
+    // output events can be delivered to an already-registered pane.
+    let pane_state = PaneState {
+        terminal,
+        terminal_event_rx,
+        pty_write_tx: write_tx,
+        pty_resize_tx: resize_tx,
+        process_exited: false,
+        surfaces: SurfaceManager::new(Surface::new("shell")),
+    };
+    app_state.register_pane(pane_id, pane_state);
+
+    // Spawn PTY process.
+    let manager = PtyManager::new();
+    let config = SpawnConfig {
+        cols,
+        rows,
+        ..Default::default()
+    };
+    let handle = match manager.spawn(config) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(error = %e, pane_id = %pane_id, "failed to spawn PTY for new pane");
+            return;
+        }
+    };
+
+    // PTY bridge task: PTY output → AppState actor, AppState input → PTY.
+    let app_state_clone = app_state.clone();
+    rt_handle.spawn(async move {
+        let mut actor = PtyActorHandle::spawn(handle);
+        loop {
+            tokio::select! {
+                event = actor.next_event() => {
+                    match event {
+                        Some(PtyEvent::Output(data)) => {
+                            app_state_clone.process_pty_output(pane_id, data);
+                        }
+                        Some(PtyEvent::Exited { success }) => {
+                            app_state_clone.mark_exited(pane_id, success);
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+                data = write_rx.recv() => {
+                    match data {
+                        Some(bytes) => {
+                            if actor.write(bytes).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                size = resize_rx.recv() => {
+                    match size {
+                        Some((new_rows, new_cols)) => {
+                            let _ = actor.resize(new_rows, new_cols).await;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        tracing::info!(pane_id = %pane_id, "PTY bridge task ended");
+    });
+}
+
 /// Main application — owns the winit event loop and AppState handle.
 pub struct App<'window> {
     state: Option<UiState<'window>>,
@@ -203,6 +349,212 @@ impl<'window> App<'window> {
         };
         event_loop.run_app(&mut app)?;
         Ok(())
+    }
+}
+
+/// Dispatch a matched global shortcut action.
+///
+/// Takes the app_state handle and rt_handle by reference to avoid borrow
+/// conflicts with the mutable UiState borrow in the event handler.
+fn handle_shortcut(
+    action: ShortcutAction,
+    state: &mut UiState<'_>,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+    proxy: &EventLoopProxy<WmuxEvent>,
+) {
+    match action {
+        ShortcutAction::SplitRight => {
+            let pane_id = state.focused_pane;
+            let cols = state.cols;
+            let rows = state.rows;
+            let app_state_clone = app_state.clone();
+            let rt_clone = rt_handle.clone();
+            let proxy_clone = proxy.clone();
+            rt_handle.spawn(async move {
+                match app_state_clone
+                    .split_pane(pane_id, SplitDirection::Horizontal)
+                    .await
+                {
+                    Ok(new_id) => {
+                        spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
+                        app_state_clone.focus_pane(new_id);
+                        let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
+                        tracing::info!(
+                            pane_id = %pane_id,
+                            new_pane = %new_id,
+                            "pane split right"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "SplitRight failed");
+                    }
+                }
+            });
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::SplitDown => {
+            let pane_id = state.focused_pane;
+            let cols = state.cols;
+            let rows = state.rows;
+            let app_state_clone = app_state.clone();
+            let rt_clone = rt_handle.clone();
+            let proxy_clone = proxy.clone();
+            rt_handle.spawn(async move {
+                match app_state_clone
+                    .split_pane(pane_id, SplitDirection::Vertical)
+                    .await
+                {
+                    Ok(new_id) => {
+                        spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
+                        app_state_clone.focus_pane(new_id);
+                        let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
+                        tracing::info!(
+                            pane_id = %pane_id,
+                            new_pane = %new_id,
+                            "pane split down"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "SplitDown failed");
+                    }
+                }
+            });
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::ClosePane => {
+            let closing = state.focused_pane;
+            app_state.close_pane(closing);
+
+            // After closing, get the updated layout to find another pane to focus.
+            let viewport = wmux_core::rect::Rect::new(
+                0.0,
+                0.0,
+                state.gpu.width() as f32,
+                state.gpu.height() as f32,
+            );
+            let layout = rt_handle.block_on(app_state.get_layout(viewport));
+            if let Some((next_id, _)) = layout.first() {
+                state.focused_pane = *next_id;
+                app_state.focus_pane(*next_id);
+            } else {
+                // Last pane closed — exit the application.
+                tracing::info!("last pane closed, shutting down");
+                app_state.shutdown();
+                state.window.request_redraw();
+            }
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::ZoomToggle => {
+            app_state.toggle_zoom(state.focused_pane);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::FocusUp => {
+            app_state.navigate_focus(FocusDirection::Up);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::FocusDown => {
+            app_state.navigate_focus(FocusDirection::Down);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::FocusLeft => {
+            app_state.navigate_focus(FocusDirection::Left);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::FocusRight => {
+            app_state.navigate_focus(FocusDirection::Right);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::NewWorkspace => {
+            let cols = state.cols;
+            let rows = state.rows;
+            let app_state_clone = app_state.clone();
+            let rt_clone = rt_handle.clone();
+            let proxy_clone = proxy.clone();
+            rt_handle.spawn(async move {
+                // 1. Create workspace (actor auto-switches to it)
+                let _ws_id = app_state_clone
+                    .create_workspace("New Workspace".to_string())
+                    .await;
+
+                // 2. Spawn a pane with PTY in the new (now active) workspace
+                let pane_id = PaneId::new();
+                spawn_pane_pty(pane_id, cols, rows, &app_state_clone, &rt_clone);
+
+                // 3. Focus the new pane
+                app_state_clone.focus_pane(pane_id);
+                let _ = proxy_clone.send_event(WmuxEvent::FocusPane(pane_id));
+
+                tracing::info!(pane_id = %pane_id, "new workspace with pane created");
+            });
+        }
+
+        ShortcutAction::SwitchWorkspace(n) => {
+            // n is 1-based; switch_workspace takes 0-based index.
+            let index = (n as usize).saturating_sub(1);
+            app_state.switch_workspace(index);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::NewSurface => {
+            let pane_id = state.focused_pane;
+            let app_clone = app_state.clone();
+            rt_handle.spawn(async move {
+                match app_clone.create_surface(pane_id).await {
+                    Ok(id) => tracing::info!(surface_id = %id, "new surface created"),
+                    Err(e) => tracing::warn!(error = %e, "create surface failed"),
+                }
+            });
+            state.window.request_redraw();
+        }
+        ShortcutAction::CycleSurfaceForward => {
+            app_state.cycle_surface(state.focused_pane, true);
+            state.window.request_redraw();
+        }
+        ShortcutAction::CycleSurfaceBackward => {
+            app_state.cycle_surface(state.focused_pane, false);
+            state.window.request_redraw();
+        }
+
+        ShortcutAction::Copy => {
+            if let Some(sel) = state.mouse.selection() {
+                let sel_clone = sel.clone();
+                let text =
+                    rt_handle.block_on(app_state.extract_selection(state.focused_pane, sel_clone));
+                if let Some(text) = text {
+                    state.mouse.copy_text_to_clipboard(&text);
+                }
+            }
+        }
+
+        ShortcutAction::Paste => {
+            if let Some(text) = state.mouse.paste_from_clipboard() {
+                let bytes = state
+                    .input
+                    .wrap_bracketed_paste(&text, state.terminal_modes);
+                app_state.send_input(state.focused_pane, bytes);
+                state.window.request_redraw();
+            }
+        }
+
+        // Placeholders for future tasks.
+        ShortcutAction::CommandPalette => {
+            tracing::debug!("CommandPalette shortcut (placeholder — Task L4_01)");
+        }
+        ShortcutAction::Find => {
+            tracing::debug!("Find shortcut (placeholder)");
+        }
+        ShortcutAction::ToggleDevTools => {
+            tracing::debug!("ToggleDevTools shortcut (placeholder)");
+        }
     }
 }
 
@@ -254,73 +606,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         toast::init_aumid();
         let toast_service = ToastService::new();
 
-        // Create terminal with event channel (owned by actor via PaneState).
-        let (terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
-
-        // Spawn PTY
-        let manager = PtyManager::new();
-        let config = SpawnConfig {
-            cols,
-            rows,
-            ..Default::default()
-        };
-        let handle = manager.spawn(config).expect("failed to spawn PTY");
-
-        // Bridge channels between PTY actor and AppState actor.
-        let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(256);
-        let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(4);
-
-        // Pre-generate pane ID and register with actor.
+        // Generate pane ID and delegate PTY spawn + registration to shared helper.
         let pane_id = PaneId::new();
-        let pane_state = PaneState {
-            terminal,
-            terminal_event_rx,
-            pty_write_tx: write_tx,
-            pty_resize_tx: resize_tx,
-            process_exited: false,
-        };
-        self.app_state.register_pane(pane_id, pane_state);
-
-        // PTY bridge task: reads PTY output → sends to AppState actor.
-        let app_state_clone = self.app_state.clone();
-        self.rt_handle.spawn(async move {
-            let mut actor = PtyActorHandle::spawn(handle);
-            loop {
-                tokio::select! {
-                    event = actor.next_event() => {
-                        match event {
-                            Some(PtyEvent::Output(data)) => {
-                                app_state_clone.process_pty_output(pane_id, data);
-                            }
-                            Some(PtyEvent::Exited { success }) => {
-                                app_state_clone.mark_exited(pane_id, success);
-                                break;
-                            }
-                            None => break,
-                        }
-                    }
-                    data = write_rx.recv() => {
-                        match data {
-                            Some(bytes) => {
-                                if actor.write(bytes).await.is_err() {
-                                    break;
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-                    size = resize_rx.recv() => {
-                        match size {
-                            Some((new_rows, new_cols)) => {
-                                let _ = actor.resize(new_rows, new_cols).await;
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }
-            tracing::info!("PTY bridge task ended");
-        });
+        spawn_pane_pty(pane_id, cols, rows, &self.app_state, &self.rt_handle);
 
         // Event forwarding task: reads AppEvent → sends WmuxEvent via EventLoopProxy.
         if let Some(mut event_rx) = self.app_event_rx.take() {
@@ -342,6 +630,13 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         AppEvent::PaneExited { success, .. } => {
                             let _ = proxy_fwd.send_event(WmuxEvent::PtyExited { success });
                         }
+                        AppEvent::FocusChanged { pane_id } => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::FocusPane(pane_id));
+                        }
+                        // Workspace events are handled by the sidebar (Task L2_08).
+                        AppEvent::WorkspaceCreated { .. }
+                        | AppEvent::WorkspaceSwitched { .. }
+                        | AppEvent::WorkspaceClosed { .. } => {}
                     }
                 }
                 tracing::info!("event forwarding task ended");
@@ -367,6 +662,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             metrics,
             input: InputHandler::new(),
             mouse: MouseHandler::new(),
+            shortcuts: ShortcutMap::new(),
             modifiers: ModifiersState::default(),
             cursor_pos: (0.0, 0.0),
             toast_service,
@@ -395,6 +691,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             WmuxEvent::ShowToast(notification) => {
                 if let Some(state) = self.state.as_ref() {
                     state.toast_service.show(&notification);
+                }
+            }
+            WmuxEvent::FocusPane(pane_id) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.focused_pane = pane_id;
+                    state.window.request_redraw();
                 }
             }
         }
@@ -467,7 +769,11 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 state.modifiers = modifiers.state();
             }
 
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } => {
                 if event.state != ElementState::Pressed {
                     return;
                 }
@@ -476,36 +782,17 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
-                // Copy: Ctrl+Shift+C
-                if state.modifiers.control_key() && state.modifiers.shift_key() {
-                    if event.physical_key == PhysicalKey::Code(KeyCode::KeyC) {
-                        // For copy, send selection to actor to extract text.
-                        if let Some(sel) = state.mouse.selection() {
-                            let sel_clone = sel.clone();
-                            let text = self.rt_handle.block_on(
-                                self.app_state
-                                    .extract_selection(state.focused_pane, sel_clone),
-                            );
-                            if let Some(text) = text {
-                                state.mouse.copy_text_to_clipboard(&text);
-                            }
-                        }
-                        return;
-                    }
-                    // Paste: Ctrl+Shift+V
-                    if event.physical_key == PhysicalKey::Code(KeyCode::KeyV) {
-                        if let Some(text) = state.mouse.paste_from_clipboard() {
-                            let bytes = state
-                                .input
-                                .wrap_bracketed_paste(&text, state.terminal_modes);
-                            self.app_state.send_input(state.focused_pane, bytes);
-                            state.window.request_redraw();
-                        }
-                        return;
-                    }
+                // Priority 1: global shortcuts — intercepted before terminal input.
+                if let Some(action) = state.shortcuts.match_shortcut(
+                    &event.logical_key,
+                    event.physical_key,
+                    &state.modifiers,
+                ) {
+                    handle_shortcut(action, state, &self.app_state, &self.rt_handle, &self.proxy);
+                    return;
                 }
 
-                // Regular key input → actor → PTY
+                // Priority 2: regular key input → actor → PTY
                 if let Some(bytes) =
                     state
                         .input
@@ -523,6 +810,28 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 button,
                 ..
             } => {
+                // Click-to-focus: on any press, check if the click landed in a
+                // different pane and switch focus to it.
+                if elem_state == ElementState::Pressed {
+                    let px = state.cursor_pos.0 as f32;
+                    let py = state.cursor_pos.1 as f32;
+                    let viewport = wmux_core::rect::Rect::new(
+                        0.0,
+                        0.0,
+                        state.gpu.width() as f32,
+                        state.gpu.height() as f32,
+                    );
+                    let layout = self.rt_handle.block_on(self.app_state.get_layout(viewport));
+                    for (pane_id, rect) in &layout {
+                        if rect.contains_point(px, py) && *pane_id != state.focused_pane {
+                            state.focused_pane = *pane_id;
+                            self.app_state.focus_pane(*pane_id);
+                            state.window.request_redraw();
+                            break;
+                        }
+                    }
+                }
+
                 let btn = match button {
                     winit::event::MouseButton::Left => MouseButton::Left,
                     winit::event::MouseButton::Right => MouseButton::Right,

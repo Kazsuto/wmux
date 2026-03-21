@@ -14,6 +14,15 @@ pub enum CoreError {
     #[error("pane not found: {pane_id}")]
     PaneNotFound { pane_id: String },
 
+    #[error("surface not found: {surface_id}")]
+    SurfaceNotFound { surface_id: String },
+
+    #[error("workspace not found: {workspace_id}")]
+    WorkspaceNotFound { workspace_id: String },
+
+    #[error("cannot close the last workspace")]
+    CannotCloseLastWorkspace,
+
     #[error("cannot split pane: {0}")]
     CannotSplit(String),
 

@@ -3,7 +3,7 @@ mod updater;
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 use wmux_core::AppStateHandle;
-use wmux_ipc::{pipe_name, IpcServer, Router};
+use wmux_ipc::{pipe_name, IpcServer, Router, SecurityMode};
 use wmux_ui::App;
 
 fn main() -> Result<()> {
@@ -27,7 +27,9 @@ fn main() -> Result<()> {
     // Start IPC server for CLI and AI agent access.
     let ipc_pipe = pipe_name();
     let router = std::sync::Arc::new(Router::new());
-    let (ipc_server, _ipc_handle) = IpcServer::new(ipc_pipe.clone());
+    // WmuxOnly mode: only child processes of wmux can connect (most secure default).
+    // Auth secret is not needed for WmuxOnly — PID ancestry check is used instead.
+    let (ipc_server, _ipc_handle) = IpcServer::new(ipc_pipe.clone(), SecurityMode::WmuxOnly, None);
     rt.spawn(async move {
         if let Err(e) = ipc_server.run(router).await {
             tracing::error!(error = %e, "IPC server failed");

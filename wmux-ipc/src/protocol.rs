@@ -46,6 +46,7 @@ pub enum RpcErrorCode {
     MethodNotFound,
     InvalidParams,
     InternalError,
+    Unauthorized,
 }
 
 impl RpcErrorCode {
@@ -56,7 +57,42 @@ impl RpcErrorCode {
             Self::MethodNotFound => "method_not_found",
             Self::InvalidParams => "invalid_params",
             Self::InternalError => "internal_error",
+            Self::Unauthorized => "unauthorized",
         }
+    }
+}
+
+/// Parameters for the initial `auth.login` request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthLoginRequest {
+    /// HMAC-SHA256 response to a previously issued nonce.
+    /// Absent on the first call; the server then issues a fresh nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce_response: Option<String>,
+}
+
+/// Response payload for `auth.login`.
+///
+/// `Debug` is manually implemented to redact `session_token`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuthLoginResponse {
+    /// Nonce to sign (present on the first call when no nonce_response was sent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    /// Session token (present when authentication succeeded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for AuthLoginResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthLoginResponse")
+            .field("nonce", &self.nonce)
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
     }
 }
 

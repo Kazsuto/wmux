@@ -63,18 +63,14 @@ fn translate_key(
     logical_key: &Key,
     ctrl: bool,
     alt: bool,
-    shift: bool,
+    _shift: bool,
     modes: TerminalMode,
 ) -> Option<Vec<u8>> {
     match logical_key {
         Key::Character(s) => {
-            // Ctrl+Shift+C and Ctrl+Shift+V are reserved for copy/paste (handled in L1_09).
-            if ctrl && shift {
-                let ch = s.chars().next()?;
-                if ch == 'c' || ch == 'C' || ch == 'v' || ch == 'V' {
-                    return None;
-                }
-            }
+            // Global shortcuts (Ctrl+Shift+C, Ctrl+Shift+V, Ctrl+D, etc.) are
+            // intercepted by the ShortcutMap before reaching this function.
+            // translate_key handles only terminal byte sequences.
 
             let bytes = if ctrl {
                 let ch = s.chars().next()?;
@@ -296,27 +292,39 @@ mod tests {
         );
     }
 
+    // Note: Ctrl+Shift+C, Ctrl+Shift+V, and other global shortcuts are now
+    // intercepted by ShortcutMap in window.rs before reaching translate_key.
+    // These key combinations therefore never reach translate_key in normal
+    // operation. The following tests verify that if they did reach it, the
+    // ctrl byte is produced (ctrl+c = 0x03, ctrl+v = 0x16).
+
     #[test]
-    fn ctrl_shift_c_returns_none() {
+    fn ctrl_shift_c_produces_ctrl_code() {
+        // ShortcutMap intercepts this before it reaches translate_key.
+        // If it somehow arrives here, ctrl+c maps to ETX (0x03).
         assert_eq!(
             translate_key(&char_key("c"), true, false, true, normal_modes()),
-            None
+            Some(vec![0x03])
         );
     }
 
     #[test]
-    fn ctrl_shift_v_returns_none() {
+    fn ctrl_shift_v_produces_ctrl_code() {
+        // ShortcutMap intercepts this before it reaches translate_key.
+        // If it somehow arrives here, ctrl+v maps to 0x16.
         assert_eq!(
             translate_key(&char_key("v"), true, false, true, normal_modes()),
-            None
+            Some(vec![0x16])
         );
     }
 
     #[test]
-    fn ctrl_shift_uppercase_c_returns_none() {
+    fn ctrl_shift_uppercase_c_produces_ctrl_code() {
+        // ShortcutMap intercepts this before it reaches translate_key.
+        // If it somehow arrives here, ctrl+C maps to ETX (0x03).
         assert_eq!(
             translate_key(&char_key("C"), true, false, true, normal_modes()),
-            None
+            Some(vec![0x03])
         );
     }
 

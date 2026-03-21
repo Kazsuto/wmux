@@ -1,12 +1,18 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::time::{timeout, Duration};
 
+use crate::auth::{
+    check_pid_ancestry, generate_nonce, generate_session_token, get_client_pid,
+    is_unauthenticated_method, verify_hmac, ConnectionCtx, SecurityMode,
+};
 use crate::error::IpcError;
-use crate::protocol::{RpcErrorCode, RpcRequest, RpcResponse, MAX_REQUEST_SIZE};
+use crate::protocol::{
+    AuthLoginRequest, AuthLoginResponse, RpcErrorCode, RpcRequest, RpcResponse, MAX_REQUEST_SIZE,
+};
 use crate::router::Router;
 
 /// Maximum number of simultaneous IPC connections.
@@ -43,6 +49,14 @@ pub struct IpcServerHandle {
     pipe_name: String,
 }
 
+impl std::fmt::Debug for IpcServerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IpcServerHandle")
+            .field("pipe_name", &self.pipe_name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl IpcServerHandle {
     /// Signal the server to shut down gracefully.
     pub async fn shutdown(&self) {
@@ -59,11 +73,30 @@ impl IpcServerHandle {
 pub struct IpcServer {
     pipe_name: String,
     shutdown_rx: mpsc::Receiver<()>,
+    security_mode: SecurityMode,
+    /// Hex-encoded auth secret used in challenge-response mode. None for other modes.
+    auth_secret: Option<String>,
+}
+
+impl std::fmt::Debug for IpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IpcServer")
+            .field("pipe_name", &self.pipe_name)
+            .field("security_mode", &self.security_mode)
+            .finish_non_exhaustive()
+    }
 }
 
 impl IpcServer {
     /// Create a new IPC server and its control handle.
-    pub fn new(pipe_name: String) -> (Self, IpcServerHandle) {
+    ///
+    /// `security_mode` controls connection authentication policy.
+    /// For challenge-response mode, `auth_secret` must be `Some(secret_hex)`.
+    pub fn new(
+        pipe_name: String,
+        security_mode: SecurityMode,
+        auth_secret: Option<String>,
+    ) -> (Self, IpcServerHandle) {
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         let handle = IpcServerHandle {
             shutdown_tx,
@@ -72,12 +105,21 @@ impl IpcServer {
         let server = Self {
             pipe_name,
             shutdown_rx,
+            security_mode,
+            auth_secret,
         };
         (server, handle)
     }
 
     /// Run the IPC server, accepting connections until shutdown is signaled.
+    ///
+    /// Returns immediately with `Ok(())` if `security_mode` is `Off`.
     pub async fn run(mut self, router: Arc<Router>) -> Result<(), IpcError> {
+        if self.security_mode == SecurityMode::Off {
+            tracing::info!("IPC server disabled (security_mode = off)");
+            return Ok(());
+        }
+
         // Try to create the first pipe instance.
         let active_pipe_name = match ServerOptions::new()
             .first_pipe_instance(true)
@@ -114,7 +156,7 @@ impl IpcServer {
         mut server: tokio::net::windows::named_pipe::NamedPipeServer,
         router: Arc<Router>,
     ) -> Result<(), IpcError> {
-        tracing::info!(pipe = %self.pipe_name, "IPC server listening");
+        tracing::info!(pipe = %self.pipe_name, mode = ?self.security_mode, "IPC server listening");
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
         loop {
@@ -124,13 +166,15 @@ impl IpcServer {
                         Ok(()) => {
                             let conn_router = Arc::clone(&router);
                             let permit = Arc::clone(&semaphore);
+                            let mode = self.security_mode;
+                            let secret = self.auth_secret.clone();
                             tokio::spawn(async move {
                                 // Acquire semaphore permit to limit concurrency.
                                 let _permit = match permit.acquire().await {
                                     Ok(p) => p,
                                     Err(_) => return, // semaphore closed
                                 };
-                                handle_connection(server, conn_router).await;
+                                handle_connection(server, conn_router, mode, secret).await;
                             });
                             // Create the next pipe instance for the next connection.
                             server = ServerOptions::new().create(&self.pipe_name)?;
@@ -151,13 +195,15 @@ impl IpcServer {
     }
 }
 
-/// Handle a single client connection: read one request, dispatch, write one response.
+/// Handle a single client connection with security mode enforcement.
 async fn handle_connection(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     router: Arc<Router>,
+    mode: SecurityMode,
+    auth_secret: Option<String>,
 ) {
     use tracing::Instrument;
-    handle_connection_inner(pipe, router)
+    handle_connection_inner(pipe, router, mode, auth_secret)
         .instrument(tracing::info_span!("ipc_connection"))
         .await;
 }
@@ -165,79 +211,300 @@ async fn handle_connection(
 async fn handle_connection_inner(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     router: Arc<Router>,
+    mode: SecurityMode,
+    auth_secret: Option<String>,
+) {
+    let mut ctx = ConnectionCtx::new(mode);
+
+    match mode {
+        SecurityMode::Off => {
+            // Should not reach here — server returns early for Off mode.
+            tracing::warn!("handle_connection_inner called with SecurityMode::Off");
+            return;
+        }
+        SecurityMode::AllowAll => {
+            // Auto-authenticate all connections.
+            let token = generate_session_token();
+            ctx.authenticate(token);
+            if let Ok(pid) = get_client_pid(&pipe) {
+                ctx.client_pid = Some(pid);
+                tracing::debug!(
+                    client_pid = pid,
+                    "connection auto-authenticated (allow_all)"
+                );
+            }
+        }
+        SecurityMode::WmuxOnly => {
+            // Authenticate only if the client is a descendant of the wmux process.
+            match get_client_pid(&pipe) {
+                Ok(pid) => {
+                    ctx.client_pid = Some(pid);
+                    // check_pid_ancestry walks the process tree via
+                    // CreateToolhelp32Snapshot — run off the async runtime.
+                    let ancestry_result =
+                        tokio::task::spawn_blocking(move || check_pid_ancestry(pid)).await;
+                    match ancestry_result {
+                        Ok(Ok(true)) => {
+                            let token = generate_session_token();
+                            ctx.authenticate(token);
+                            tracing::debug!(
+                                client_pid = pid,
+                                "connection authenticated (wmux_only)"
+                            );
+                        }
+                        Ok(Ok(false)) => {
+                            tracing::warn!(
+                                client_pid = pid,
+                                "rejecting connection: not a wmux child process"
+                            );
+                            return;
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "PID ancestry check failed, rejecting");
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "PID ancestry task panicked, rejecting");
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to get client PID, rejecting connection");
+                    return;
+                }
+            }
+        }
+        SecurityMode::Password => {
+            // Auth happens via auth.login exchange in the request loop.
+            if let Ok(pid) = get_client_pid(&pipe) {
+                ctx.client_pid = Some(pid);
+            }
+        }
+    }
+
+    run_connection_loop(pipe, router, ctx, auth_secret).await;
+}
+
+/// Process the request/response loop on an established connection.
+///
+/// Supports multi-request sessions needed for the challenge-response auth
+/// handshake. The loop terminates when the client disconnects or an
+/// unrecoverable I/O error occurs.
+async fn run_connection_loop(
+    pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+    router: Arc<Router>,
+    mut ctx: ConnectionCtx,
+    auth_secret: Option<String>,
 ) {
     let (reader, mut writer) = tokio::io::split(pipe);
-    // Limit reads to MAX_REQUEST_SIZE + 1 to detect oversized requests
-    // BEFORE they consume unbounded memory (defense against DoS).
-    let limited_reader = reader.take(MAX_REQUEST_SIZE as u64 + 1);
-    let mut buf_reader = BufReader::new(limited_reader);
+    let mut buf_reader = BufReader::new(reader);
+    // Nonce issued during challenge-response auth (single-use per connection).
+    let mut pending_nonce: Option<[u8; 32]> = None;
+    // Reuse the read buffer across iterations to avoid per-request allocations.
     let mut buf = String::new();
 
-    // Read one line with 30s timeout. The Take adapter ensures we never
-    // read more than MAX_REQUEST_SIZE + 1 bytes into memory.
-    let read_result = timeout(Duration::from_secs(30), buf_reader.read_line(&mut buf)).await;
+    loop {
+        buf.clear();
 
-    match read_result {
-        Err(_elapsed) => {
-            tracing::warn!("connection timed out after 30s");
-            return;
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "failed to read from connection");
-            return;
-        }
-        Ok(Ok(0)) => {
-            // Client disconnected without sending data.
-            return;
-        }
-        Ok(Ok(_)) => {}
-    }
+        let read_result = timeout(Duration::from_secs(30), buf_reader.read_line(&mut buf)).await;
 
-    // Check size limit (the Take adapter bounds memory, but we still reject oversized).
-    if buf.len() > MAX_REQUEST_SIZE {
-        tracing::warn!(
-            size = buf.len(),
-            max = MAX_REQUEST_SIZE,
-            "request too large"
-        );
-        let response = RpcResponse::parse_error();
-        if let Err(e) = write_response(&mut writer, &response).await {
-            tracing::warn!(error = %e, "failed to write error response");
+        match read_result {
+            Err(_elapsed) => {
+                tracing::warn!("connection timed out after 30s");
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "failed to read from connection");
+                return;
+            }
+            Ok(Ok(0)) => {
+                // Client disconnected.
+                return;
+            }
+            Ok(Ok(_)) => {}
         }
-        return;
-    }
 
-    // Parse the request.
-    let request: RpcRequest = match serde_json::from_str(buf.trim()) {
-        Ok(req) => req,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to parse JSON-RPC request");
+        // Enforce per-request size limit.
+        if buf.len() > MAX_REQUEST_SIZE {
+            tracing::warn!(
+                size = buf.len(),
+                max = MAX_REQUEST_SIZE,
+                "request too large"
+            );
             let response = RpcResponse::parse_error();
             if let Err(e) = write_response(&mut writer, &response).await {
-                tracing::warn!(error = %e, "failed to write parse error response");
+                tracing::warn!(error = %e, "failed to write error response");
             }
             return;
         }
-    };
 
-    // Validate the request.
-    if request.method.is_empty() {
-        let response = RpcResponse::error(
-            &request.id,
-            RpcErrorCode::InvalidRequest,
-            "method must not be empty",
-        );
-        if let Err(e) = write_response(&mut writer, &response).await {
-            tracing::warn!(error = %e, "failed to write invalid request response");
+        // Parse the JSON-RPC request.
+        let request: RpcRequest = match serde_json::from_str(buf.trim()) {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to parse JSON-RPC request");
+                let response = RpcResponse::parse_error();
+                if let Err(e) = write_response(&mut writer, &response).await {
+                    tracing::warn!(error = %e, "failed to write parse error response");
+                }
+                return;
+            }
+        };
+
+        if request.method.is_empty() {
+            let response = RpcResponse::error(
+                &request.id,
+                RpcErrorCode::InvalidRequest,
+                "method must not be empty",
+            );
+            if let Err(e) = write_response(&mut writer, &response).await {
+                tracing::warn!(error = %e, "failed to write invalid request response");
+            }
+            return;
         }
-        return;
+
+        tracing::debug!(method = %request.method, "dispatching request");
+
+        // Auth gate: unauthenticated connections may only call allowed methods.
+        if !ctx.authenticated && !is_unauthenticated_method(&request.method) {
+            let response = RpcResponse::error(
+                &request.id,
+                RpcErrorCode::Unauthorized,
+                "authentication required",
+            );
+            if let Err(e) = write_response(&mut writer, &response).await {
+                tracing::warn!(error = %e, "failed to write unauthorized response");
+            }
+            // Keep connection open so client can authenticate.
+            continue;
+        }
+
+        // Handle auth.login internally (not routed through handler registry).
+        if request.method == "auth.login" {
+            let response = handle_auth_login(
+                &request,
+                &mut ctx,
+                &mut pending_nonce,
+                auth_secret.as_deref(),
+            );
+            if let Err(e) = write_response(&mut writer, &response).await {
+                tracing::warn!(error = %e, "failed to write auth.login response");
+            }
+            continue;
+        }
+
+        // Dispatch authenticated request to the router.
+        let response = router.dispatch(&request, &ctx).await;
+        if let Err(e) = write_response(&mut writer, &response).await {
+            tracing::warn!(error = %e, "failed to write response");
+            return;
+        }
+    }
+}
+
+/// Handle an `auth.login` request using HMAC challenge-response.
+///
+/// Two-step flow:
+/// 1. Client sends `auth.login` with no `nonce_response` → server replies with a nonce.
+/// 2. Client sends `auth.login` with `nonce_response: "<hmac-hex>"` → server verifies and
+///    replies with `session_token` on success, or an error on failure.
+///
+/// CRITICAL: auth_secret and nonce_response values are never logged.
+fn handle_auth_login(
+    request: &RpcRequest,
+    ctx: &mut ConnectionCtx,
+    pending_nonce: &mut Option<[u8; 32]>,
+    auth_secret: Option<&str>,
+) -> RpcResponse {
+    // If already authenticated, return the current session token.
+    if ctx.authenticated {
+        if let Some(ref token) = ctx.session_token {
+            let payload = AuthLoginResponse {
+                nonce: None,
+                session_token: Some(token.clone()),
+            };
+            return RpcResponse::success(
+                &request.id,
+                serde_json::to_value(payload).expect("AuthLoginResponse serializes to valid JSON"),
+            );
+        }
     }
 
-    // Dispatch to router.
-    let response = router.dispatch(&request).await;
+    let params: AuthLoginRequest = match &request.params {
+        Some(v) => serde_json::from_value(v.clone()).unwrap_or(AuthLoginRequest {
+            nonce_response: None,
+        }),
+        None => AuthLoginRequest {
+            nonce_response: None,
+        },
+    };
 
-    if let Err(e) = write_response(&mut writer, &response).await {
-        tracing::warn!(error = %e, "failed to write response");
+    match params.nonce_response {
+        None => {
+            // Step 1: issue a fresh nonce.
+            let nonce = generate_nonce();
+            let nonce_hex = hex::encode(nonce);
+            *pending_nonce = Some(nonce);
+            let payload = AuthLoginResponse {
+                nonce: Some(nonce_hex),
+                session_token: None,
+            };
+            RpcResponse::success(
+                &request.id,
+                serde_json::to_value(payload).expect("AuthLoginResponse serializes to valid JSON"),
+            )
+        }
+        Some(response_hex) => {
+            // Step 2: verify HMAC response.
+            let nonce = match pending_nonce.take() {
+                Some(n) => n,
+                None => {
+                    return RpcResponse::error(
+                        &request.id,
+                        RpcErrorCode::InvalidRequest,
+                        "no pending nonce — call auth.login without nonce_response first",
+                    );
+                }
+            };
+
+            let secret = match auth_secret {
+                Some(s) => s,
+                None => {
+                    tracing::error!(
+                        "auth.login invoked in challenge-response mode but no secret configured"
+                    );
+                    return RpcResponse::error(
+                        &request.id,
+                        RpcErrorCode::InternalError,
+                        "server authentication not configured",
+                    );
+                }
+            };
+
+            // CRITICAL: response_hex and secret are intentionally not logged.
+            if verify_hmac(secret, &nonce, &response_hex) {
+                let token = generate_session_token();
+                ctx.authenticate(token.clone());
+                tracing::info!("client authenticated successfully");
+                let payload = AuthLoginResponse {
+                    nonce: None,
+                    session_token: Some(token),
+                };
+                RpcResponse::success(
+                    &request.id,
+                    serde_json::to_value(payload)
+                        .expect("AuthLoginResponse serializes to valid JSON"),
+                )
+            } else {
+                tracing::warn!("auth.login: HMAC verification failed");
+                RpcResponse::error(
+                    &request.id,
+                    RpcErrorCode::Unauthorized,
+                    "authentication failed: invalid HMAC response",
+                )
+            }
+        }
     }
 }
 
@@ -295,5 +562,99 @@ mod tests {
             name.starts_with(r"\\.\pipe\wmux"),
             "expected default pipe name, got: {name}"
         );
+    }
+
+    #[test]
+    fn auth_login_challenge_response_flow() {
+        use crate::auth::SecurityMode;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+
+        let secret_bytes = [0xCCu8; 32];
+        let secret_hex = hex::encode(secret_bytes);
+        let mut ctx = ConnectionCtx::new(SecurityMode::Password);
+        let mut pending_nonce: Option<[u8; 32]> = None;
+        let auth_secret = Some(secret_hex.clone());
+
+        // Step 1: request a nonce.
+        let req1 = RpcRequest {
+            id: "1".to_owned(),
+            method: "auth.login".to_owned(),
+            params: None,
+        };
+        let resp1 = handle_auth_login(&req1, &mut ctx, &mut pending_nonce, auth_secret.as_deref());
+        assert!(resp1.ok, "nonce request should succeed");
+        let nonce_hex = resp1.result.as_ref().unwrap()["nonce"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!nonce_hex.is_empty());
+
+        // Step 2: compute a valid HMAC and send it.
+        let nonce_bytes = hex::decode(&nonce_hex).unwrap();
+        let mut mac = HmacSha256::new_from_slice(&secret_bytes).unwrap();
+        mac.update(&nonce_bytes);
+        let hmac_hex = hex::encode(mac.finalize().into_bytes());
+
+        let req2 = RpcRequest {
+            id: "2".to_owned(),
+            method: "auth.login".to_owned(),
+            params: Some(serde_json::json!({ "nonce_response": hmac_hex })),
+        };
+        let resp2 = handle_auth_login(&req2, &mut ctx, &mut pending_nonce, auth_secret.as_deref());
+        assert!(resp2.ok, "valid HMAC should authenticate");
+        assert!(ctx.authenticated);
+        let token = resp2.result.as_ref().unwrap()["session_token"]
+            .as_str()
+            .unwrap();
+        assert!(!token.is_empty());
+    }
+
+    #[test]
+    fn auth_login_invalid_hmac_rejected() {
+        use crate::auth::SecurityMode;
+
+        let secret_hex = hex::encode([0xDDu8; 32]);
+        let mut ctx = ConnectionCtx::new(SecurityMode::Password);
+        let mut pending_nonce: Option<[u8; 32]> = None;
+        let auth_secret = Some(secret_hex);
+
+        // Get a nonce first.
+        let req1 = RpcRequest {
+            id: "1".to_owned(),
+            method: "auth.login".to_owned(),
+            params: None,
+        };
+        handle_auth_login(&req1, &mut ctx, &mut pending_nonce, auth_secret.as_deref());
+
+        // Send a wrong HMAC.
+        let req2 = RpcRequest {
+            id: "2".to_owned(),
+            method: "auth.login".to_owned(),
+            params: Some(serde_json::json!({ "nonce_response": "deadbeef" })),
+        };
+        let resp2 = handle_auth_login(&req2, &mut ctx, &mut pending_nonce, auth_secret.as_deref());
+        assert!(!resp2.ok);
+        assert!(!ctx.authenticated);
+        assert_eq!(resp2.error.unwrap().code, "unauthorized");
+    }
+
+    #[test]
+    fn auth_login_response_without_prior_nonce_rejected() {
+        use crate::auth::SecurityMode;
+
+        let mut ctx = ConnectionCtx::new(SecurityMode::Password);
+        let mut pending_nonce: Option<[u8; 32]> = None;
+        let auth_secret = Some("aabbcc".to_owned());
+
+        let req = RpcRequest {
+            id: "1".to_owned(),
+            method: "auth.login".to_owned(),
+            params: Some(serde_json::json!({ "nonce_response": "deadbeef" })),
+        };
+        let resp = handle_auth_login(&req, &mut ctx, &mut pending_nonce, auth_secret.as_deref());
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, "invalid_request");
     }
 }

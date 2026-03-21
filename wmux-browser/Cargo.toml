@@ -13,3 +13,4 @@ tokio.workspace = true
 webview2-com.workspace = true
 windows.workspace = true
 dirs.workspace = true
+wmux-core.workspace = true

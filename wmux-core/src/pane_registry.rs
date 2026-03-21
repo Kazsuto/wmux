@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::event::TerminalEvent;
+use crate::surface_manager::SurfaceManager;
 use crate::terminal::Terminal;
 use crate::types::PaneId;
 
@@ -25,6 +26,9 @@ pub struct PaneState {
 
     /// Whether the shell process has exited.
     pub process_exited: bool,
+
+    /// Surface (tab) manager for this pane.
+    pub surfaces: SurfaceManager,
 }
 
 /// Registry of all active panes, with focus tracking.
@@ -124,6 +128,7 @@ impl Default for PaneRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surface_manager::Surface;
 
     fn make_channels() -> (
         mpsc::Receiver<TerminalEvent>,
@@ -150,6 +155,7 @@ mod tests {
             pty_write_tx: write_tx,
             pty_resize_tx: resize_tx,
             process_exited: false,
+            surfaces: SurfaceManager::new(Surface::new("shell")),
         }
     }
 

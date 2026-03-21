@@ -12,7 +12,20 @@ use crate::pane_registry::{PaneRegistry, PaneState};
 use crate::pane_tree::PaneTree;
 use crate::rect::Rect;
 use crate::surface::SplitDirection;
-use crate::types::PaneId;
+use crate::surface_manager::Surface;
+use crate::types::{PaneId, SurfaceId, WorkspaceId};
+use crate::workspace_manager::WorkspaceManager;
+
+// ─── Focus Direction ─────────────────────────────────────────────────────────
+
+/// Directional navigation for focus movement between adjacent panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
 /// Channel capacity for the main command channel (ADR-0008).
 const CMD_CHANNEL_CAPACITY: usize = 256;
@@ -83,6 +96,44 @@ pub enum AppCommand {
         viewport: Rect,
         reply: oneshot::Sender<Vec<(PaneId, Rect)>>,
     },
+
+    // ─── Workspace commands ───────────────────────────────────────────────────
+    /// Create a new workspace with the given name. Returns its ID.
+    CreateWorkspace {
+        name: String,
+        reply: oneshot::Sender<WorkspaceId>,
+    },
+
+    /// Switch the active workspace by 0-based index.
+    SwitchWorkspace { index: usize },
+
+    /// Close a workspace (and all its panes) by ID.
+    CloseWorkspace { id: WorkspaceId },
+
+    /// Rename a workspace by ID.
+    RenameWorkspace { id: WorkspaceId, name: String },
+
+    /// Toggle zoom on a pane (zoomed pane fills the entire viewport).
+    ToggleZoom { pane_id: PaneId },
+
+    /// Move focus to the adjacent pane in the given direction.
+    NavigateFocus { direction: FocusDirection },
+
+    // ─── Surface (tab) commands ───────────────────────────────────────────────
+    /// Create a new surface in a pane. Returns the new surface's ID.
+    CreateSurface {
+        pane_id: PaneId,
+        reply: oneshot::Sender<Result<SurfaceId, CoreError>>,
+    },
+
+    /// Close a surface in a pane. If the pane has no surfaces left, closes the pane.
+    CloseSurface {
+        pane_id: PaneId,
+        surface_id: SurfaceId,
+    },
+
+    /// Cycle the active surface in a pane (forward or backward).
+    CycleSurface { pane_id: PaneId, forward: bool },
 
     /// Shut down the actor.
     Shutdown,
@@ -161,6 +212,47 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("GetLayout")
                 .field("viewport", viewport)
                 .finish_non_exhaustive(),
+            Self::CreateWorkspace { name, .. } => f
+                .debug_struct("CreateWorkspace")
+                .field("name", name)
+                .finish_non_exhaustive(),
+            Self::SwitchWorkspace { index } => f
+                .debug_struct("SwitchWorkspace")
+                .field("index", index)
+                .finish(),
+            Self::CloseWorkspace { id } => {
+                f.debug_struct("CloseWorkspace").field("id", id).finish()
+            }
+            Self::RenameWorkspace { id, name } => f
+                .debug_struct("RenameWorkspace")
+                .field("id", id)
+                .field("name", name)
+                .finish(),
+            Self::ToggleZoom { pane_id } => f
+                .debug_struct("ToggleZoom")
+                .field("pane_id", pane_id)
+                .finish(),
+            Self::NavigateFocus { direction } => f
+                .debug_struct("NavigateFocus")
+                .field("direction", direction)
+                .finish(),
+            Self::CreateSurface { pane_id, .. } => f
+                .debug_struct("CreateSurface")
+                .field("pane_id", pane_id)
+                .finish_non_exhaustive(),
+            Self::CloseSurface {
+                pane_id,
+                surface_id,
+            } => f
+                .debug_struct("CloseSurface")
+                .field("pane_id", pane_id)
+                .field("surface_id", surface_id)
+                .finish(),
+            Self::CycleSurface { pane_id, forward } => f
+                .debug_struct("CycleSurface")
+                .field("pane_id", pane_id)
+                .field("forward", forward)
+                .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -182,6 +274,18 @@ pub enum AppEvent {
 
     /// A pane's process exited.
     PaneExited { pane_id: PaneId, success: bool },
+
+    /// A new workspace was created.
+    WorkspaceCreated { id: WorkspaceId },
+
+    /// The active workspace changed.
+    WorkspaceSwitched { index: usize, id: WorkspaceId },
+
+    /// A workspace was closed.
+    WorkspaceClosed { id: WorkspaceId },
+
+    /// The focused pane changed (via navigation or programmatic focus).
+    FocusChanged { pane_id: PaneId },
 }
 
 // ─── Render Snapshot ─────────────────────────────────────────────────────────
@@ -287,6 +391,17 @@ impl AppStateHandle {
             .is_err()
         {
             tracing::warn!(pane_id = %pane_id, "command channel full, ResizePane dropped");
+        }
+    }
+
+    /// Close and remove a pane. Fire-and-forget.
+    pub fn close_pane(&self, pane_id: PaneId) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::ClosePane { pane_id })
+            .is_err()
+        {
+            tracing::warn!(pane_id = %pane_id, "command channel full, ClosePane dropped");
         }
     }
 
@@ -396,6 +511,102 @@ impl AppStateHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// Toggle zoom on a pane. Fire-and-forget.
+    pub fn toggle_zoom(&self, pane_id: PaneId) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::ToggleZoom { pane_id })
+            .is_err()
+        {
+            tracing::warn!(pane_id = %pane_id, "command channel full, ToggleZoom dropped");
+        }
+    }
+
+    /// Move focus to the adjacent pane in the given direction. Fire-and-forget.
+    pub fn navigate_focus(&self, direction: FocusDirection) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::NavigateFocus { direction })
+            .is_err()
+        {
+            tracing::warn!("command channel full, NavigateFocus dropped");
+        }
+    }
+
+    // ─── Workspace handle methods ─────────────────────────────────────────────
+
+    /// Create a new workspace with the given name. Returns the new workspace's ID.
+    pub async fn create_workspace(&self, name: String) -> Option<WorkspaceId> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::CreateWorkspace { name, reply: tx })
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// Switch the active workspace by 0-based index. Fire-and-forget.
+    pub fn switch_workspace(&self, index: usize) {
+        let _ = self.cmd_tx.try_send(AppCommand::SwitchWorkspace { index });
+    }
+
+    /// Close a workspace by ID. Fire-and-forget.
+    pub fn close_workspace(&self, id: WorkspaceId) {
+        let _ = self.cmd_tx.try_send(AppCommand::CloseWorkspace { id });
+    }
+
+    /// Rename a workspace by ID. Fire-and-forget.
+    pub fn rename_workspace(&self, id: WorkspaceId, name: String) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::RenameWorkspace { id, name });
+    }
+
+    // ─── Surface handle methods ────────────────────────────────────────────────
+
+    /// Create a new surface in a pane. Returns the new surface's ID.
+    pub async fn create_surface(&self, pane_id: PaneId) -> Result<SurfaceId, CoreError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::CreateSurface { pane_id, reply: tx })
+            .await
+            .map_err(|_| CoreError::PaneNotFound {
+                pane_id: pane_id.to_string(),
+            })?;
+        rx.await.map_err(|_| CoreError::PaneNotFound {
+            pane_id: pane_id.to_string(),
+        })?
+    }
+
+    /// Close a surface in a pane. Fire-and-forget.
+    pub fn close_surface(&self, pane_id: PaneId, surface_id: SurfaceId) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::CloseSurface {
+                pane_id,
+                surface_id,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                pane_id = %pane_id,
+                surface_id = %surface_id,
+                "command channel full, CloseSurface dropped"
+            );
+        }
+    }
+
+    /// Cycle the active surface in a pane. Fire-and-forget.
+    pub fn cycle_surface(&self, pane_id: PaneId, forward: bool) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::CycleSurface { pane_id, forward })
+            .is_err()
+        {
+            tracing::warn!(pane_id = %pane_id, "command channel full, CycleSurface dropped");
+        }
+    }
+
     /// Shut down the actor. Fire-and-forget.
     pub fn shutdown(&self) {
         let _ = self.cmd_tx.try_send(AppCommand::Shutdown);
@@ -411,7 +622,8 @@ impl AppStateHandle {
         let actor = AppStateActor {
             registry: PaneRegistry::new(),
             notification_store: NotificationStore::new(),
-            pane_tree: None,
+            workspace_manager: WorkspaceManager::new(),
+            zoomed_pane: None,
             cmd_rx,
             event_tx,
         };
@@ -428,7 +640,10 @@ impl AppStateHandle {
 struct AppStateActor {
     registry: PaneRegistry,
     notification_store: NotificationStore,
-    pane_tree: Option<PaneTree>,
+    workspace_manager: WorkspaceManager,
+    /// Currently zoomed pane. When `Some(id)`, `GetLayout` returns only that
+    /// pane at full-viewport rect. `None` means normal split layout.
+    zoomed_pane: Option<PaneId>,
     cmd_rx: mpsc::Receiver<AppCommand>,
     event_tx: mpsc::Sender<AppEvent>,
 }
@@ -440,18 +655,21 @@ impl AppStateActor {
             match cmd {
                 AppCommand::RegisterPane { pane_id, state } => {
                     self.registry.register(pane_id, *state);
-                    // Initialize pane_tree on first pane registration.
-                    // Subsequent panes must be added via SplitPane first, which
-                    // creates a tree node and returns the new PaneId. The caller
-                    // then calls RegisterPane with that ID to attach terminal state.
-                    if self.pane_tree.is_none() {
-                        self.pane_tree = Some(PaneTree::new(pane_id));
+                    // Initialize the active workspace's pane_tree on first pane
+                    // registration. Subsequent panes must be added via SplitPane.
+                    let active = self.workspace_manager.active_mut();
+                    if active.pane_tree.is_none() {
+                        active.pane_tree = Some(PaneTree::new(pane_id));
                     }
                 }
                 AppCommand::ClosePane { pane_id } => {
                     self.registry.remove(pane_id);
-                    // Keep pane_tree in sync — remove the leaf and promote sibling.
-                    if let Some(tree) = &mut self.pane_tree {
+                    // Clear zoom if the zoomed pane is being closed.
+                    if self.zoomed_pane == Some(pane_id) {
+                        self.zoomed_pane = None;
+                    }
+                    // Keep the active workspace's pane_tree in sync.
+                    if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
                         if let Err(e) = tree.close_pane(pane_id) {
                             tracing::warn!(error = %e, "failed to close pane in tree");
                         }
@@ -507,7 +725,9 @@ impl AppStateActor {
                     direction,
                     reply,
                 } => {
-                    let result = if let Some(tree) = &mut self.pane_tree {
+                    let result = if let Some(tree) =
+                        self.workspace_manager.active_mut().pane_tree.as_mut()
+                    {
                         tree.split_pane(pane_id, direction)
                     } else {
                         Err(CoreError::PaneNotFound {
@@ -517,20 +737,154 @@ impl AppStateActor {
                     let _ = reply.send(result);
                 }
                 AppCommand::SwapPanes { a, b } => {
-                    if let Some(tree) = &mut self.pane_tree {
+                    if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
                         if let Err(e) = tree.swap_panes(a, b) {
                             tracing::warn!(error = %e, "SwapPanes failed");
                         }
                     }
                 }
                 AppCommand::GetLayout { viewport, reply } => {
-                    let layout = if let Some(tree) = &self.pane_tree {
+                    let layout = if let Some(zoomed_id) = self.zoomed_pane {
+                        // Validate zoomed pane still exists in the registry.
+                        if self.registry.get(zoomed_id).is_some() {
+                            vec![(zoomed_id, viewport)]
+                        } else {
+                            // Stale zoom reference — clear it and fall through.
+                            self.zoomed_pane = None;
+                            if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
+                                tree.layout(viewport)
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                    } else if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
                         tree.layout(viewport)
                     } else {
                         Vec::new()
                     };
                     let _ = reply.send(layout);
                 }
+
+                AppCommand::ToggleZoom { pane_id } => {
+                    match self.zoomed_pane {
+                        Some(id) if id == pane_id => {
+                            self.zoomed_pane = None;
+                            tracing::info!(pane_id = %pane_id, "zoom cleared");
+                        }
+                        _ => {
+                            self.zoomed_pane = Some(pane_id);
+                            tracing::info!(pane_id = %pane_id, "pane zoomed");
+                        }
+                    }
+                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                }
+
+                AppCommand::NavigateFocus { direction } => {
+                    self.handle_navigate_focus(direction);
+                }
+
+                // ─── Workspace commands ───────────────────────────────────────
+                AppCommand::CreateWorkspace { name, reply } => {
+                    let id = self.workspace_manager.create(name);
+                    // Auto-switch to the new workspace (it's the last one).
+                    let new_index = self.workspace_manager.count() - 1;
+                    self.zoomed_pane = None;
+                    self.workspace_manager.switch_to_index(new_index);
+                    tracing::info!(workspace_id = %id, index = new_index, "workspace created and switched");
+                    let _ = self.event_tx.try_send(AppEvent::WorkspaceCreated { id });
+                    let _ = self.event_tx.try_send(AppEvent::WorkspaceSwitched {
+                        index: new_index,
+                        id,
+                    });
+                    let _ = reply.send(id);
+                }
+                AppCommand::SwitchWorkspace { index } => {
+                    // Clear zoom when switching workspaces — zoom is per-view, not per-workspace.
+                    self.zoomed_pane = None;
+                    if self.workspace_manager.switch_to_index(index) {
+                        let id = self.workspace_manager.active_id();
+                        tracing::info!(index, workspace_id = %id, "workspace switched");
+                        let _ = self
+                            .event_tx
+                            .try_send(AppEvent::WorkspaceSwitched { index, id });
+                    } else {
+                        tracing::warn!(index, "SwitchWorkspace: index out of bounds");
+                    }
+                }
+                AppCommand::CloseWorkspace { id } => match self.workspace_manager.close(id) {
+                    Ok(()) => {
+                        tracing::info!(workspace_id = %id, "workspace closed via command");
+                        let _ = self.event_tx.try_send(AppEvent::WorkspaceClosed { id });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, workspace_id = %id, "CloseWorkspace failed");
+                    }
+                },
+                AppCommand::RenameWorkspace { id, name } => {
+                    if let Err(e) = self.workspace_manager.rename(id, name) {
+                        tracing::warn!(error = %e, workspace_id = %id, "RenameWorkspace failed");
+                    }
+                }
+
+                // ─── Surface commands ─────────────────────────────────────────
+                AppCommand::CreateSurface { pane_id, reply } => {
+                    let result = if let Some(pane) = self.registry.get_mut(pane_id) {
+                        let surface = Surface::new("shell");
+                        let id = surface.id;
+                        pane.surfaces.add(surface);
+                        tracing::info!(pane_id = %pane_id, surface_id = %id, "surface created");
+                        Ok(id)
+                    } else {
+                        Err(CoreError::PaneNotFound {
+                            pane_id: pane_id.to_string(),
+                        })
+                    };
+                    let _ = reply.send(result);
+                }
+
+                AppCommand::CloseSurface {
+                    pane_id,
+                    surface_id,
+                } => {
+                    // Determine if the pane becomes empty after surface removal.
+                    // Scoped borrow so we can call registry.remove afterwards.
+                    let pane_now_empty = if let Some(pane) = self.registry.get_mut(pane_id) {
+                        pane.surfaces.remove(surface_id);
+                        pane.surfaces.is_empty()
+                    } else {
+                        false
+                    };
+
+                    if pane_now_empty {
+                        // Last surface removed — close the pane.
+                        tracing::info!(pane_id = %pane_id, "last surface closed, closing pane");
+                        self.registry.remove(pane_id);
+                        if self.zoomed_pane == Some(pane_id) {
+                            self.zoomed_pane = None;
+                        }
+                        if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
+                            if let Err(e) = tree.close_pane(pane_id) {
+                                tracing::warn!(error = %e, "failed to close pane in tree");
+                            }
+                        }
+                    } else if self.registry.get(pane_id).is_some() {
+                        tracing::info!(
+                            pane_id = %pane_id,
+                            surface_id = %surface_id,
+                            "surface closed"
+                        );
+                        let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    }
+                }
+
+                AppCommand::CycleSurface { pane_id, forward } => {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                        pane.surfaces.cycle(forward);
+                        tracing::debug!(pane_id = %pane_id, forward, "surface cycled");
+                        let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    }
+                }
+
                 AppCommand::Shutdown => {
                     tracing::info!("AppState actor shutting down");
                     break;
@@ -634,6 +988,124 @@ impl AppStateActor {
             .try_send(AppEvent::PaneExited { pane_id, success });
     }
 
+    /// Navigate focus to the adjacent pane in the given direction.
+    ///
+    /// Algorithm: compute the layout using a nominal viewport, find the focused
+    /// pane's center, then for each other pane check whether its center is in
+    /// the requested direction relative to the focused pane. The closest such
+    /// pane (by Euclidean distance between centers) wins.
+    fn handle_navigate_focus(&mut self, direction: FocusDirection) {
+        let focused_id = match self.registry.focused_id() {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Use the current pane_tree for layout; no need for real pixel coords.
+        let tree = match self.workspace_manager.active().pane_tree.as_ref() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Use a nominal viewport large enough to get meaningful geometry.
+        let viewport = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let layout = tree.layout(viewport);
+
+        if layout.len() < 2 {
+            return;
+        }
+
+        // Find focused pane's rect.
+        let focused_rect = match layout.iter().find(|(id, _)| *id == focused_id) {
+            Some((_, r)) => *r,
+            None => return,
+        };
+
+        let fx = focused_rect.x + focused_rect.width / 2.0;
+        let fy = focused_rect.y + focused_rect.height / 2.0;
+
+        // Find the nearest pane in the given direction, prioritizing panes
+        // that share the same row (Left/Right) or column (Up/Down).
+        //
+        // Two-pass algorithm:
+        // 1. First pass: find candidates with overlap on the perpendicular axis
+        //    (e.g., for Right, panes whose Y range overlaps the focused pane's Y range)
+        // 2. Fallback: if no overlap candidates, use any pane in the direction
+        let mut best_overlap: Option<(PaneId, f32)> = None;
+        let mut best_any: Option<(PaneId, f32)> = None;
+
+        for (id, rect) in &layout {
+            if *id == focused_id {
+                continue;
+            }
+
+            let cx = rect.x + rect.width / 2.0;
+            let cy = rect.y + rect.height / 2.0;
+
+            let in_direction = match direction {
+                FocusDirection::Up => cy < fy,
+                FocusDirection::Down => cy > fy,
+                FocusDirection::Left => cx < fx,
+                FocusDirection::Right => cx > fx,
+            };
+
+            if !in_direction {
+                continue;
+            }
+
+            // Check if panes overlap on the perpendicular axis.
+            let has_overlap = match direction {
+                FocusDirection::Left | FocusDirection::Right => {
+                    // Y ranges overlap?
+                    let y1_start = focused_rect.y;
+                    let y1_end = focused_rect.y + focused_rect.height;
+                    let y2_start = rect.y;
+                    let y2_end = rect.y + rect.height;
+                    y1_start < y2_end && y2_start < y1_end
+                }
+                FocusDirection::Up | FocusDirection::Down => {
+                    // X ranges overlap?
+                    let x1_start = focused_rect.x;
+                    let x1_end = focused_rect.x + focused_rect.width;
+                    let x2_start = rect.x;
+                    let x2_end = rect.x + rect.width;
+                    x1_start < x2_end && x2_start < x1_end
+                }
+            };
+
+            let dist = (cx - fx) * (cx - fx) + (cy - fy) * (cy - fy);
+
+            if has_overlap {
+                match best_overlap {
+                    None => best_overlap = Some((*id, dist)),
+                    Some((_, d)) if dist < d => best_overlap = Some((*id, dist)),
+                    _ => {}
+                }
+            }
+            match best_any {
+                None => best_any = Some((*id, dist)),
+                Some((_, d)) if dist < d => best_any = Some((*id, dist)),
+                _ => {}
+            }
+        }
+
+        let best = best_overlap.or(best_any);
+
+        if let Some((target_id, _)) = best {
+            if self.registry.set_focused(target_id) {
+                tracing::info!(
+                    from = %focused_id,
+                    to = %target_id,
+                    direction = ?direction,
+                    "focus navigated",
+                );
+                let _ = self
+                    .event_tx
+                    .try_send(AppEvent::FocusChanged { pane_id: target_id });
+                let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(target_id));
+            }
+        }
+    }
+
     fn build_render_data(&mut self, pane_id: PaneId) -> Option<PaneRenderData> {
         let pane = self.registry.get_mut(pane_id)?;
 
@@ -690,6 +1162,9 @@ mod tests {
             pty_write_tx: write_tx,
             pty_resize_tx: resize_tx,
             process_exited: false,
+            surfaces: crate::surface_manager::SurfaceManager::new(
+                crate::surface_manager::Surface::new("shell"),
+            ),
         }
     }
 
@@ -792,5 +1267,91 @@ mod tests {
         // After shutdown, commands should fail silently.
         let data = handle.get_render_data(PaneId::new()).await;
         assert!(data.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_workspace_returns_id() {
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let handle = AppStateHandle::spawn(event_tx);
+
+        let id = handle.create_workspace("WS 2".to_string()).await;
+        assert!(id.is_some());
+
+        // Drain events.
+        tokio::task::yield_now().await;
+        let mut got_created = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, AppEvent::WorkspaceCreated { .. }) {
+                got_created = true;
+            }
+        }
+        assert!(got_created);
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn switch_workspace_emits_event() {
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let handle = AppStateHandle::spawn(event_tx);
+
+        handle.create_workspace("WS 2".to_string()).await;
+        tokio::task::yield_now().await;
+        // Drain the WorkspaceCreated event.
+        event_rx.try_recv().ok();
+
+        handle.switch_workspace(1);
+        tokio::task::yield_now().await;
+
+        let mut got_switched = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, AppEvent::WorkspaceSwitched { index: 1, .. }) {
+                got_switched = true;
+            }
+        }
+        assert!(got_switched);
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn close_workspace_emits_event() {
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let handle = AppStateHandle::spawn(event_tx);
+
+        let ws_id = handle.create_workspace("WS 2".to_string()).await.unwrap();
+        tokio::task::yield_now().await;
+        event_rx.try_recv().ok(); // drain WorkspaceCreated
+
+        handle.close_workspace(ws_id);
+        tokio::task::yield_now().await;
+
+        let mut got_closed = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, AppEvent::WorkspaceClosed { id } if id == ws_id) {
+                got_closed = true;
+            }
+        }
+        assert!(got_closed);
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn pane_registered_in_active_workspace() {
+        let (event_tx, _) = mpsc::channel(64);
+        let handle = AppStateHandle::spawn(event_tx);
+
+        let pane_id = PaneId::new();
+        handle.register_pane(pane_id, make_pane_state(80, 24));
+        tokio::task::yield_now().await;
+
+        // Layout should return the pane in the active workspace.
+        let viewport = crate::rect::Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = handle.get_layout(viewport).await;
+        assert_eq!(layout.len(), 1);
+        assert_eq!(layout[0].0, pane_id);
+
+        handle.shutdown();
     }
 }

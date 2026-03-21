@@ -10,6 +10,19 @@ tracing.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rand.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+dirs.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

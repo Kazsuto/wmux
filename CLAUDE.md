@@ -108,4 +108,6 @@ Detailed domain rules in `.claude/rules/` (loaded automatically by path scope):
 | `notifications.md` | `wmux-core/`, `wmux-ui/` | OSC detection, Toast API, visual indicators |
 | `persistence.md` | `wmux-core/`, `wmux-config/` | Session save/load, config format, themes |
 | `localization.md` | `**/*.rs`, `resources/locales/` | i18n system, locale files, string key conventions |
+| `workspace-surface.md` | `wmux-core/` | Surface lifecycle, workspace switching, cleanup ordering |
+| `focus-navigation.md` | `wmux-ui/`, `wmux-core/` | Keyboard layout independence, winit input, Win32 focus |
 | `changelog.md` | *(always active)* | Changelog update after every code change |

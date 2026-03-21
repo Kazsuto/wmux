@@ -10,4 +10,6 @@ pub enum WmuxEvent {
     PtyExited { success: bool },
     /// A notification should be shown as a Windows Toast.
     ShowToast(Box<wmux_core::Notification>),
+    /// Focus moved to a new pane (e.g., after a split). UI must update `focused_pane`.
+    FocusPane(wmux_core::PaneId),
 }

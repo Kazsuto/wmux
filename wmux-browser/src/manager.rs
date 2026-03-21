@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -7,19 +8,27 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Environment,
 };
 use windows::core::PWSTR;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::CoTaskMemFree;
+use wmux_core::rect::Rect;
+use wmux_core::types::SurfaceId;
 
 use crate::com::ComGuard;
+use crate::panel::BrowserPanel;
 use crate::BrowserError;
 
 /// Manages the WebView2 browser lifecycle.
 ///
-/// Holds the COM guard and provides methods for runtime detection
-/// and environment creation. All COM operations happen on the
-/// creating thread (STA requirement).
+/// Holds the COM guard and provides methods for runtime detection,
+/// environment creation, and panel lifecycle management. All COM
+/// operations happen on the creating thread (STA requirement).
 pub struct BrowserManager {
     _com_guard: ComGuard,
     user_data_dir: PathBuf,
+    /// Cached WebView2 environment — expensive to create, reused for all panels.
+    environment: Option<ICoreWebView2Environment>,
+    /// Active browser panels keyed by their surface ID.
+    panels: HashMap<SurfaceId, BrowserPanel>,
 }
 
 impl BrowserManager {
@@ -36,6 +45,8 @@ impl BrowserManager {
         Ok(Self {
             _com_guard: com_guard,
             user_data_dir,
+            environment: None,
+            panels: HashMap::new(),
         })
     }
 
@@ -139,6 +150,149 @@ impl BrowserManager {
 
         tracing::info!("WebView2 environment created");
         Ok(env)
+    }
+
+    /// Return a reference to the cached environment, creating it on first call.
+    ///
+    /// The environment is expensive to create (~200-500ms for first instance)
+    /// and is reused for all panels. Must be called on the STA thread.
+    fn get_or_create_environment(&mut self) -> Result<&ICoreWebView2Environment, BrowserError> {
+        if self.environment.is_none() {
+            let env = self.create_environment()?;
+            self.environment = Some(env);
+        }
+        Ok(self.environment.as_ref().expect("environment was just set"))
+    }
+
+    /// Create a new browser panel attached to `parent_hwnd`, positioned within `rect`.
+    ///
+    /// Returns the `SurfaceId` of the newly created panel. The panel is stored
+    /// internally and can be accessed via `get_panel` / `get_panel_mut`.
+    ///
+    /// Must be called on the STA/UI thread. Uses the cached environment if available.
+    pub fn create_panel(
+        &mut self,
+        parent_hwnd: HWND,
+        rect: &Rect,
+    ) -> Result<SurfaceId, BrowserError> {
+        let surface_id = SurfaceId::new();
+
+        tracing::info!(
+            surface_id = %surface_id,
+            x = rect.x,
+            y = rect.y,
+            width = rect.width,
+            height = rect.height,
+            "creating browser panel"
+        );
+
+        let env = self.get_or_create_environment()?.clone();
+        let mut panel = BrowserPanel::new(surface_id);
+        panel.attach(&env, parent_hwnd)?;
+        panel.set_bounds(
+            rect.x as i32,
+            rect.y as i32,
+            rect.width as i32,
+            rect.height as i32,
+        )?;
+        panel.set_visible(true)?;
+
+        self.panels.insert(surface_id, panel);
+        tracing::info!(surface_id = %surface_id, "browser panel created");
+        Ok(surface_id)
+    }
+
+    /// Resize a panel to match a new layout rect.
+    pub fn resize_panel(&mut self, id: SurfaceId, rect: &Rect) -> Result<(), BrowserError> {
+        let panel = self
+            .panels
+            .get(&id)
+            .ok_or_else(|| BrowserError::General(format!("panel not found: {id}")))?;
+
+        tracing::debug!(
+            surface_id = %id,
+            x = rect.x,
+            y = rect.y,
+            width = rect.width,
+            height = rect.height,
+            "resizing browser panel"
+        );
+
+        panel.set_bounds(
+            rect.x as i32,
+            rect.y as i32,
+            rect.width as i32,
+            rect.height as i32,
+        )
+    }
+
+    /// Make a panel visible (e.g. on workspace activation).
+    pub fn show_panel(&mut self, id: SurfaceId) -> Result<(), BrowserError> {
+        let panel = self
+            .panels
+            .get(&id)
+            .ok_or_else(|| BrowserError::General(format!("panel not found: {id}")))?;
+
+        tracing::debug!(surface_id = %id, "showing browser panel");
+        panel.set_visible(true)
+    }
+
+    /// Hide a panel (e.g. on workspace deactivation).
+    pub fn hide_panel(&mut self, id: SurfaceId) -> Result<(), BrowserError> {
+        let panel = self
+            .panels
+            .get(&id)
+            .ok_or_else(|| BrowserError::General(format!("panel not found: {id}")))?;
+
+        tracing::debug!(surface_id = %id, "hiding browser panel");
+        panel.set_visible(false)
+    }
+
+    /// Remove and clean up a panel, releasing its WebView2 resources.
+    pub fn remove_panel(&mut self, id: SurfaceId) -> Result<(), BrowserError> {
+        if self.panels.remove(&id).is_none() {
+            return Err(BrowserError::General(format!("panel not found: {id}")));
+        }
+        tracing::info!(surface_id = %id, "browser panel removed");
+        Ok(())
+    }
+
+    /// Return a reference to a panel by its surface ID.
+    pub fn get_panel(&self, id: SurfaceId) -> Option<&BrowserPanel> {
+        self.panels.get(&id)
+    }
+
+    /// Return a mutable reference to a panel by its surface ID.
+    pub fn get_panel_mut(&mut self, id: SurfaceId) -> Option<&mut BrowserPanel> {
+        self.panels.get_mut(&id)
+    }
+
+    /// Resize multiple panels in a single batch operation.
+    ///
+    /// Useful after a layout recalculation where many panes change size.
+    pub fn resize_all(&mut self, layouts: &[(SurfaceId, Rect)]) -> Result<(), BrowserError> {
+        for (id, rect) in layouts {
+            self.resize_panel(*id, rect)?;
+        }
+        Ok(())
+    }
+
+    /// Hide all browser panels (e.g. during workspace switch — hide old workspace).
+    pub fn hide_all(&mut self) -> Result<(), BrowserError> {
+        let ids: Vec<SurfaceId> = self.panels.keys().copied().collect();
+        for id in ids {
+            self.hide_panel(id)?;
+        }
+        Ok(())
+    }
+
+    /// Show all browser panels (e.g. after workspace switch — reveal new workspace).
+    pub fn show_all(&mut self) -> Result<(), BrowserError> {
+        let ids: Vec<SurfaceId> = self.panels.keys().copied().collect();
+        for id in ids {
+            self.show_panel(id)?;
+        }
+        Ok(())
     }
 
     /// Ensure the user data directory exists at `%APPDATA%\wmux\webview2-data`.

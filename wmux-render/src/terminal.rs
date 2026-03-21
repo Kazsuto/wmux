@@ -137,7 +137,7 @@ impl TerminalRenderer {
             }
 
             // Push non-default background quads.
-            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, y);
+            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, 0.0, y);
 
             // Re-shape the row's glyphon buffer.
             if r < self.row_buffers.len() {
@@ -154,11 +154,19 @@ impl TerminalRenderer {
         // Render cursor quad on top of everything.
         let cursor = grid.cursor();
         if cursor.visible && self.cursor_visible {
-            push_cursor_quad(cursor, cw, ch, quad_pipeline);
+            push_cursor_quad(cursor, cw, ch, 0.0, 0.0, quad_pipeline);
         }
     }
 
     /// Upload shaped row glyphs to the GPU atlas. Call after `update`, before the render pass.
+    ///
+    /// - `pane_origin`: `(x, y)` pixel offset of the pane within the surface.
+    ///   Text areas are positioned relative to this origin so that each pane's
+    ///   text lands at the correct surface coordinates.
+    /// - `pane_rect`: the usable terminal content rect (after subtracting any
+    ///   tab bar). Used to set tight `TextBounds` so glyphs are clipped to the
+    ///   pane and do not bleed into adjacent panes.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -166,22 +174,36 @@ impl TerminalRenderer {
         glyphon: &mut GlyphonRenderer,
         surface_width: u32,
         surface_height: u32,
+        pane_origin: (f32, f32),
+        pane_rect: wmux_core::rect::Rect,
     ) -> Result<(), RenderError> {
         let ch = self.metrics.cell_height;
+        let (x_off, y_off) = pane_origin;
+
+        // Clamp the TextBounds to the intersection of pane rect and surface.
+        let bounds_left = pane_rect.x.max(0.0) as i32;
+        let bounds_top = pane_rect.y.max(0.0) as i32;
+        let bounds_right = (pane_rect.x + pane_rect.width)
+            .min(surface_width as f32)
+            .max(0.0) as i32;
+        let bounds_bottom = (pane_rect.y + pane_rect.height)
+            .min(surface_height as f32)
+            .max(0.0) as i32;
+
         let text_areas: Vec<TextArea<'_>> = self
             .row_buffers
             .iter()
             .enumerate()
             .map(|(r, buf)| TextArea {
                 buffer: buf,
-                left: 0.0,
-                top: r as f32 * ch,
+                left: x_off,
+                top: y_off + r as f32 * ch,
                 scale: 1.0,
                 bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: surface_width as i32,
-                    bottom: surface_height as i32,
+                    left: bounds_left,
+                    top: bounds_top,
+                    right: bounds_right,
+                    bottom: bounds_bottom,
                 },
                 default_color: GlyphonColor::rgb(204, 204, 204),
                 custom_glyphs: &[],
@@ -211,6 +233,9 @@ impl TerminalRenderer {
     /// - `scrollback_len`: total scrollback row count.
     /// - `scrollback_visible_rows`: only the rows visible in the current viewport
     ///   (index 0 = topmost visible scrollback row).
+    /// - `pane_origin`: `(x, y)` pixel offset of the pane's top-left corner
+    ///   within the surface. Used to position quads and text areas correctly
+    ///   when rendering multiple panes into a shared render pass.
     #[allow(clippy::too_many_arguments)]
     pub fn update_from_snapshot(
         &mut self,
@@ -220,6 +245,7 @@ impl TerminalRenderer {
         scrollback_visible_rows: &[wmux_core::cell::Row],
         font_system: &mut glyphon::FontSystem,
         quad_pipeline: &mut QuadPipeline,
+        pane_origin: (f32, f32),
     ) {
         // Advance cursor blink.
         if self.last_blink.elapsed().as_millis() >= BLINK_INTERVAL_MS {
@@ -231,6 +257,7 @@ impl TerminalRenderer {
         let cols = self.cols as usize;
         let cw = self.metrics.cell_width;
         let ch = self.metrics.cell_height;
+        let (x_off, y_off) = pane_origin;
 
         let scroll_changed = viewport_offset != self.last_viewport_offset;
         self.last_viewport_offset = viewport_offset;
@@ -246,7 +273,8 @@ impl TerminalRenderer {
 
         for &row_idx in dirty {
             let r = row_idx as usize;
-            let y = r as f32 * ch;
+            // Apply pane origin offset to position quads correctly in the surface.
+            let y = y_off + r as f32 * ch;
 
             self.cell_buf.clear();
 
@@ -273,7 +301,7 @@ impl TerminalRenderer {
 
             self.cell_buf.truncate(cols);
 
-            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, y);
+            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, x_off, y);
 
             if r < self.row_buffers.len() {
                 update_row_buffer(
@@ -288,7 +316,7 @@ impl TerminalRenderer {
 
         let cursor = grid.cursor();
         if cursor.visible && self.cursor_visible {
-            push_cursor_quad(cursor, cw, ch, quad_pipeline);
+            push_cursor_quad(cursor, cw, ch, x_off, y_off, quad_pipeline);
         }
     }
 
@@ -362,11 +390,15 @@ impl TerminalRenderer {
 // ---------------------------------------------------------------------------
 
 /// Push non-default background color quads for a row of cells.
+///
+/// `x_off` and `y` are the surface-space coordinates of the row's top-left
+/// corner (already including the pane origin offset).
 fn push_background_quads(
     cells: &[wmux_core::cell::Cell],
     quad_pipeline: &mut QuadPipeline,
     cw: f32,
     ch: f32,
+    x_off: f32,
     y: f32,
 ) {
     for (col, cell) in cells.iter().enumerate() {
@@ -376,7 +408,7 @@ fn push_background_quads(
             cell.bg
         };
         if bg != Color::Named(0) {
-            quad_pipeline.push_quad(col as f32 * cw, y, cw, ch, color_to_rgba(bg));
+            quad_pipeline.push_quad(x_off + col as f32 * cw, y, cw, ch, color_to_rgba(bg));
         }
     }
 }
@@ -451,9 +483,19 @@ fn update_row_buffer(
 }
 
 /// Push a colored quad for the terminal cursor at its current position.
-fn push_cursor_quad(cursor: &CursorState, cw: f32, ch: f32, quad_pipeline: &mut QuadPipeline) {
-    let x = cursor.col as f32 * cw;
-    let y = cursor.row as f32 * ch;
+///
+/// `x_off` and `y_off` are the surface-space pane origin offsets applied on
+/// top of the cell grid coordinates.
+fn push_cursor_quad(
+    cursor: &CursorState,
+    cw: f32,
+    ch: f32,
+    x_off: f32,
+    y_off: f32,
+    quad_pipeline: &mut QuadPipeline,
+) {
+    let x = x_off + cursor.col as f32 * cw;
+    let y = y_off + cursor.row as f32 * ch;
     // White cursor with slight transparency so underlying text shows through on Block.
     let color = [1.0_f32, 1.0, 1.0, 0.85];
     match cursor.shape {

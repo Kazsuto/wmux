@@ -4,9 +4,11 @@ use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     },
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
+use wmux_core::types::SurfaceId;
 
 use crate::{automation, BrowserError};
 
@@ -16,15 +18,19 @@ use crate::{automation, BrowserError};
 /// view. The controller is attached to a child `HWND` (never the wgpu
 /// surface) and managed via the standard WebView2 COM lifecycle.
 pub struct BrowserPanel {
+    surface_id: SurfaceId,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
+    has_focus: bool,
 }
 
 impl std::fmt::Debug for BrowserPanel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrowserPanel")
+            .field("surface_id", &self.surface_id)
             .field("has_controller", &self.controller.is_some())
             .field("has_webview", &self.webview.is_some())
+            .field("has_focus", &self.has_focus)
             .finish()
     }
 }
@@ -34,11 +40,25 @@ impl BrowserPanel {
     ///
     /// Call `attach` to create the WebView2 controller and connect it to
     /// a host `HWND`.
-    pub fn new() -> Self {
+    pub fn new(surface_id: SurfaceId) -> Self {
         Self {
+            surface_id,
             controller: None,
             webview: None,
+            has_focus: false,
         }
+    }
+
+    /// Return the surface ID associated with this panel.
+    #[inline]
+    pub fn id(&self) -> SurfaceId {
+        self.surface_id
+    }
+
+    /// Return whether this panel currently holds keyboard focus.
+    #[inline]
+    pub fn has_focus(&self) -> bool {
+        self.has_focus
     }
 
     /// Attach the panel to a host window by creating a WebView2 controller.
@@ -86,7 +106,7 @@ impl BrowserPanel {
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|_| BrowserError::ControllerNotAvailable)?;
 
-        tracing::info!("BrowserPanel attached to HWND");
+        tracing::info!(surface_id = %self.surface_id, "BrowserPanel attached to HWND");
 
         self.controller = Some(controller);
         self.webview = Some(webview);
@@ -226,6 +246,46 @@ impl BrowserPanel {
             .as_ref()
             .ok_or(BrowserError::ControllerNotAvailable)?;
         automation::is_webview_focused(controller)
+    }
+
+    /// Give keyboard focus to the WebView2 controller.
+    ///
+    /// Should be called when the user clicks inside the browser panel area.
+    /// Sets the internal focus flag so the caller can check `has_focus()`.
+    pub fn focus(&mut self) -> Result<(), BrowserError> {
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+
+        tracing::debug!(surface_id = %self.surface_id, "focusing browser panel");
+
+        // SAFETY: MoveFocus takes a COREWEBVIEW2_MOVE_FOCUS_REASON value by value.
+        // COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC is a valid enum variant.
+        unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }
+            .map_err(|e| BrowserError::General(format!("MoveFocus: {e}")))?;
+
+        self.has_focus = true;
+        Ok(())
+    }
+
+    /// Open the DevTools window for this panel (equivalent to pressing F12).
+    pub fn toggle_devtools(&self) -> Result<(), BrowserError> {
+        let webview = self
+            .webview
+            .as_ref()
+            .ok_or(BrowserError::ControllerNotAvailable)?;
+
+        tracing::debug!(surface_id = %self.surface_id, "opening DevTools");
+
+        // SAFETY: OpenDevToolsWindow is a simple COM call with no pointer arguments.
+        unsafe { webview.OpenDevToolsWindow() }
+            .map_err(|e| BrowserError::General(format!("OpenDevToolsWindow: {e}")))
+    }
+
+    /// Notify the panel that focus has left the browser (e.g. user clicked terminal).
+    pub fn blur(&mut self) {
+        self.has_focus = false;
     }
 
     // ── DOM interaction ───────────────────────────────────────────────────────
@@ -430,19 +490,24 @@ impl BrowserPanel {
 
 impl Default for BrowserPanel {
     fn default() -> Self {
-        Self::new()
+        Self::new(SurfaceId::new())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use wmux_core::types::SurfaceId;
+
     use super::*;
 
     #[test]
     fn browser_panel_construction_default() {
-        let panel = BrowserPanel::new();
+        let id = SurfaceId::new();
+        let panel = BrowserPanel::new(id);
+        assert_eq!(panel.id(), id);
         assert!(panel.controller().is_none());
         assert!(panel.webview().is_none());
+        assert!(!panel.has_focus());
     }
 
     #[test]
@@ -454,39 +519,69 @@ mod tests {
 
     #[test]
     fn browser_panel_debug() {
-        let panel = BrowserPanel::new();
+        let id = SurfaceId::new();
+        let panel = BrowserPanel::new(id);
         let debug_str = format!("{panel:?}");
         assert!(debug_str.contains("BrowserPanel"));
         assert!(debug_str.contains("has_controller: false"));
         assert!(debug_str.contains("has_webview: false"));
+        assert!(debug_str.contains("has_focus: false"));
     }
 
     #[test]
     fn set_bounds_without_controller_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         let result = panel.set_bounds(0, 0, 800, 600);
         assert!(matches!(result, Err(BrowserError::ControllerNotAvailable)));
     }
 
     #[test]
     fn set_visible_without_controller_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         let result = panel.set_visible(true);
         assert!(matches!(result, Err(BrowserError::ControllerNotAvailable)));
     }
 
     #[test]
     fn navigate_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         let result = panel.navigate("https://example.com");
         assert!(matches!(result, Err(BrowserError::ControllerNotAvailable)));
     }
 
     #[test]
     fn eval_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         let result = panel.eval("1 + 1");
         assert!(matches!(result, Err(BrowserError::ControllerNotAvailable)));
+    }
+
+    #[test]
+    fn focus_without_controller_returns_error() {
+        let mut panel = BrowserPanel::new(SurfaceId::new());
+        assert!(matches!(
+            panel.focus(),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn toggle_devtools_without_webview_returns_error() {
+        let panel = BrowserPanel::new(SurfaceId::new());
+        assert!(matches!(
+            panel.toggle_devtools(),
+            Err(BrowserError::ControllerNotAvailable)
+        ));
+    }
+
+    #[test]
+    fn blur_clears_focus_flag() {
+        let mut panel = BrowserPanel::new(SurfaceId::new());
+        // Directly manipulate focus state to test blur without COM
+        panel.has_focus = true;
+        assert!(panel.has_focus());
+        panel.blur();
+        assert!(!panel.has_focus());
     }
 
     // Note: BrowserPanel wraps ICoreWebView2Controller / ICoreWebView2 which are
@@ -502,7 +597,7 @@ mod tests {
 
     #[test]
     fn click_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.click("button"),
             Err(BrowserError::ControllerNotAvailable)
@@ -511,7 +606,7 @@ mod tests {
 
     #[test]
     fn fill_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.fill("input", "value"),
             Err(BrowserError::ControllerNotAvailable)
@@ -520,7 +615,7 @@ mod tests {
 
     #[test]
     fn snapshot_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.snapshot(),
             Err(BrowserError::ControllerNotAvailable)
@@ -529,7 +624,7 @@ mod tests {
 
     #[test]
     fn screenshot_without_controller_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.screenshot(),
             Err(BrowserError::ControllerNotAvailable)
@@ -538,7 +633,7 @@ mod tests {
 
     #[test]
     fn find_elements_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.find_elements("div"),
             Err(BrowserError::ControllerNotAvailable)
@@ -547,7 +642,7 @@ mod tests {
 
     #[test]
     fn read_console_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.read_console(),
             Err(BrowserError::ControllerNotAvailable)
@@ -556,7 +651,7 @@ mod tests {
 
     #[test]
     fn is_state_without_webview_returns_error() {
-        let panel = BrowserPanel::new();
+        let panel = BrowserPanel::new(SurfaceId::new());
         assert!(matches!(
             panel.is_state("input", "checked"),
             Err(BrowserError::ControllerNotAvailable)
