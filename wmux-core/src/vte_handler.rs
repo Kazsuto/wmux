@@ -825,6 +825,34 @@ impl vte::Perform for VteHandler<'_> {
             // SGR — Select Graphic Rendition.
             'm' => self.sgr_dispatch(params),
 
+            // DSR — Device Status Report.
+            'n' => {
+                let mode = Self::param(params, 0, 0);
+                match mode {
+                    5 => {
+                        // Device status: respond "OK"
+                        self.emit_event(TerminalEvent::PtyWrite(b"\x1b[0n".to_vec()));
+                    }
+                    6 => {
+                        // CPR (Cursor Position Report): respond ESC[row;colR (1-based)
+                        let row = self.state.grid.cursor().row + 1;
+                        let col = self.state.grid.cursor().col + 1;
+                        self.emit_event(TerminalEvent::PtyWrite(
+                            format!("\x1b[{row};{col}R").into_bytes(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
+            // DA1 — Primary Device Attributes.
+            'c' => {
+                if Self::param(params, 0, 0) == 0 {
+                    // Identify as VT220 with ANSI color support
+                    self.emit_event(TerminalEvent::PtyWrite(b"\x1b[?62;22c".to_vec()));
+                }
+            }
+
             // Scroll region (DECSTBM).
             'r' => self.csi_set_scroll_region(params),
 

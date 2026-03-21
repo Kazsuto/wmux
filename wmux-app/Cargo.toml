@@ -9,6 +9,8 @@ name = "wmux-app"
 path = "src/main.rs"
 
 [dependencies]
+wmux-core.workspace = true
+wmux-pty.workspace = true
 wmux-ui.workspace = true
 wmux-render.workspace = true
 tracing.workspace = true

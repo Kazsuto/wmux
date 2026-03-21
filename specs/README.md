@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 22 done, 0 in progress, 28 pending (44% complete)
+> **Current progress**: 24 done, 0 in progress, 26 pending (48% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -85,13 +85,13 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > 1/1 done
 
-### Wave 5 — Terminal Integration & Notification Store (needs Wave 4)
+### Wave 5 — Terminal Integration & Notification Store (needs Wave 4) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L1_10](L1_10-single-pane-terminal-integration.md) | Single-Pane Terminal Integration | P0 | 2.5h | L1_02–L1_09 | ⬜ |
-| [L3_08](L3_08-notification-store-osc-detection.md) | Notification Store + OSC Detection | P1 | 2h | L1_04 | ⬜ |
+| [L1_10](L1_10-single-pane-terminal-integration.md) | Single-Pane Terminal Integration | P0 | 2.5h | L1_02–L1_09 | ✅ |
+| [L3_08](L3_08-notification-store-osc-detection.md) | Notification Store + OSC Detection | P1 | 2h | L1_04 | ✅ |
 
-> `/apex implement wave 5 in teams mode`
+> 2/2 done
 
 ### Wave 6 — AppState Actor & Toast Notifications (needs Wave 5)
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -188,7 +188,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | L1_07 | [Terminal Grid GPU Rendering](L1_07-terminal-grid-gpu-rendering.md) | P0 | 3h | 3 | ✅ | L1_01, L0_03 |
 | L1_08 | [Keyboard Input → PTY Dispatch](L1_08-keyboard-input-pty-dispatch.md) | P0 | 2h | 3 | ✅ | L1_06 |
 | L1_09 | [Mouse Selection, Copy/Paste](L1_09-mouse-selection-copypaste.md) | P1 | 2.5h | 3 | ✅ | L1_01, L1_06 |
-| L1_10 | [Single-Pane Integration](L1_10-single-pane-terminal-integration.md) | P0 | 2.5h | 5 | ⬜ | L1_02–L1_09 |
+| L1_10 | [Single-Pane Integration](L1_10-single-pane-terminal-integration.md) | P0 | 2.5h | 5 | ✅ | L1_02–L1_09 |
 
 ### Layer 2 — Core
 | # | Task | Priority | Effort | Wave | Status | Depends On |
@@ -220,7 +220,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | L3_05 | [Browser Nav + JS Eval](L3_05-browser-navigation-eval-api.md) | P1 | 2h | 2 | ✅ | L3_03 |
 | L3_06 | [Browser DOM Automation](L3_06-browser-dom-automation.md) | P1 | 3h | 3 | ✅ | L3_05 |
 | L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ⬜ | L2_11, L3_05, L3_06 |
-| L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ⬜ | L1_04 |
+| L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ✅ | L1_04 |
 | L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ⬜ | L3_08, L2_08 |
 | L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ⬜ | L3_08 |
 | L3_11 | [Ghostty Config Parser](L3_11-ghostty-config-parser.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
@@ -264,7 +264,7 @@ graph TD
     L1_06 --> L1_09
     L1_06 --> L3_13["✅ L3_13: Shell Hooks"]
 
-    L1_02 --> L1_10["⬜ L1_10: Single-Pane Integration"]
+    L1_02 --> L1_10["✅ L1_10: Single-Pane Integration"]
     L1_03 --> L1_10
     L1_04 --> L1_10
     L1_06 --> L1_10
@@ -307,7 +307,7 @@ graph TD
     L2_11 --> L3_07["⬜ L3_07: Browser IPC"]
     L3_05 --> L3_07
     L3_06 --> L3_07
-    L1_04 --> L3_08["⬜ L3_08: Notification Store"]
+    L1_04 --> L3_08["✅ L3_08: Notification Store"]
     L3_08 --> L3_09["⬜ L3_09: Notification Visuals"]
     L2_08 --> L3_09
     L3_08 --> L3_10["⬜ L3_10: Toast Notifications"]
@@ -335,7 +335,7 @@ graph TD
 | 2 | Grid, PTY I/O, Browser Nav | 5 | 5 | 0 | 0 | Complete |
 | 3 | VTE, Scrollback, Rendering | 7 | 7 | 0 | 0 | Complete |
 | 4 | OSC Handlers | 1 | 1 | 0 | 0 | Complete |
-| 5 | Terminal Integration | 2 | 0 | 0 | 2 | Waiting |
+| 5 | Terminal Integration | 2 | 2 | 0 | 0 | Complete |
 | 6 | AppState Actor & Toast | 2 | 0 | 0 | 2 | Waiting |
 | 7 | PaneTree & IPC Server | 2 | 0 | 0 | 2 | Waiting |
 | 8 | UI Layout, Handlers, CLI | 8 | 0 | 0 | 8 | Waiting |
@@ -343,7 +343,7 @@ graph TD
 | 10 | Metadata IPC, Polish | 6 | 0 | 0 | 6 | Waiting |
 | 11 | CLI Commands | 1 | 0 | 0 | 1 | Waiting |
 | 12 | Packaging | 1 | 0 | 0 | 1 | Waiting |
-| **Total** | | **50** | **22** | **0** | **28** | **44%** |
+| **Total** | | **50** | **24** | **0** | **26** | **48%** |
 
 **Estimated total effort**: 111 hours (range: 100–125 hours)
 **Estimated remaining**: ~66 hours
@@ -417,9 +417,9 @@ graph TD
 - **After Wave 10**: Browser, notifications, config, session persistence (~80% cmux parity)
 - **After Wave 12 (L4_07)**: Production-ready MVP release
 
-### Next Actions (Current Wave 5)
-Wave 3 complete. Execute Wave 5 (2 pending tasks):
-1. `/apex implement wave 5 in teams mode` — L1_10, L3_08
+### Next Actions (Current Wave 6)
+Wave 5 complete. Execute Wave 6 (2 pending tasks):
+1. `/apex implement wave 6 in teams mode` — L2_01, L3_10
 
 ---
 

@@ -1,6 +1,22 @@
 # Changelog
 
+## 2026-03-21
+
+REFACTOR: Apply Rust best practices to Wave 5 code — replace fragile filter.is_none()||filter.unwrap() with is_none_or in NotificationStore::list, derive Copy on NotificationSource and Debug on NotificationStore, derive Clone+Copy on InputHandler (ZST), pre-allocate SGR mouse report buffers with Vec::with_capacity(16) and write! (skip String intermediary) in sgr_press/sgr_release/sgr_wheel and window wheel handler, add #[inline] to sgr_press/sgr_release/sgr_wheel hot-path helpers
+
 ## 2026-03-20
+
+FIX: Implement DSR (ESC[6n cursor position report) and DA1 (ESC[c device attributes) responses — PowerShell sends DSR on startup and blocks until the terminal replies; without this response the shell hangs after 4 bytes of output
+FIX: Add TerminalEvent::PtyWrite variant for terminal-to-PTY write-back responses; create Terminal with event channel and forward PtyWrite events to PTY in render loop
+FIX: Sanitize ESC bytes in bracketed paste to prevent paste injection attacks
+FIX: Clamp mouse cursor cell coordinates to terminal bounds (prevent out-of-bounds SGR reports and selection)
+FIX: Recover GPU surface on Lost/Outdated errors instead of failing all subsequent frames
+FIX: Enforce forward-only notification state transitions (Received→Unread→Read→Cleared)
+FIX: Clamp NotificationStore::with_capacity(0) to 1 to prevent panic on add()
+FIX: Change should_suppress() to accept incoming notification workspace instead of checking last stored
+
+FEATURE: Wire single-pane terminal integration (L1_10) — connect Terminal, PtyActorHandle, TerminalRenderer, InputHandler, MouseHandler into winit event loop; tokio↔winit bridge via bounded channels and EventLoopProxy<WmuxEvent>; PTY output→Terminal::process()→GPU render cycle; keyboard input→VT bytes→PTY write; mouse selection with highlight overlay quads; copy/paste (Ctrl+Shift+C/V); window resize→terminal+PTY+renderer resize; SGR mouse wheel reporting; process exit detection with terminal message; add grid_and_scrollback() split-borrow accessor to Terminal
+FEATURE: Add NotificationStore to wmux-core (L3_08) — Notification struct with id/title/body/source/workspace/timestamp, NotificationState lifecycle (Received→Unread→Read→Cleared), NotificationSource (Osc/Api/Internal), NotificationEvent bus (Added/StateChanged/Cleared), NotificationStore with add/transition/mark_workspace_read/clear/clear_all/list/unread_count/should_suppress methods, 200-notification cap with oldest-cleared-first eviction; 12 unit tests
 
 REFACTOR: Apply Rust best practices to Wave 3 code — reusable cell_buf in TerminalRenderer eliminates per-row Vec allocation in render loop, extract resolve_row_cells/collect_grid_row/push_background_quads helpers to reduce update() complexity and remove duplicated grid cell collection, truncate scrollback rows to current column count preventing off-screen quads, pre-allocate Vec with_capacity in selection extract_text, in-place trim_end via truncate (avoid extra String allocation), add Debug/Clone/Copy derives to TerminalMetrics and Debug to MouseHandler/InputHandler, remove identity function in automation.rs
 

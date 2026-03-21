@@ -211,6 +211,16 @@ impl Terminal {
         &self.state.scrollback
     }
 
+    /// Simultaneous mutable grid and immutable scrollback references.
+    ///
+    /// Needed for [`TerminalRenderer::update`] which requires both
+    /// `&mut Grid` and `&Scrollback` in the same call — impossible with
+    /// separate `grid_mut()` / `scrollback()` due to borrow rules.
+    #[inline]
+    pub fn grid_and_scrollback(&mut self) -> (&mut Grid, &Scrollback) {
+        (&mut self.state.grid, &self.state.scrollback)
+    }
+
     /// Current viewport offset (0 = live, positive = scrolled up).
     #[inline]
     pub fn viewport_offset(&self) -> usize {

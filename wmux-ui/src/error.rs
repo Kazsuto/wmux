@@ -10,6 +10,9 @@ pub enum UiError {
 
     #[error("failed to acquire surface texture")]
     Surface(#[from] wgpu::SurfaceError),
+
+    #[error("PTY error: {0}")]
+    Pty(#[from] wmux_pty::PtyError),
 }
 
 #[cfg(test)]

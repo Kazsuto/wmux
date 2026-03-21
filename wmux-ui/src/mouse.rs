@@ -252,22 +252,32 @@ impl Default for MouseHandler {
 /// Generate SGR mouse press bytes: `\x1b[<button;col;rowM`
 ///
 /// Col and row are 1-based in the SGR protocol.
+#[inline]
 fn sgr_press(button: u8, col: usize, row: usize) -> Vec<u8> {
-    format!("\x1b[<{};{};{}M", button, col + 1, row + 1).into_bytes()
+    use std::io::Write;
+    let mut buf = Vec::with_capacity(16);
+    // write! to Vec<u8> is infallible
+    let _ = write!(buf, "\x1b[<{};{};{}M", button, col + 1, row + 1);
+    buf
 }
 
 /// Generate SGR mouse release bytes: `\x1b[<button;col;rowm`
 ///
 /// Col and row are 1-based in the SGR protocol.
+#[inline]
 fn sgr_release(button: u8, col: usize, row: usize) -> Vec<u8> {
-    format!("\x1b[<{};{};{}m", button, col + 1, row + 1).into_bytes()
+    use std::io::Write;
+    let mut buf = Vec::with_capacity(16);
+    let _ = write!(buf, "\x1b[<{};{};{}m", button, col + 1, row + 1);
+    buf
 }
 
 /// Generate SGR mouse wheel bytes.
 ///
 /// Wheel up = button 64, wheel down = button 65.
+#[inline]
 pub fn sgr_wheel(up: bool, col: usize, row: usize) -> Vec<u8> {
-    let button = if up { 64 } else { 65 };
+    let button: u8 = if up { 64 } else { 65 };
     sgr_press(button, col, row)
 }
 

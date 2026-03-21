@@ -13,7 +13,12 @@ fn main() -> Result<()> {
 
     tracing::info!("wmux starting...");
 
-    App::run().context("application terminated with error")?;
+    // Create tokio runtime for PTY I/O and async tasks.
+    // winit owns the main thread — tokio runs on background threads.
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    let _guard = rt.enter();
+
+    App::run(rt.handle().clone()).context("application terminated with error")?;
 
     Ok(())
 }

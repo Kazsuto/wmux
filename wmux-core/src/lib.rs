@@ -5,6 +5,7 @@ pub mod error;
 pub mod event;
 pub mod grid;
 pub mod mode;
+pub mod notification;
 pub mod scrollback;
 pub mod selection;
 pub mod surface;
@@ -19,6 +20,10 @@ pub use error::CoreError;
 pub use event::{Hyperlink, PromptMark, TerminalEvent};
 pub use grid::Grid;
 pub use mode::TerminalMode;
+pub use notification::{
+    Notification, NotificationEvent, NotificationId, NotificationSource, NotificationState,
+    NotificationStore,
+};
 pub use scrollback::Scrollback;
 pub use selection::{Selection, SelectionMode, SelectionPoint};
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};

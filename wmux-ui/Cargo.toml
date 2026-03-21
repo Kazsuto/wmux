@@ -6,10 +6,12 @@ license.workspace = true
 
 [dependencies]
 wmux-core.workspace = true
+wmux-pty.workspace = true
 wmux-render.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
+tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 arboard.workspace = true

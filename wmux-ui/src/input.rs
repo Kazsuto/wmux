@@ -3,7 +3,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use wmux_core::mode::TerminalMode;
 
 /// Translates winit 0.30 keyboard events to VT byte sequences for PTY input.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct InputHandler;
 
 impl Default for InputHandler {
@@ -40,11 +40,17 @@ impl InputHandler {
     }
 
     /// Wrap pasted text with bracketed paste escape sequences if the mode is active.
+    ///
+    /// Strips ESC bytes (0x1B) from the pasted text to prevent paste injection
+    /// attacks where a malicious clipboard payload contains `\x1b[201~` to
+    /// break out of the bracketed paste envelope.
     pub fn wrap_bracketed_paste(&self, text: &str, modes: TerminalMode) -> Vec<u8> {
         if modes.contains(TerminalMode::BRACKETED_PASTE) {
-            let mut result = Vec::with_capacity(6 + text.len() + 6);
+            // Sanitize: strip ESC bytes to prevent bracketed paste escape
+            let sanitized: Vec<u8> = text.bytes().filter(|&b| b != 0x1B).collect();
+            let mut result = Vec::with_capacity(6 + sanitized.len() + 6);
             result.extend_from_slice(b"\x1b[200~");
-            result.extend_from_slice(text.as_bytes());
+            result.extend_from_slice(&sanitized);
             result.extend_from_slice(b"\x1b[201~");
             result
         } else {
