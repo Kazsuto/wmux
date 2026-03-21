@@ -10,8 +10,10 @@ pub mod notification;
 pub mod pane_registry;
 pub mod pane_tree;
 pub mod rect;
+pub mod remote;
 pub mod scrollback;
 pub mod selection;
+pub mod session;
 pub mod surface;
 pub mod surface_manager;
 pub mod terminal;
@@ -20,7 +22,10 @@ pub(crate) mod vte_handler;
 pub mod workspace;
 pub mod workspace_manager;
 
-pub use app_state::{AppCommand, AppEvent, AppStateHandle, FocusDirection, PaneRenderData};
+pub use app_state::{
+    AppCommand, AppEvent, AppStateHandle, FocusDirection, PaneRenderData, PaneSurfaceInfo,
+    WorkspaceSnapshot,
+};
 pub use cell::{Cell, CellFlags, Row};
 pub use color::Color;
 pub use cursor::{CursorShape, CursorState};
@@ -35,11 +40,16 @@ pub use notification::{
 pub use pane_registry::{PaneRegistry, PaneState};
 pub use pane_tree::PaneTree;
 pub use rect::Rect;
+pub use remote::{ReconnectBackoff, RemoteConfig, RemoteConnectionState, RemoteError};
 pub use scrollback::Scrollback;
 pub use selection::{Selection, SelectionMode, SelectionPoint};
+pub use session::{
+    build_session_state, save_session, session_file_path, PaneTreeSnapshot, SessionState,
+    WindowGeometry,
+};
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};
 pub use surface_manager::{Surface, SurfaceManager};
 pub use terminal::Terminal;
 pub use types::{PaneId, SurfaceId, WindowId, WorkspaceId};
-pub use workspace::{Workspace, WorkspaceMetadata};
+pub use workspace::{Workspace, WorkspaceKind, WorkspaceMetadata};
 pub use workspace_manager::WorkspaceManager;

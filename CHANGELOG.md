@@ -2,6 +2,88 @@
 
 ## 2026-03-21
 
+FIX: IPC method names violate cmux convention — send_text/send_key/read_text were registered under "input.*" instead of "surface.*"; merge InputHandler into SurfaceHandler, delete input.rs, remove "input" router registration; cmux-compatible clients now correctly reach surface.send_text etc.
+
+FIX: Win32 SetHandleInformation errors silently discarded in ConPTY pipe setup — replace `let _ =` with `if let Err(e)` + tracing::warn to surface handle inheritance failures that could cause PTY pipe leaks
+
+FIX: Navigation shortcuts fire on key auto-repeat — holding Ctrl+D/W/N rapidly spawned/closed panes; add event.repeat guard around shortcut matching (terminal text input and sidebar editing still repeat normally)
+
+FIX: Sidebar cursor uses byte length instead of char count — `name.len()` → `name.chars().count()` fixes cursor overshoot with multi-byte UTF-8 workspace names
+
+FIX: auto_save().await blocks actor loop with file I/O — change to fire-and-forget tokio::spawn so the actor never awaits disk writes
+
+FIX: surface.split error leaks internal error details — replace e.to_string() with generic message + tracing::warn
+
+REFACTOR: Eliminate per-frame heap allocations in render hot path — Grid::take_dirty_rows() replaced with take_dirty_rows_into(&mut Vec) + reset_dirty(); TerminalRenderer::text_areas() returns impl Iterator instead of Vec
+
+REFACTOR: Add sRGB view_formats to SurfaceConfiguration and MemoryHints::MemoryUsage to DeviceDescriptor for correct color rendering and conservative GPU memory usage
+
+REFACTOR: Restrict ConPtyHandle::hpcon() and resize_by_hpcon() to pub(crate) with thread-safety documentation
+
+CHORE: Add input validation — MAX_SEND_TEXT_SIZE (64KB) on surface.send_text, MAX_WORKSPACE_NAME_LEN (255) on workspace.create/rename
+
+CHORE: Standardize TODO comments to TODO(spec_id) format across i18n placeholders
+
+CHORE: Revert scrollback initial capacity from 16384 to 4096 to match default max_lines
+
+FIX: Final session save lost on shutdown — auto_save was fire-and-forget but the process exits immediately via std::process::exit(0); add save_session_now() that is awaited on the shutdown path
+
+FIX: Held shortcut keys leak raw control bytes to PTY — Ctrl+D repeat sends EOF (0x04) to newly split pane; fix matches shortcuts on repeat but only executes on first press, consuming the event either way
+
+FIX: ConPTY shell produces no output (blank terminal) — UpdateProcThreadAttribute received a pointer to the HPCON value instead of the HPCON value itself; the kernel interpreted a heap address as an invalid pseudo-console handle, causing the child process to fail console attachment and exit immediately; fix passes hpc.0 directly as lpValue, matching the Microsoft EchoCon sample and Windows Terminal source; also removes the now-unnecessary Box<HPCON> from AttributeList
+
+FIX: Ctrl+T new surface not visible until window click — CreateSurface actor handler was missing PaneNeedsRedraw event emission; the request_redraw() in the UI handler fired before the async spawn completed, so the surface was created after the redraw; now the actor emits PaneNeedsRedraw on success, triggering the UI update when the surface is actually ready
+
+REFACTOR: Apply Rust best practices — remove intermediate HashMap allocation in build_env_block (wmux-pty), replace Vec<char> search matching with str::find (wmux-ui), eliminate per-frame Vec clone in search highlight rendering (wmux-ui), replace #[allow] with #[expect] (wmux-ipc), expand SAFETY comment for transmute (wmux-pty)
+
+FIX: Force-exit process on window close via std::process::exit(0) — spawn_blocking tasks (PTY reader, exit watcher) block on synchronous I/O that cannot be cancelled; without force-exit, the process hangs indefinitely on shutdown because Windows does not kill child processes when the parent exits (standard pattern used by Alacritty/WezTerm)
+
+FIX: Fix dangling HPCON pointer in ConPTY process spawn — UpdateProcThreadAttribute stored a pointer to a stack-local HPCON that became invalid when create_attribute_list returned (struct move invalidated the address); fix uses Box<HPCON> for heap-stable address; this caused child processes to not attach to ConPTY, resulting in blank terminals with no shell output
+
+FEATURE: Replace portable-pty with custom ConPTY wrapper (wmux-pty/src/conpty.rs + spawn.rs) — direct windows crate v0.62 FFI to CreatePseudoConsole with PSEUDOCONSOLE_RESIZE_QUIRK flag (prevents reflow output on resize); proper 24H2+ shutdown via dynamic ReleasePseudoConsole + ClosePseudoConsole; ConPtyHandle RAII with explicit shutdown() in spawn_blocking for clean conhost cleanup; ChildProcess wraps process HANDLE with wait/kill; PtyActorHandle exit watcher now owns ConPtyHandle for correct shutdown ordering; resize handler uses raw HPCON (Copy) to avoid blocking tokio; portable-pty dependency removed entirely
+
+FIX: Clamp PTY resize to minimum 2 columns to prevent ConPTY infinite loop bug #19922 (2-column character on 1-column terminal); applied in both PtyHandle::resize and PtyActorHandle::resize
+
+FIX: Add output flood detection in PTY reader — tracks bytes per second and terminates the reader if output exceeds 10 MB/s, protecting against ConPTY bug #19922 runaway output
+
+REFACTOR: Increase scrollback VecDeque pre-allocation from 4096 to 16384 entries to reduce reallocations for the default 4000-line scrollback
+
+FIX: Tab switching now shows correct terminal content — Grid::mark_all_dirty() forces full re-render when switching surfaces (SwitchSurfaceIndex, CycleSurface, FocusSurface, CloseSurface handlers all mark backing terminal dirty); fixes stale content from previous surface being shown after tab switch
+
+FEATURE: Tab drag-and-drop reordering with visual feedback — TabDragState state machine (None/Pressing/Dragging) with 5px threshold; Grabbing cursor icon during drag; semi-transparent overlay on dragged tab; 2px accent drop indicator bar at target position; cursor restored to Default on release; AppCommand::ReorderSurface wired through actor to SurfaceManager::reorder()
+
+FEATURE: Tab bar mouse click and visual improvements (Phase 3) — click on tabs to switch surfaces via SwitchSurfaceIndex command; tab bar hit-testing before click-to-focus; cached last_viewports for non-blocking mouse interaction
+
+FEATURE: Tab bar text rendering and styling (Phase 2) — glyphon text buffers for tab titles in UiState; tab titles rendered with SansSerif 12px (active=bright, inactive=gray); render_tab_bar improved with full background, active indicator (2px accent bar), vertical separators, bottom border line; TAB_BAR_HEIGHT increased to 28px; terminal text areas offset by tab bar height for correct positioning; PaneViewport derives Clone
+
+FEATURE: Surface-as-Hidden-Pane architecture (Phase 1) — Surface struct gains pane_id field pointing to its backing PaneState; Surface::new/with_kind updated to require PaneId; SurfaceManager gains get_by_index() and reorder() methods; AppStateActor::resolve_terminal_pane() resolves the active surface's backing pane (with fallback); build_render_data, handle_send_input, handle_resize, handle_scroll, ResetViewport, ExtractSelection, and build_read_text all route through resolve_terminal_pane; CreateSurface command gains backing_pane_id field and switches to the new surface after creation; CloseSurface removes the hidden backing pane from the registry; close_pane_internal cleans up all hidden surface panes before removing the layout pane; NewSurface shortcut spawns a real PTY for each new tab; all call sites updated
+
+FIX: Wire surface tab data into render pipeline — PaneRenderData now carries surface_count/surface_titles/active_surface from SurfaceManager; window.rs populates PaneViewport with real tab data and calls render_tab_bar() for multi-surface panes; terminal content area adjusted via terminal_viewport() to avoid tab bar overlap (Ctrl+T/Ctrl+Tab/Ctrl+Shift+Tab now visually functional)
+
+FIX: Clear terminal selection after sidebar click — handle_mouse_press was creating a Selection for click counting that persisted and caused blue selection overlay when moving mouse after double-click rename
+
+FEATURE: Add sidebar mouse interactions — click workspace row to switch, double-click to inline rename, drag & drop to reorder; SidebarInteraction state machine (Idle/Hover/Pressing/Dragging/Editing) with hit testing, hover highlights, drop indicator line, and edit cursor rendering; WorkspaceManager::reorder() for index-based workspace reordering with active_index preservation; AppCommand::ReorderWorkspace wired through actor; handle_sidebar_edit_key for inline rename input (Enter/Escape/Backspace/Delete/Arrows/Home/End); 12 new unit tests
+
+REFACTOR: Clean up GlyphonRenderer — remove dead buffer/set_text/prepare code (only prepare_text_areas is used), remove unused width/height fields, simplify constructor signature, extract DEFAULT_TEXT_COLOR constant to wmux-render lib.rs
+
+FIX: Address adversarial review findings (7 issues) — SSH argument injection prevention via character validation in RemoteConfig::parse; shortcuts now work when focused pane has exited; workspace.select by index validates range before returning success; scrollback truncation uses char count instead of byte count for correct UTF-8 handling; search match positions use char indices for accurate multi-byte highlighting; final session save on actor shutdown prevents data loss; divider drag computes actual container dimension from adjacent pane rects
+
+FEATURE: Add terminal search with match highlighting (L4_02) — wmux-ui/src/search.rs: SearchState (open/close/next_match/prev_match/search/match_count_display), SearchMatch, extract_rows() (grid+scrollback text extraction), render_search_highlights() (QuadPipeline overlay with yellow/orange semi-transparent quads); Ctrl+F toggles search overlay, Escape closes, Backspace edits query, Enter navigates next match; search is case-insensitive by default with optional regex mode (regex crate); search bar rendered as quad at bottom of focused pane with accent line and match count indicator; 16 unit tests for all search/navigation/regex paths; regex = "1" added to workspace Cargo.toml
+
+FEATURE: Add SSH remote support infrastructure (L4_03) — RemoteConfig (parse user@host[:port], ssh_args builder), RemoteConnectionState, RemoteError (thiserror), ReconnectBackoff (exponential 1s..60s) in wmux-core/src/remote.rs; WorkspaceKind enum (Local/Remote) added to workspace.rs with kind() getter; wmux-cli gains `wmux ssh connect <target>` and `wmux ssh disconnect` subcommands (validation-only, daemon integration pending); wmux-core added as wmux-cli dependency; 15 unit tests for parse/backoff
+
+FEATURE: Add draggable dividers and pane resize (L2_05) — divider.rs module with find_dividers (pairwise edge detection), hit_test (8px hit zone), compute_ratio (clamped to MIN_PANE_SIZE=50px); UiState gains dividers cache and drag_state; CursorMoved applies resize_split during drag and sets EwResize/NsResize cursor on hover; MouseInput starts/ends drag on left press/release over divider, double-click resets ratio to 0.5; divider highlighted in accent colour during hover/drag; MouseHandler exposes click_count(); pub mod divider added to lib.rs
+
+FEATURE: Add session auto-save (L3_01) — SessionState/WorkspaceSnapshot/PaneTreeSnapshot/WindowGeometry types with serde; build_session_state() maps WorkspaceManager+PaneRegistry to snapshot with scrollback truncation (4000 lines / 400K chars); save_session() writes atomically via temp file + rename to %APPDATA%/wmux/session.json; AppStateActor run loop restructured from while-let to tokio::select! with 8-second interval timer calling auto_save(); serde_json and dirs added to wmux-core dependencies
+
+FEATURE: Add sidebar panel rendering (L2_08) — SidebarState with toggle/effective_width, render_sidebar pushing background/separator/active-highlight quads via QuadPipeline; terminal viewport adjusted to start after sidebar width; Ctrl+B shortcut toggles sidebar; workspace list refreshed per frame via AppStateHandle::list_workspaces
+
+FEATURE: Add WorkspaceHandler and SurfaceHandler for workspace.* and surface.* JSON-RPC namespaces in wmux-ipc — workspace.list/create/current/select/close/rename and surface.split/list/focus/close wired to AppStateHandle, with unit tests for all error and success paths
+
+FEATURE: Add InputHandler for input.* JSON-RPC namespace (L2_13) — implements send_text (raw bytes to PTY), send_key (key name to VT escape sequence), read_text (terminal grid content); resolves target pane via surface_id or focused pane; full VT key map for Enter/Tab/Escape/arrows/F1-F12/Ctrl+A-Z/PageUp-PageDown/Home/End; 19 unit tests
+
+FEATURE: Add BrowserHandler stub for browser.* JSON-RPC namespace in wmux-ipc — identify returns capability list, all other methods return "not yet wired to COM thread" error pending STA bridge
+
 REFACTOR: Simplify Rust code — extract require_webview()/require_controller() helpers in BrowserPanel (eliminates 33 repetitions of as_ref().ok_or() pattern); convert verbose match→let-else in AppStateActor::handle_navigate_focus, handle_auth_login, and window event handler; remove stale duplicate doc comment on Grid::row_slice
 
 REFACTOR: Apply Rust best practices — add Grid::row_slice() for zero-copy row access and use extend_from_slice in TerminalRenderer::collect_grid_row (memory-reuse-allocations hot path); wrap IPC server auth_secret in Arc<String> to avoid per-connection clone (ownership-avoid-clone); remove redundant tab_count > 0 check in PaneRenderer::render_tab_bar (dead code)

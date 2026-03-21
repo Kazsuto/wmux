@@ -1,7 +1,10 @@
+use crate::divider::{self, DividerOrientation, DragState};
 use crate::event::WmuxEvent;
 use crate::input::InputHandler;
 use crate::mouse::{MouseAction, MouseButton, MouseHandler};
+use crate::search::{self, SearchState};
 use crate::shortcuts::{ShortcutAction, ShortcutMap};
+use crate::sidebar::{SidebarInteraction, SidebarState};
 use crate::toast::{self, ToastService};
 use crate::UiError;
 use std::collections::HashMap;
@@ -9,15 +12,16 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
-    keyboard::ModifiersState,
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
 };
 use wmux_core::surface::SplitDirection;
 use wmux_core::surface_manager::{Surface, SurfaceManager};
 use wmux_core::{
-    AppEvent, AppStateHandle, FocusDirection, PaneId, PaneState, Terminal, TerminalMode,
+    AppEvent, AppStateHandle, FocusDirection, PaneId, PaneRenderData, PaneState, Terminal,
+    TerminalMode,
 };
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
 use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline, TerminalMetrics, TerminalRenderer};
@@ -46,6 +50,17 @@ struct UiState<'window> {
     // Notifications
     toast_service: ToastService,
 
+    // Sidebar
+    sidebar: SidebarState,
+    /// Cached workspace list — refreshed once per frame during render.
+    workspace_cache: Vec<wmux_core::WorkspaceSnapshot>,
+
+    // Divider drag
+    /// Cached dividers from the last layout — used for hover/drag without blocking.
+    dividers: Vec<divider::Divider>,
+    /// Active divider drag state, if the user is currently dragging.
+    drag_state: Option<DragState>,
+
     // Active pane tracking
     focused_pane: PaneId,
     cols: u16,
@@ -56,6 +71,38 @@ struct UiState<'window> {
     /// Cached pane layout from the last render — used for hit-testing on
     /// mouse clicks without blocking on the actor.
     last_layout: Vec<(PaneId, wmux_core::rect::Rect)>,
+
+    // Search overlay
+    search: SearchState,
+    /// Cached visible rows (scrollback + grid) for the focused pane, used by search.
+    /// Updated every frame from the focused pane's render snapshot.
+    last_search_rows: Vec<(usize, String)>,
+    /// Total visible row count last frame (scrollback_visible + grid_rows).
+    last_total_visible_rows: usize,
+
+    // Tab bar text
+    /// Cached glyphon text buffers for tab titles, keyed by layout pane ID.
+    tab_title_buffers: HashMap<PaneId, Vec<glyphon::Buffer>>,
+    /// Cached viewports from the last render — used for tab bar hit-testing.
+    last_viewports: Vec<wmux_render::PaneViewport>,
+    /// Active tab drag state for drag-and-drop reordering.
+    tab_drag: TabDragState,
+}
+
+/// Tab drag-and-drop state machine.
+#[derive(Debug, Clone)]
+enum TabDragState {
+    None,
+    Pressing {
+        pane_id: PaneId,
+        tab_index: usize,
+        start_x: f32,
+    },
+    Dragging {
+        pane_id: PaneId,
+        from_index: usize,
+        current_x: f32,
+    },
 }
 
 impl UiState<'_> {
@@ -65,25 +112,67 @@ impl UiState<'_> {
         app_state: &AppStateHandle,
         rt: &tokio::runtime::Handle,
     ) -> Result<(), UiError> {
-        let surface_viewport =
-            wmux_core::rect::Rect::new(0.0, 0.0, self.gpu.width() as f32, self.gpu.height() as f32);
+        let surface_width = self.gpu.width();
+        let surface_height = self.gpu.height();
+
+        // Reserve space on the left for the sidebar.
+        let sidebar_width = self.sidebar.effective_width();
+        let surface_viewport = wmux_core::rect::Rect {
+            x: sidebar_width,
+            y: 0.0,
+            width: (surface_width as f32 - sidebar_width).max(1.0),
+            height: surface_height as f32,
+        };
+
+        // Refresh workspace list once per frame.
+        self.workspace_cache = rt.block_on(app_state.list_workspaces());
+
+        // Update sidebar text buffers (only reshapes when data changes).
+        self.sidebar
+            .update_text(&self.workspace_cache, self.glyphon.font_system());
+
+        // Render sidebar quads (backgrounds + highlights) before pane content.
+        self.sidebar.render_quads(
+            &self.workspace_cache,
+            &mut self.quads,
+            surface_height as f32,
+        );
+        // Render edit cursor overlay when inline renaming.
+        self.sidebar.render_edit_cursor(&mut self.quads);
 
         // Get pane layout from the actor (blocks briefly — acceptable once per frame).
         let layout = rt.block_on(app_state.get_layout(surface_viewport));
         // Cache for non-blocking hit-testing on mouse clicks.
         self.last_layout.clone_from(&layout);
+        // Recompute dividers from the current layout.
+        self.dividers = divider::find_dividers(&layout);
 
-        // Build PaneViewport descriptors for border rendering.
+        // Collect render data for all panes first (surface info needed for viewports).
+        let mut render_data_map: HashMap<PaneId, PaneRenderData> =
+            HashMap::with_capacity(layout.len());
+        for (pane_id, _) in &layout {
+            if let Some(data) = rt.block_on(app_state.get_render_data(*pane_id)) {
+                render_data_map.insert(*pane_id, data);
+            }
+        }
+
+        // Build PaneViewport descriptors with real surface data.
         let viewports: Vec<wmux_render::PaneViewport> = layout
             .iter()
-            .map(|(id, rect)| wmux_render::PaneViewport {
-                pane_id: *id,
-                rect: *rect,
-                focused: *id == self.focused_pane,
-                tab_count: 1,
-                tab_titles: vec![],
-                active_tab: 0,
-                zoomed: false,
+            .map(|(id, rect)| {
+                let (tab_count, tab_titles, active_tab) = render_data_map
+                    .get(id)
+                    .map(|d| (d.surface_count, d.surface_titles.clone(), d.active_surface))
+                    .unwrap_or((1, vec![], 0));
+                wmux_render::PaneViewport {
+                    pane_id: *id,
+                    rect: *rect,
+                    focused: *id == self.focused_pane,
+                    tab_count,
+                    tab_titles,
+                    active_tab,
+                    zoomed: false,
+                }
             })
             .collect();
 
@@ -96,12 +185,116 @@ impl UiState<'_> {
             [0.2, 0.6, 0.9, 1.0],
         );
 
-        // Remove renderers for panes that no longer exist in the layout.
-        {
-            let live_ids: std::collections::HashSet<PaneId> =
-                layout.iter().map(|(id, _)| *id).collect();
-            self.renderers.retain(|id, _| live_ids.contains(id));
+        // Draw tab bars for panes with multiple surfaces.
+        for vp in &viewports {
+            if vp.tab_count > 1 {
+                let _ = pane_renderer.render_tab_bar(
+                    &mut self.quads,
+                    vp,
+                    [0.12, 0.12, 0.15, 1.0], // inactive tab bg
+                    [0.22, 0.22, 0.28, 1.0], // active tab bg
+                    [0.2, 0.6, 0.9, 1.0],    // accent color
+                );
+            }
         }
+
+        // Collect live pane IDs once — used to prune stale tab title buffers and renderers.
+        let live_ids: std::collections::HashSet<PaneId> =
+            layout.iter().map(|(id, _)| *id).collect();
+
+        // Update tab title text buffers for panes with multiple surfaces.
+        {
+            let tab_font_size = 12.0_f32;
+            let tab_line_height = 16.0_f32;
+            let metrics = glyphon::Metrics::new(tab_font_size, tab_line_height);
+            let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
+
+            // Remove buffers for panes that no longer exist.
+            self.tab_title_buffers.retain(|id, _| live_ids.contains(id));
+
+            for vp in &viewports {
+                if vp.tab_count <= 1 {
+                    self.tab_title_buffers.remove(&vp.pane_id);
+                    continue;
+                }
+
+                let bufs = self.tab_title_buffers.entry(vp.pane_id).or_default();
+
+                // Resize buffer vec to match tab count.
+                let tab_width = vp.rect.width / vp.tab_count as f32;
+                let text_max_width = (tab_width - 16.0).max(1.0); // 8px padding each side
+
+                bufs.resize_with(vp.tab_count, || {
+                    glyphon::Buffer::new(self.glyphon.font_system(), metrics)
+                });
+
+                for (i, title) in vp.tab_titles.iter().enumerate() {
+                    let buf = &mut bufs[i];
+                    buf.set_metrics(self.glyphon.font_system(), metrics);
+                    buf.set_size(
+                        self.glyphon.font_system(),
+                        Some(text_max_width),
+                        Some(tab_line_height),
+                    );
+                    buf.set_text(
+                        self.glyphon.font_system(),
+                        title,
+                        &attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    buf.shape_until_scroll(self.glyphon.font_system(), false);
+                }
+            }
+        }
+
+        // Cache viewports for mouse hit-testing.
+        self.last_viewports.clone_from(&viewports);
+
+        // Tab drag visual feedback: drop indicator line.
+        if let TabDragState::Dragging {
+            pane_id,
+            from_index,
+            current_x,
+        } = &self.tab_drag
+        {
+            if let Some(vp) = viewports.iter().find(|v| v.pane_id == *pane_id) {
+                let tab_width = vp.rect.width / vp.tab_count as f32;
+                let to_index = ((*current_x - vp.rect.x) / tab_width) as usize;
+                let to_index = to_index.min(vp.tab_count - 1);
+
+                // Semi-transparent overlay on the dragged tab.
+                let from_x = vp.rect.x + *from_index as f32 * tab_width;
+                self.quads.push_quad(
+                    from_x,
+                    vp.rect.y,
+                    tab_width,
+                    wmux_render::pane::TAB_BAR_HEIGHT,
+                    [0.2, 0.6, 0.9, 0.25],
+                );
+
+                // Drop indicator: 2px vertical accent bar at the target position.
+                if to_index != *from_index {
+                    let indicator_x = vp.rect.x
+                        + to_index as f32 * tab_width
+                        + if to_index > *from_index {
+                            tab_width - 1.0
+                        } else {
+                            0.0
+                        };
+                    self.quads.push_quad(
+                        indicator_x,
+                        vp.rect.y,
+                        2.0,
+                        wmux_render::pane::TAB_BAR_HEIGHT,
+                        [0.2, 0.7, 1.0, 0.9],
+                    );
+                }
+            }
+        }
+
+        // Remove renderers for panes that no longer exist in the layout.
+        self.renderers.retain(|id, _| live_ids.contains(id));
 
         // Determine the focused pane rect (falls back to full surface for single-pane).
         let focused_rect = viewports
@@ -111,11 +304,22 @@ impl UiState<'_> {
             .unwrap_or(surface_viewport);
 
         // Render terminal content for ALL panes.
-        for (pane_id, rect) in &layout {
-            // Compute per-pane terminal dimensions from the pane rect.
-            let pane_cols = ((rect.width / self.metrics.cell_width).floor().max(1.0) as u32)
+        for (pane_id, _rect) in &layout {
+            // When the pane has multiple tabs, exclude the tab bar from terminal area.
+            let viewport = viewports.iter().find(|vp| vp.pane_id == *pane_id);
+            let terminal_rect = viewport
+                .filter(|vp| vp.tab_count > 1)
+                .map(wmux_render::PaneRenderer::terminal_viewport)
+                .unwrap_or(*_rect);
+
+            // Compute per-pane terminal dimensions from the terminal content rect.
+            let pane_cols = ((terminal_rect.width / self.metrics.cell_width)
+                .floor()
+                .max(1.0) as u32)
                 .min(u16::MAX as u32) as u16;
-            let pane_rows = ((rect.height / self.metrics.cell_height).floor().max(1.0) as u32)
+            let pane_rows = ((terminal_rect.height / self.metrics.cell_height)
+                .floor()
+                .max(1.0) as u32)
                 .min(u16::MAX as u32) as u16;
 
             // Ensure a renderer exists for this pane, creating or resizing as needed.
@@ -131,12 +335,18 @@ impl UiState<'_> {
                 app_state.resize_pane(*pane_id, pane_cols, pane_rows);
             }
 
-            // Get render data for this pane.
-            let render_data = rt.block_on(app_state.get_render_data(*pane_id));
-            if let Some(data) = render_data {
+            // Use pre-collected render data for this pane.
+            if let Some(data) = render_data_map.remove(pane_id) {
                 if *pane_id == self.focused_pane {
                     self.process_exited = data.process_exited;
                     self.terminal_modes = data.modes;
+                    // Cache text rows for search (only for focused pane).
+                    if self.search.active {
+                        self.last_search_rows =
+                            search::extract_rows(&data.scrollback_visible_rows, &data.grid);
+                        self.last_total_visible_rows =
+                            data.scrollback_visible_rows.len() + data.grid.rows() as usize;
+                    }
                 }
                 renderer.update_from_snapshot(
                     &data.grid,
@@ -145,7 +355,7 @@ impl UiState<'_> {
                     &data.scrollback_visible_rows,
                     self.glyphon.font_system(),
                     &mut self.quads,
-                    (rect.x, rect.y),
+                    (terminal_rect.x, terminal_rect.y),
                 );
             }
         }
@@ -171,21 +381,156 @@ impl UiState<'_> {
             }
         }
 
+        // Search match highlights (on focused pane only).
+        if self.search.active {
+            // Re-run search every render frame when active. The search is O(n*m)
+            // but fast enough (<1ms for typical content of 4K lines × 200 cols).
+            if !self.search.query.is_empty() && !self.last_search_rows.is_empty() {
+                // Temporarily take rows to avoid borrow conflict with `self.search`.
+                let rows_snapshot = std::mem::take(&mut self.last_search_rows);
+                self.search.search(&rows_snapshot);
+                self.last_search_rows = rows_snapshot;
+            }
+
+            search::render_search_highlights(
+                &self.search,
+                &mut self.quads,
+                &focused_rect,
+                self.metrics.cell_width,
+                self.metrics.cell_height,
+                self.last_total_visible_rows,
+            );
+
+            // Search bar overlay: a background quad at the bottom of the focused pane.
+            {
+                let bar_height = self.metrics.cell_height + 4.0;
+                let bar_y = focused_rect.y + focused_rect.height - bar_height;
+                let bar_w = focused_rect.width.max(200.0);
+
+                // Semi-transparent dark background for the search bar.
+                let bg_color = if self.search.has_regex_error() {
+                    [0.5_f32, 0.1, 0.1, 0.9] // red tint on regex error
+                } else {
+                    [0.1_f32, 0.1, 0.15, 0.9]
+                };
+                self.quads
+                    .push_quad(focused_rect.x, bar_y, bar_w, bar_height, bg_color);
+
+                // Thin accent line at the top of the search bar.
+                self.quads
+                    .push_quad(focused_rect.x, bar_y, bar_w, 1.0, [0.2_f32, 0.6, 0.9, 1.0]);
+
+                // Match count indicator on the right side of the bar.
+                let count_x = focused_rect.x + bar_w - 120.0;
+                if count_x > focused_rect.x {
+                    self.quads.push_quad(
+                        count_x,
+                        bar_y,
+                        120.0,
+                        bar_height,
+                        [0.15_f32, 0.15, 0.2, 0.9],
+                    );
+                }
+
+                tracing::trace!(
+                    query = %self.search.query,
+                    matches = self.search.matches.len(),
+                    current = self.search.current_match,
+                    "search bar rendered"
+                );
+            }
+        }
+
+        // Highlight the hovered or active divider with an accent-coloured quad.
+        let cursor_x = self.cursor_pos.0 as f32;
+        let cursor_y = self.cursor_pos.1 as f32;
+        let hovered_div = match &self.drag_state {
+            // During drag, keep the divider highlighted for the dragged one.
+            Some(ds) => self
+                .dividers
+                .iter()
+                .find(|d| d.pane_id == ds.pane_id && d.orientation == ds.orientation),
+            None => divider::hit_test(&self.dividers, cursor_x, cursor_y),
+        };
+        if let Some(div) = hovered_div {
+            const DIV_HIGHLIGHT_THICKNESS: f32 = 2.0;
+            match div.orientation {
+                DividerOrientation::Vertical => {
+                    let x = div.position - DIV_HIGHLIGHT_THICKNESS / 2.0;
+                    let y = div.start;
+                    let w = DIV_HIGHLIGHT_THICKNESS;
+                    let h = div.end - div.start;
+                    self.quads.push_quad(x, y, w, h, [0.2, 0.6, 0.9, 0.7]);
+                }
+                DividerOrientation::Horizontal => {
+                    let x = div.start;
+                    let y = div.position - DIV_HIGHLIGHT_THICKNESS / 2.0;
+                    let w = div.end - div.start;
+                    let h = DIV_HIGHLIGHT_THICKNESS;
+                    self.quads.push_quad(x, y, w, h, [0.2, 0.6, 0.9, 0.7]);
+                }
+            }
+        }
+
         // Upload quad GPU data.
         self.quads.prepare(&self.gpu.queue);
 
-        // Collect text areas from ALL pane renderers, then prepare glyphon once.
+        // Collect text areas from ALL pane renderers + sidebar + tabs, then prepare glyphon once.
         let surface_w = self.gpu.width();
         let surface_h = self.gpu.height();
-        let all_text_areas: Vec<_> = layout
+        let mut all_text_areas: Vec<_> = layout
             .iter()
-            .filter_map(|(pane_id, rect)| {
-                self.renderers
-                    .get(pane_id)
-                    .map(|r| r.text_areas((rect.x, rect.y), *rect, surface_w, surface_h))
+            .filter_map(|(pane_id, _rect)| {
+                let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
+                let terminal_rect = vp
+                    .filter(|v| v.tab_count > 1)
+                    .map(wmux_render::PaneRenderer::terminal_viewport)
+                    .unwrap_or(*_rect);
+                self.renderers.get(pane_id).map(|r| {
+                    r.text_areas(
+                        (terminal_rect.x, terminal_rect.y),
+                        terminal_rect,
+                        surface_w,
+                        surface_h,
+                    )
+                })
             })
             .flatten()
             .collect();
+
+        // Append tab title text areas.
+        for vp in &viewports {
+            if vp.tab_count > 1 {
+                if let Some(bufs) = self.tab_title_buffers.get(&vp.pane_id) {
+                    let tab_width = vp.rect.width / vp.tab_count as f32;
+                    for (i, buf) in bufs.iter().enumerate() {
+                        let tab_x = vp.rect.x + i as f32 * tab_width;
+                        let text_color = if i == vp.active_tab {
+                            glyphon::Color::rgb(240, 240, 245)
+                        } else {
+                            glyphon::Color::rgb(150, 150, 165)
+                        };
+                        all_text_areas.push(glyphon::TextArea {
+                            buffer: buf,
+                            left: tab_x + 8.0,
+                            top: vp.rect.y + 6.0,
+                            scale: 1.0,
+                            bounds: glyphon::TextBounds {
+                                left: (tab_x + 8.0) as i32,
+                                top: vp.rect.y as i32,
+                                right: (tab_x + tab_width - 8.0) as i32,
+                                bottom: (vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT) as i32,
+                            },
+                            default_color: text_color,
+                            custom_glyphs: &[],
+                        });
+                    }
+                }
+            }
+        }
+
+        // Append sidebar text areas (workspace names + subtitles).
+        all_text_areas.extend(self.sidebar.text_areas(surface_w, surface_h));
 
         self.glyphon
             .prepare_text_areas(&self.gpu.device, &self.gpu.queue, all_text_areas)?;
@@ -311,7 +656,7 @@ fn spawn_pane_pty(
         pty_write_tx: write_tx,
         pty_resize_tx: resize_tx,
         process_exited: false,
-        surfaces: SurfaceManager::new(Surface::new("shell")),
+        surfaces: SurfaceManager::new(Surface::new("shell", pane_id)),
     };
     app_state.register_pane(pane_id, pane_state);
 
@@ -400,6 +745,143 @@ impl<'window> App<'window> {
         };
         event_loop.run_app(&mut app)?;
         Ok(())
+    }
+}
+
+/// Handle a key event when the search overlay is active.
+///
+/// Intercepts printable characters, Backspace, Enter, and Escape. All other
+/// named keys (arrows, F-keys, etc.) are silently consumed — not forwarded to
+/// the PTY — while the search overlay is open.
+/// Handle keyboard input during sidebar inline editing.
+///
+/// Enter commits the rename, Escape cancels, Backspace/Delete edit text,
+/// and printable characters are inserted at cursor.
+fn handle_sidebar_edit_key(state: &mut UiState<'_>, event: &KeyEvent, app_state: &AppStateHandle) {
+    // Extract editing state; if not editing, do nothing.
+    let (index, text, cursor) = match &mut state.sidebar.interaction {
+        SidebarInteraction::Editing {
+            index,
+            text,
+            cursor,
+        } => (*index, text, cursor),
+        _ => return,
+    };
+
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            // Cancel editing — discard changes.
+            state.sidebar.interaction = SidebarInteraction::Idle;
+            tracing::debug!(index, "sidebar: editing cancelled");
+        }
+        Key::Named(NamedKey::Enter) => {
+            // Commit the rename.
+            let new_name = text.clone();
+            if let Some(ws) = state.workspace_cache.get(index) {
+                if !new_name.is_empty() && new_name != ws.name {
+                    app_state.rename_workspace(ws.id, new_name);
+                    tracing::debug!(index, "sidebar: workspace renamed");
+                }
+            }
+            state.sidebar.interaction = SidebarInteraction::Idle;
+        }
+        Key::Named(NamedKey::Backspace) => {
+            if *cursor > 0 {
+                // Remove the character before the cursor (byte-aware).
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor - 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(0);
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+                *cursor -= 1;
+            }
+        }
+        Key::Named(NamedKey::Delete) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor + 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+            }
+        }
+        Key::Named(NamedKey::ArrowLeft) => {
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
+        }
+        Key::Named(NamedKey::ArrowRight) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                *cursor += 1;
+            }
+        }
+        Key::Named(NamedKey::Home) => {
+            *cursor = 0;
+        }
+        Key::Named(NamedKey::End) => {
+            *cursor = text.chars().count();
+        }
+        Key::Character(ch) => {
+            let s = ch.as_str();
+            // Filter out control characters.
+            if s.chars().all(|c| !c.is_control()) {
+                // Insert at cursor position (byte-aware).
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.insert_str(byte_pos, s);
+                *cursor += s.chars().count();
+            }
+        }
+        _ => {
+            // Other named keys silently consumed.
+        }
+    }
+}
+
+fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            state.search.close();
+            tracing::debug!("search closed via Escape");
+        }
+        Key::Named(NamedKey::Backspace) => {
+            state.search.query.pop();
+            if state.search.query.is_empty() {
+                state.search.matches.clear();
+                state.search.current_match = 0;
+            }
+        }
+        Key::Named(NamedKey::Enter) => {
+            state.search.next_match();
+        }
+        Key::Character(ch) => {
+            let s = ch.as_str();
+            // Filter out control characters (ASCII < 0x20) to avoid injecting
+            // non-printable bytes into the search query.
+            if s.chars().all(|c| !c.is_control()) {
+                state.search.query.push_str(s);
+            }
+        }
+        _ => {
+            // Named keys (arrows, Tab, F-keys) are silently consumed.
+        }
     }
 }
 
@@ -533,7 +1015,7 @@ fn handle_shortcut(
             rt_handle.spawn(async move {
                 // 1. Create workspace (actor auto-switches to it)
                 let _ws_id = app_state_clone
-                    // TODO: route through i18n system when available.
+                    // TODO(L2_16): route through i18n system when wmux-config i18n is implemented.
                     .create_workspace("New Workspace".to_owned())
                     .await;
 
@@ -557,11 +1039,22 @@ fn handle_shortcut(
         }
 
         ShortcutAction::NewSurface => {
-            let pane_id = state.focused_pane;
+            let layout_pane_id = state.focused_pane;
+            let new_pane_id = PaneId::new();
+            let cols = state.cols;
+            let rows = state.rows;
             let app_clone = app_state.clone();
+            let rt_clone = rt_handle.clone();
             rt_handle.spawn(async move {
-                match app_clone.create_surface(pane_id).await {
-                    Ok(id) => tracing::info!(surface_id = %id, "new surface created"),
+                // 1. Spawn PTY (registers backing PaneState in actor).
+                spawn_pane_pty(new_pane_id, cols, rows, &app_clone, &rt_clone);
+                // 2. Register as surface in the layout pane.
+                match app_clone.create_surface(layout_pane_id, new_pane_id).await {
+                    Ok(sid) => tracing::info!(
+                        surface_id = %sid,
+                        backing = %new_pane_id,
+                        "new surface created",
+                    ),
                     Err(e) => tracing::warn!(error = %e, "create surface failed"),
                 }
             });
@@ -597,12 +1090,24 @@ fn handle_shortcut(
             }
         }
 
+        ShortcutAction::ToggleSidebar => {
+            state.sidebar.toggle();
+            state.window.request_redraw();
+        }
+
         // Placeholders for future tasks.
         ShortcutAction::CommandPalette => {
             tracing::debug!("CommandPalette shortcut (placeholder — Task L4_01)");
         }
         ShortcutAction::Find => {
-            tracing::debug!("Find shortcut (placeholder)");
+            if state.search.active {
+                state.search.close();
+                tracing::debug!("search closed via Ctrl+F toggle");
+            } else {
+                state.search.open();
+                tracing::debug!("search opened via Ctrl+F");
+            }
+            state.window.request_redraw();
         }
         ShortcutAction::ToggleDevTools => {
             tracing::debug!("ToggleDevTools shortcut (placeholder)");
@@ -637,13 +1142,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             gpu.height(),
         );
 
-        let mut glyphon = GlyphonRenderer::new(
-            &gpu.device,
-            &gpu.queue,
-            gpu.format,
-            gpu.width(),
-            gpu.height(),
-        );
+        let mut glyphon = GlyphonRenderer::new(&gpu.device, &gpu.queue, gpu.format);
+        glyphon.resize(&gpu.queue, gpu.width(), gpu.height());
 
         // Compute terminal dimensions from window size and font metrics
         let metrics = TerminalMetrics::new(glyphon.font_system());
@@ -721,12 +1221,22 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             modifiers: ModifiersState::default(),
             cursor_pos: (0.0, 0.0),
             toast_service,
+            sidebar: SidebarState::new(220),
+            workspace_cache: Vec::new(),
+            dividers: Vec::new(),
+            drag_state: None,
             focused_pane: pane_id,
             cols,
             rows,
             process_exited: false,
             terminal_modes: TerminalMode::empty(),
             last_layout: Vec::new(),
+            search: SearchState::new(),
+            last_search_rows: Vec::new(),
+            last_total_visible_rows: 0,
+            tab_title_buffers: HashMap::new(),
+            last_viewports: Vec::new(),
+            tab_drag: TabDragState::None,
         });
     }
 
@@ -827,17 +1337,46 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
-                if state.process_exited {
+                // Priority 0: sidebar inline editing — intercept all keys when renaming.
+                if state.sidebar.is_editing() {
+                    handle_sidebar_edit_key(state, &event, &self.app_state);
+                    state.window.request_redraw();
                     return;
                 }
 
                 // Priority 1: global shortcuts — intercepted before terminal input.
+                // Shortcuts must work even when the focused pane's process has exited
+                // (so the user can close panes, switch workspaces, etc.).
+                // Match the shortcut regardless of repeat state, but only execute
+                // the action on the first press. Repeated keys are consumed (return)
+                // to prevent shortcut key combos from leaking to the PTY as raw
+                // control bytes (e.g. Ctrl+D → 0x04 EOF sent to the shell).
                 if let Some(action) = state.shortcuts.match_shortcut(
                     &event.logical_key,
                     event.physical_key,
                     &state.modifiers,
                 ) {
-                    handle_shortcut(action, state, &self.app_state, &self.rt_handle, &self.proxy);
+                    if !event.repeat {
+                        handle_shortcut(
+                            action,
+                            state,
+                            &self.app_state,
+                            &self.rt_handle,
+                            &self.proxy,
+                        );
+                    }
+                    return;
+                }
+
+                // Don't send input to a dead process.
+                if state.process_exited {
+                    return;
+                }
+
+                // Priority 1.5: search overlay input — intercepted when search is active.
+                if state.search.active {
+                    handle_search_key(state, &event);
+                    state.window.request_redraw();
                     return;
                 }
 
@@ -859,11 +1398,316 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 button,
                 ..
             } => {
+                let px = state.cursor_pos.0 as f32;
+                let py = state.cursor_pos.1 as f32;
+
+                // Sidebar mouse interaction — click to select, drag to reorder, double-click to rename.
+                if state.sidebar.visible && px < state.sidebar.effective_width() {
+                    if elem_state == ElementState::Pressed
+                        && button == winit::event::MouseButton::Left
+                    {
+                        // Track click count for double-click detection.
+                        let mouse_mode =
+                            state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
+                        let shift = state.modifiers.shift_key();
+                        let (col, row) = state.cursor_cell();
+                        let _ = state.mouse.handle_mouse_press(
+                            col,
+                            row,
+                            MouseButton::Left,
+                            shift,
+                            mouse_mode,
+                        );
+                        // We only needed click counting — discard the terminal
+                        // selection that handle_mouse_press created.
+                        state.mouse.clear_selection();
+
+                        if let Some(row_index) =
+                            state.sidebar.hit_test_row(py, state.workspace_cache.len())
+                        {
+                            if state.mouse.click_count() >= 2 {
+                                // Double-click: start inline editing.
+                                let name = state
+                                    .workspace_cache
+                                    .get(row_index)
+                                    .map(|ws| ws.name.clone())
+                                    .unwrap_or_default();
+                                let cursor = name.chars().count();
+                                state.sidebar.interaction = SidebarInteraction::Editing {
+                                    index: row_index,
+                                    text: name,
+                                    cursor,
+                                };
+                                tracing::debug!(row_index, "sidebar: started inline editing");
+                            } else {
+                                // Single press: start tracking for click vs drag.
+                                state.sidebar.interaction = SidebarInteraction::Pressing {
+                                    row: row_index,
+                                    start_y: py,
+                                };
+                            }
+                        }
+                    } else if elem_state == ElementState::Released
+                        && button == winit::event::MouseButton::Left
+                    {
+                        match state.sidebar.interaction.clone() {
+                            SidebarInteraction::Pressing { row, .. } => {
+                                // Click completed without drag → switch workspace.
+                                self.app_state.switch_workspace(row);
+                                tracing::debug!(row, "sidebar: workspace selected via click");
+                                state.sidebar.interaction = SidebarInteraction::Idle;
+                            }
+                            SidebarInteraction::Dragging {
+                                from_row,
+                                current_y,
+                            } => {
+                                // Drag completed → reorder workspace.
+                                let target = state
+                                    .sidebar
+                                    .drag_target_index(current_y, state.workspace_cache.len());
+                                if target != from_row {
+                                    self.app_state.reorder_workspace(from_row, target);
+                                    tracing::debug!(
+                                        from_row,
+                                        target,
+                                        "sidebar: workspace reordered via drag"
+                                    );
+                                }
+                                state.sidebar.interaction = SidebarInteraction::Idle;
+                            }
+                            _ => {
+                                // Release in other states (Editing, Idle, Hover) — no-op.
+                            }
+                        }
+                    }
+
+                    // Click in sidebar area — cancel editing if clicking outside edit row.
+                    if elem_state == ElementState::Pressed {
+                        if let SidebarInteraction::Editing {
+                            index, ref text, ..
+                        } = state.sidebar.interaction
+                        {
+                            if let Some(row_index) =
+                                state.sidebar.hit_test_row(py, state.workspace_cache.len())
+                            {
+                                if row_index != index {
+                                    // Commit the edit on click-away.
+                                    if let Some(ws) = state.workspace_cache.get(index) {
+                                        if !text.is_empty() && *text != ws.name {
+                                            self.app_state.rename_workspace(ws.id, text.clone());
+                                        }
+                                    }
+                                    state.sidebar.interaction = SidebarInteraction::Idle;
+                                }
+                            }
+                        }
+                    }
+
+                    state.window.request_redraw();
+                    return;
+                }
+
+                // Click outside sidebar — cancel any sidebar editing.
+                if elem_state == ElementState::Pressed {
+                    if let SidebarInteraction::Editing {
+                        index, ref text, ..
+                    } = state.sidebar.interaction
+                    {
+                        if let Some(ws) = state.workspace_cache.get(index) {
+                            if !text.is_empty() && *text != ws.name {
+                                self.app_state.rename_workspace(ws.id, text.clone());
+                            }
+                        }
+                        state.sidebar.interaction = SidebarInteraction::Idle;
+                        state.window.request_redraw();
+                    }
+                }
+
+                // Left-button press on a divider: start drag or reset on double-click.
+                if elem_state == ElementState::Pressed && button == winit::event::MouseButton::Left
+                {
+                    if let Some(div) = divider::hit_test(&state.dividers, px, py) {
+                        // Detect double-click via the mouse handler's click count.
+                        // We call handle_mouse_press so it tracks timing; then inspect count.
+                        let mouse_mode =
+                            state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
+                        let shift = state.modifiers.shift_key();
+                        let (col, row) = state.cursor_cell();
+                        let _ = state.mouse.handle_mouse_press(
+                            col,
+                            row,
+                            MouseButton::Left,
+                            shift,
+                            mouse_mode,
+                        );
+
+                        if state.mouse.click_count() >= 2 {
+                            // Double-click: reset split ratio to equal halves.
+                            tracing::debug!(
+                                pane_id = %div.pane_id,
+                                "divider double-click — resetting ratio to 0.5"
+                            );
+                            self.app_state.resize_split(div.pane_id, 0.5);
+                            state.window.request_redraw();
+                        } else {
+                            // Single press: start drag.
+                            // Compute actual container dimension from adjacent pane rects
+                            // for correct ratio calculation in multi-level splits.
+                            let (split_start, split_dimension) = {
+                                let pos = div.position;
+                                let layout = &state.last_layout;
+                                match div.orientation {
+                                    DividerOrientation::Vertical => {
+                                        // Find panes immediately left and right of divider
+                                        let left = layout.iter().find(|(_, r)| {
+                                            (r.x + r.width - pos).abs() < 4.0
+                                                && r.y < div.end
+                                                && (r.y + r.height) > div.start
+                                        });
+                                        let right = layout.iter().find(|(_, r)| {
+                                            (r.x - pos).abs() < 4.0
+                                                && r.y < div.end
+                                                && (r.y + r.height) > div.start
+                                        });
+                                        match (left, right) {
+                                            (Some((_, l)), Some((_, r))) => {
+                                                (l.x, l.width + r.width)
+                                            }
+                                            _ => {
+                                                let sw = state.sidebar.effective_width();
+                                                (sw, state.gpu.width() as f32 - sw)
+                                            }
+                                        }
+                                    }
+                                    DividerOrientation::Horizontal => {
+                                        let above = layout.iter().find(|(_, r)| {
+                                            (r.y + r.height - pos).abs() < 4.0
+                                                && r.x < div.end
+                                                && (r.x + r.width) > div.start
+                                        });
+                                        let below = layout.iter().find(|(_, r)| {
+                                            (r.y - pos).abs() < 4.0
+                                                && r.x < div.end
+                                                && (r.x + r.width) > div.start
+                                        });
+                                        match (above, below) {
+                                            (Some((_, a)), Some((_, b))) => {
+                                                (a.y, a.height + b.height)
+                                            }
+                                            _ => (0.0, state.gpu.height() as f32),
+                                        }
+                                    }
+                                }
+                            };
+                            let start_cursor = match div.orientation {
+                                DividerOrientation::Vertical => px,
+                                DividerOrientation::Horizontal => py,
+                            };
+                            // Derive start_ratio from current divider position.
+                            let start_ratio = if split_dimension > 0.0 {
+                                (div.position - split_start) / split_dimension
+                            } else {
+                                0.5
+                            };
+                            state.drag_state = Some(DragState {
+                                pane_id: div.pane_id,
+                                orientation: div.orientation,
+                                split_dimension,
+                                split_start,
+                                start_cursor,
+                                start_ratio,
+                            });
+                            tracing::debug!(
+                                pane_id = %div.pane_id,
+                                start_ratio,
+                                "divider drag started"
+                            );
+                        }
+                        return;
+                    }
+                }
+
+                // Tab drag release: reorder tabs if dragging.
+                if elem_state == ElementState::Released && button == winit::event::MouseButton::Left
+                {
+                    if let TabDragState::Dragging {
+                        pane_id,
+                        from_index,
+                        current_x,
+                    } = state.tab_drag
+                    {
+                        if let Some(vp) = state.last_viewports.iter().find(|v| v.pane_id == pane_id)
+                        {
+                            let tab_width = vp.rect.width / vp.tab_count as f32;
+                            let to_index = ((current_x - vp.rect.x) / tab_width) as usize;
+                            let to_index = to_index.min(vp.tab_count - 1);
+                            if from_index != to_index {
+                                self.app_state
+                                    .reorder_surface(pane_id, from_index, to_index);
+                            }
+                        }
+                        state.tab_drag = TabDragState::None;
+                        state.window.set_cursor(winit::window::CursorIcon::Default);
+                        state.window.request_redraw();
+                        return;
+                    }
+                    state.tab_drag = TabDragState::None;
+                }
+
+                // Left-button release: end any active divider drag.
+                if elem_state == ElementState::Released
+                    && button == winit::event::MouseButton::Left
+                    && state.drag_state.is_some()
+                {
+                    tracing::debug!("divider drag ended");
+                    state.drag_state = None;
+                    state.window.request_redraw();
+                    return;
+                }
+
+                // Tab bar: click to switch + initiate drag.
+                if elem_state == ElementState::Pressed && button == winit::event::MouseButton::Left
+                {
+                    let mut tab_clicked = false;
+                    for vp in &state.last_viewports {
+                        if vp.tab_count <= 1 {
+                            continue;
+                        }
+                        let tab_bar_bottom = vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT;
+                        if px >= vp.rect.x
+                            && px < vp.rect.x + vp.rect.width
+                            && py >= vp.rect.y
+                            && py < tab_bar_bottom
+                        {
+                            let tab_width = vp.rect.width / vp.tab_count as f32;
+                            let tab_index = ((px - vp.rect.x) / tab_width) as usize;
+                            let tab_index = tab_index.min(vp.tab_count - 1);
+
+                            if vp.pane_id != state.focused_pane {
+                                state.focused_pane = vp.pane_id;
+                                self.app_state.focus_pane(vp.pane_id);
+                            }
+                            if tab_index != vp.active_tab {
+                                self.app_state.cycle_surface_to_index(vp.pane_id, tab_index);
+                            }
+                            state.tab_drag = TabDragState::Pressing {
+                                pane_id: vp.pane_id,
+                                tab_index,
+                                start_x: px,
+                            };
+                            tab_clicked = true;
+                            state.window.request_redraw();
+                            break;
+                        }
+                    }
+                    if tab_clicked {
+                        return;
+                    }
+                }
+
                 // Click-to-focus: on any press, check if the click landed in a
                 // different pane and switch focus to it.
                 if elem_state == ElementState::Pressed {
-                    let px = state.cursor_pos.0 as f32;
-                    let py = state.cursor_pos.1 as f32;
                     // Use cached layout from the last render frame instead of
                     // blocking on the actor, which could cause UI freezes.
                     for (pane_id, rect) in &state.last_layout {
@@ -901,6 +1745,126 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_pos = (position.x, position.y);
+                let px = position.x as f32;
+                let py = position.y as f32;
+
+                // Tab drag: transition Pressing → Dragging on threshold.
+                match state.tab_drag {
+                    TabDragState::Pressing {
+                        pane_id,
+                        tab_index,
+                        start_x,
+                    } => {
+                        if (px - start_x).abs() > 5.0 {
+                            state.tab_drag = TabDragState::Dragging {
+                                pane_id,
+                                from_index: tab_index,
+                                current_x: px,
+                            };
+                            state.window.set_cursor(winit::window::CursorIcon::Grabbing);
+                            state.window.request_redraw();
+                        }
+                    }
+                    TabDragState::Dragging {
+                        ref mut current_x, ..
+                    } => {
+                        *current_x = px;
+                        state.window.request_redraw();
+                    }
+                    TabDragState::None => {}
+                }
+
+                // Sidebar interactions: hover highlighting and drag-to-reorder.
+                if state.sidebar.visible {
+                    let in_sidebar = px < state.sidebar.effective_width();
+                    let ws_count = state.workspace_cache.len();
+
+                    // Check if we should transition from Pressing to Dragging.
+                    if state.sidebar.should_start_drag(py) {
+                        if let SidebarInteraction::Pressing { row, .. } = state.sidebar.interaction
+                        {
+                            state.sidebar.interaction = SidebarInteraction::Dragging {
+                                from_row: row,
+                                current_y: py,
+                            };
+                            state.window.set_cursor(winit::window::CursorIcon::Grabbing);
+                            state.window.request_redraw();
+                            return;
+                        }
+                    }
+
+                    // Update drag position.
+                    if let SidebarInteraction::Dragging {
+                        ref mut current_y, ..
+                    } = state.sidebar.interaction
+                    {
+                        *current_y = py;
+                        state.window.set_cursor(winit::window::CursorIcon::Grabbing);
+                        state.window.request_redraw();
+                        return;
+                    }
+
+                    // Hover: update when inside sidebar and not dragging/editing/pressing.
+                    if in_sidebar
+                        && !matches!(
+                            state.sidebar.interaction,
+                            SidebarInteraction::Dragging { .. }
+                                | SidebarInteraction::Editing { .. }
+                                | SidebarInteraction::Pressing { .. }
+                        )
+                    {
+                        let new_hover = state.sidebar.hit_test_row(py, ws_count);
+                        let old_hover =
+                            if let SidebarInteraction::Hover(h) = state.sidebar.interaction {
+                                Some(h)
+                            } else {
+                                None
+                            };
+                        if new_hover != old_hover {
+                            state.sidebar.interaction = match new_hover {
+                                Some(idx) => SidebarInteraction::Hover(idx),
+                                None => SidebarInteraction::Idle,
+                            };
+                            state.window.request_redraw();
+                        }
+                        // Pointer cursor in sidebar over workspace rows.
+                        if new_hover.is_some() {
+                            state.window.set_cursor(winit::window::CursorIcon::Pointer);
+                        }
+                        return;
+                    } else if !in_sidebar
+                        && matches!(state.sidebar.interaction, SidebarInteraction::Hover(_))
+                    {
+                        // Moved out of sidebar — clear hover.
+                        state.sidebar.interaction = SidebarInteraction::Idle;
+                        state.window.request_redraw();
+                    }
+                }
+
+                // If a divider drag is active, compute the new ratio and resize.
+                if let Some(ref drag) = state.drag_state {
+                    let cursor = match drag.orientation {
+                        DividerOrientation::Vertical => px,
+                        DividerOrientation::Horizontal => py,
+                    };
+                    let new_ratio = divider::compute_ratio(drag, cursor);
+                    self.app_state.resize_split(drag.pane_id, new_ratio);
+                    state.window.request_redraw();
+                    return;
+                }
+
+                // Change cursor icon based on divider hover (skip during tab drag).
+                if matches!(state.tab_drag, TabDragState::None) {
+                    let icon = match divider::hit_test(&state.dividers, px, py)
+                        .map(|d| d.orientation)
+                    {
+                        Some(DividerOrientation::Vertical) => winit::window::CursorIcon::EwResize,
+                        Some(DividerOrientation::Horizontal) => winit::window::CursorIcon::NsResize,
+                        None => winit::window::CursorIcon::Default,
+                    };
+                    state.window.set_cursor(icon);
+                }
+
                 let (col, row) = state.cursor_cell();
                 let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
                 let action = state.mouse.handle_mouse_motion(col, row, mouse_mode);

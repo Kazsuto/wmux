@@ -1,36 +1,42 @@
 use crate::error::CoreError;
 use crate::surface::PanelKind;
-use crate::types::SurfaceId;
+use crate::types::{PaneId, SurfaceId};
 
 /// A single surface (tab) within a pane.
 ///
-/// Tracks identity and metadata only. Terminal state and PTY channels
-/// are owned by [`crate::pane_registry::PaneState`].
+/// Tracks identity and metadata. Terminal state and PTY channels live in
+/// the backing [`crate::pane_registry::PaneState`] identified by `pane_id`.
+/// Secondary surfaces (tabs beyond the first) are "hidden panes" — registered
+/// in the [`crate::pane_registry::PaneRegistry`] but NOT in the layout tree.
 #[derive(Debug, Clone)]
 pub struct Surface {
     pub id: SurfaceId,
     pub title: String,
     pub kind: PanelKind,
+    /// The PaneId of the backing PaneState that owns this surface's Terminal and PTY.
+    pub pane_id: PaneId,
 }
 
 impl Surface {
-    /// Create a new terminal surface with the given title.
+    /// Create a new terminal surface with the given title and backing pane.
     #[must_use]
-    pub fn new(title: impl Into<String>) -> Self {
+    pub fn new(title: impl Into<String>, pane_id: PaneId) -> Self {
         Self {
             id: SurfaceId::new(),
             title: title.into(),
             kind: PanelKind::Terminal,
+            pane_id,
         }
     }
 
-    /// Create a new surface with an explicit kind and title.
+    /// Create a new surface with an explicit kind, title, and backing pane.
     #[must_use]
-    pub fn with_kind(title: impl Into<String>, kind: PanelKind) -> Self {
+    pub fn with_kind(title: impl Into<String>, kind: PanelKind, pane_id: PaneId) -> Self {
         Self {
             id: SurfaceId::new(),
             title: title.into(),
             kind,
+            pane_id,
         }
     }
 }
@@ -184,15 +190,43 @@ impl SurfaceManager {
     pub fn find_mut(&mut self, id: SurfaceId) -> Option<&mut Surface> {
         self.surfaces.iter_mut().find(|s| s.id == id)
     }
+
+    /// Return a reference to the surface at a given index, or `None` if out of bounds.
+    #[must_use]
+    pub fn get_by_index(&self, index: usize) -> Option<&Surface> {
+        self.surfaces.get(index)
+    }
+
+    /// Move a surface from `from_index` to `to_index`, keeping the active pointer
+    /// pointing to the same surface.
+    pub fn reorder(&mut self, from_index: usize, to_index: usize) {
+        if from_index >= self.surfaces.len()
+            || to_index >= self.surfaces.len()
+            || from_index == to_index
+        {
+            return;
+        }
+        let surface = self.surfaces.remove(from_index);
+        self.surfaces.insert(to_index, surface);
+        // Adjust active_index to keep pointing to the same surface.
+        if self.active_index == from_index {
+            self.active_index = to_index;
+        } else if from_index < self.active_index && to_index >= self.active_index {
+            self.active_index -= 1;
+        } else if from_index > self.active_index && to_index <= self.active_index {
+            self.active_index += 1;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::surface::PanelKind;
+    use crate::types::PaneId;
 
     fn make_surface(title: &str) -> Surface {
-        Surface::new(title)
+        Surface::new(title, PaneId::new())
     }
 
     #[test]
@@ -387,7 +421,7 @@ mod tests {
 
     #[test]
     fn surface_with_kind() {
-        let s = Surface::with_kind("browser tab", PanelKind::Browser);
+        let s = Surface::with_kind("browser tab", PanelKind::Browser, PaneId::new());
         assert_eq!(s.kind, PanelKind::Browser);
         assert_eq!(s.title, "browser tab");
     }

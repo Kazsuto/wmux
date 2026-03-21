@@ -117,6 +117,14 @@ impl PaneRegistry {
     pub fn pane_count(&self) -> usize {
         self.panes.len()
     }
+
+    /// Find which pane contains a given surface ID.
+    pub fn find_pane_for_surface(&self, surface_id: crate::types::SurfaceId) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find(|(_, state)| state.surfaces.iter().any(|s| s.id == surface_id))
+            .map(|(pane_id, _)| *pane_id)
+    }
 }
 
 impl Default for PaneRegistry {
@@ -155,7 +163,7 @@ mod tests {
             pty_write_tx: write_tx,
             pty_resize_tx: resize_tx,
             process_exited: false,
-            surfaces: SurfaceManager::new(Surface::new("shell")),
+            surfaces: SurfaceManager::new(Surface::new("shell", PaneId::new())),
         }
     }
 

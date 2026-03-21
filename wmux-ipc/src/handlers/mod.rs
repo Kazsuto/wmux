@@ -1,3 +1,4 @@
+pub mod browser;
+pub mod surface;
 pub mod system;
-// Future: pub mod workspace;
-// Future: pub mod surface;
+pub mod workspace;

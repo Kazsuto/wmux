@@ -11,3 +11,6 @@ pub use pane::{PaneRenderer, PaneViewport};
 pub use quad::QuadPipeline;
 pub use terminal::{TerminalMetrics, TerminalRenderer};
 pub use text::GlyphonRenderer;
+
+/// Default foreground text color used by terminal grid and overlays.
+pub const DEFAULT_TEXT_COLOR: glyphon::Color = glyphon::Color::rgb(204, 204, 204);

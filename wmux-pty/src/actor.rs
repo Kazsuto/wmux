@@ -2,11 +2,13 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::sync::mpsc as std_mpsc;
 
-use portable_pty::MasterPty;
 use tokio::sync::mpsc;
+use windows::Win32::System::Console::HPCON;
 
+use crate::conpty::{resize_by_hpcon, ConPtyHandle};
 use crate::error::PtyError;
 use crate::manager::PtyHandle;
+use crate::spawn::ChildProcess;
 
 /// Events emitted by a PTY actor.
 #[derive(Debug, Clone)]
@@ -29,14 +31,14 @@ pub enum PtyEvent {
 /// # Architecture
 ///
 /// Internally, the actor spawns four tasks:
-/// - **Reader** (`spawn_blocking`): reads PTY output into a 4096-byte buffer,
-///   sends [`PtyEvent::Output`] via bounded channel.
+/// - **Reader** (`spawn_blocking`): reads ConPTY output into a 4096-byte buffer,
+///   sends [`PtyEvent::Output`] via bounded channel. Includes flood detection.
 /// - **Writer** (`spawn_blocking`): receives bytes from write channel,
-///   writes to PTY input.
+///   writes to ConPTY input pipe.
 /// - **Exit watcher** (`spawn_blocking`): waits for child process exit,
-///   sends [`PtyEvent::Exited`].
+///   then shuts down ConPTY cleanly (Release + Close on 24H2+).
 /// - **Resize handler** (`tokio::spawn`): receives resize requests,
-///   applies them to the master PTY.
+///   applies them via `ResizePseudoConsole`.
 ///
 /// All communication is through bounded channels — no `Arc<Mutex<T>>`.
 pub struct PtyActorHandle {
@@ -64,7 +66,11 @@ impl PtyActorHandle {
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(256);
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(4);
 
-        let (reader, writer, child, master) = handle.into_parts();
+        let (reader, writer, child, conpty) = handle.into_parts();
+
+        // Copy the HPCON value for the resize handler (HPCON is Copy — just an isize).
+        // The ConPtyHandle is moved into the exit watcher for proper shutdown ordering.
+        let hpc = conpty.hpcon();
 
         // Synchronization: the reader holds reader_done_tx. When the reader
         // exits (EOF or error), it drops the sender. The exit watcher waits
@@ -72,10 +78,21 @@ impl PtyActorHandle {
         // the Exited event.
         let (reader_done_tx, reader_done_rx) = std_mpsc::sync_channel::<()>(0);
 
+        // Clone resize_tx so the exit watcher can drop it before ConPTY
+        // shutdown, ensuring the resize handler has exited and won't call
+        // ResizePseudoConsole on a closed HPCON.
+        let resize_tx_for_shutdown = resize_tx.clone();
+
         Self::spawn_reader(reader, event_tx.clone(), reader_done_tx);
         Self::spawn_writer(writer, write_rx);
-        Self::spawn_exit_watcher(child, event_tx, reader_done_rx);
-        Self::spawn_resize_handler(master, resize_rx);
+        Self::spawn_exit_watcher(
+            child,
+            conpty,
+            event_tx,
+            reader_done_rx,
+            resize_tx_for_shutdown,
+        );
+        Self::spawn_resize_handler(hpc, resize_rx);
 
         Self {
             write_tx,
@@ -94,8 +111,14 @@ impl PtyActorHandle {
     }
 
     /// Resize the PTY to the given dimensions.
+    ///
+    /// `cols` is clamped to a minimum of 2 to prevent ConPTY bug #19922
+    /// (a 2-column character on a 1-column terminal causes an infinite loop).
+    /// `rows` is clamped to a minimum of 1.
     #[inline]
     pub async fn resize(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
+        let cols = cols.max(2);
+        let rows = rows.max(1);
         self.resize_tx
             .send((rows, cols))
             .await
@@ -110,8 +133,13 @@ impl PtyActorHandle {
         self.event_rx.recv().await
     }
 
+    /// Maximum bytes per second before the reader considers the PTY output
+    /// to be flooding (e.g. ConPTY infinite loop bug #19922). 10 MB/s is
+    /// well above any realistic terminal output rate.
+    const FLOOD_THRESHOLD_BYTES: usize = 10 * 1024 * 1024;
+
     fn spawn_reader(
-        reader: Box<dyn Read + Send>,
+        reader: std::fs::File,
         event_tx: mpsc::Sender<PtyEvent>,
         _reader_done: std_mpsc::SyncSender<()>,
     ) {
@@ -121,10 +149,33 @@ impl PtyActorHandle {
             let _done_guard = _reader_done;
             let mut reader = reader;
             let mut buf = [0u8; 4096];
+
+            // Flood detection: track bytes received in a 1-second window.
+            // Protects against ConPTY bug #19922 where a 2-column character
+            // on a 1-column terminal causes an infinite loop emitting \r\n\x20.
+            let mut window_start = std::time::Instant::now();
+            let mut window_bytes: usize = 0;
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Flood detection: reset window every second.
+                        let elapsed = window_start.elapsed();
+                        if elapsed >= std::time::Duration::from_secs(1) {
+                            window_bytes = 0;
+                            window_start = std::time::Instant::now();
+                        }
+                        window_bytes = window_bytes.saturating_add(n);
+
+                        if window_bytes > Self::FLOOD_THRESHOLD_BYTES {
+                            tracing::error!(
+                                bytes_per_sec = window_bytes,
+                                "pty output flood detected (possible ConPTY bug #19922), killing reader"
+                            );
+                            break;
+                        }
+
                         if event_tx
                             .blocking_send(PtyEvent::Output(buf[..n].to_vec()))
                             .is_err()
@@ -142,7 +193,7 @@ impl PtyActorHandle {
         });
     }
 
-    fn spawn_writer(writer: Box<dyn Write + Send>, write_rx: mpsc::Receiver<Vec<u8>>) {
+    fn spawn_writer(writer: std::fs::File, write_rx: mpsc::Receiver<Vec<u8>>) {
         tokio::task::spawn_blocking(move || {
             let mut writer = writer;
             let mut write_rx = write_rx;
@@ -158,14 +209,15 @@ impl PtyActorHandle {
     }
 
     fn spawn_exit_watcher(
-        child: Box<dyn portable_pty::Child + Send + Sync>,
+        child: ChildProcess,
+        mut conpty: ConPtyHandle,
         event_tx: mpsc::Sender<PtyEvent>,
         reader_done_rx: std_mpsc::Receiver<()>,
+        resize_tx_for_shutdown: mpsc::Sender<(u16, u16)>,
     ) {
         tokio::task::spawn_blocking(move || {
-            let mut child = child;
             let success = match child.wait() {
-                Ok(status) => status.success(),
+                Ok(success) => success,
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to wait for pty child process");
                     false
@@ -176,23 +228,26 @@ impl PtyActorHandle {
             // sending the Exited event, so consumers never see Exited
             // before the final Output chunks.
             let _ = reader_done_rx.recv();
+
+            // Drop the resize channel sender to ensure the resize handler
+            // exits BEFORE we close the HPCON. This prevents use-after-close
+            // of the raw HPCON in the resize handler.
+            drop(resize_tx_for_shutdown);
+
+            // Shut down ConPTY cleanly. On 24H2+ this calls
+            // ReleasePseudoConsole then ClosePseudoConsole. On older
+            // Windows, ClosePseudoConsole blocks here (safe in spawn_blocking).
+            conpty.shutdown();
+
             let _ = event_tx.blocking_send(PtyEvent::Exited { success });
             tracing::debug!("pty exit watcher exited");
         });
     }
 
-    fn spawn_resize_handler(
-        master: Box<dyn MasterPty + Send>,
-        mut resize_rx: mpsc::Receiver<(u16, u16)>,
-    ) {
+    fn spawn_resize_handler(hpc: HPCON, mut resize_rx: mpsc::Receiver<(u16, u16)>) {
         tokio::spawn(async move {
             while let Some((rows, cols)) = resize_rx.recv().await {
-                if let Err(e) = master.resize(portable_pty::PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                }) {
+                if let Err(e) = resize_by_hpcon(hpc, cols, rows) {
                     tracing::warn!(rows, cols, error = %e, "pty resize failed");
                 }
             }

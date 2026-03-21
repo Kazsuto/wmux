@@ -3,13 +3,13 @@ use wmux_core::{rect::Rect, types::PaneId};
 use crate::quad::QuadPipeline;
 
 /// Height in pixels of the tab bar when a pane has multiple surfaces.
-pub const TAB_BAR_HEIGHT: f32 = 24.0;
+pub const TAB_BAR_HEIGHT: f32 = 28.0;
 
 /// Width in pixels of the pane border/focus highlight stripe.
 pub const BORDER_WIDTH: f32 = 1.0;
 
 /// Describes a pane's position and state for a single rendered frame.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PaneViewport {
     pub pane_id: PaneId,
     /// Layout rect from PaneTree (physical pixels, top-left origin).
@@ -87,6 +87,7 @@ impl PaneRenderer {
         viewport: &PaneViewport,
         tab_bg: [f32; 4],
         active_tab_bg: [f32; 4],
+        accent_color: [f32; 4],
     ) -> Result<(), crate::RenderError> {
         if viewport.tab_count <= 1 {
             return Ok(());
@@ -95,20 +96,46 @@ impl PaneRenderer {
         let r = &viewport.rect;
         let tab_width = (r.width / viewport.tab_count as f32).max(1.0);
 
-        for (i, title) in viewport.tab_titles.iter().enumerate() {
-            let tab_x = r.x + i as f32 * tab_width;
-            let bg = if i == viewport.active_tab {
-                active_tab_bg
-            } else {
-                tab_bg
-            };
-            // Tab background quad
-            quads.push_quad(tab_x, r.y, tab_width, TAB_BAR_HEIGHT, bg);
+        // Full tab bar background
+        quads.push_quad(r.x, r.y, r.width, TAB_BAR_HEIGHT, tab_bg);
 
-            // Tab title text rendering will be added when GlyphonRenderer
-            // supports per-tab text areas (L2_08 or later).
-            let _ = title;
+        for i in 0..viewport.tab_count {
+            let tab_x = r.x + i as f32 * tab_width;
+
+            if i == viewport.active_tab {
+                // Active tab: lighter background
+                quads.push_quad(tab_x, r.y, tab_width, TAB_BAR_HEIGHT, active_tab_bg);
+                // Active indicator: 2px accent bar at the bottom of the tab
+                quads.push_quad(
+                    tab_x,
+                    r.y + TAB_BAR_HEIGHT - 2.0,
+                    tab_width,
+                    2.0,
+                    accent_color,
+                );
+            }
+
+            // Vertical separator between tabs (1px, skip after last tab)
+            if i < viewport.tab_count - 1 {
+                let sep_x = tab_x + tab_width - 0.5;
+                quads.push_quad(
+                    sep_x,
+                    r.y + 4.0,
+                    1.0,
+                    TAB_BAR_HEIGHT - 8.0,
+                    [1.0, 1.0, 1.0, 0.1],
+                );
+            }
         }
+
+        // Bottom border line separating tab bar from terminal content
+        quads.push_quad(
+            r.x,
+            r.y + TAB_BAR_HEIGHT - 1.0,
+            r.width,
+            1.0,
+            [1.0, 1.0, 1.0, 0.08],
+        );
 
         tracing::trace!(
             pane_id = %viewport.pane_id,

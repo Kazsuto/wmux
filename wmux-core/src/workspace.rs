@@ -3,7 +3,19 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::pane_tree::PaneTree;
+use crate::remote::{RemoteConfig, RemoteConnectionState};
 use crate::types::WorkspaceId;
+
+/// Identifies whether a workspace is local or connected to a remote host via SSH.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WorkspaceKind {
+    #[default]
+    Local,
+    Remote {
+        config: RemoteConfig,
+        state: RemoteConnectionState,
+    },
+}
 
 /// Metadata for a workspace, populated over time by sidebar and shell integration tasks.
 ///
@@ -38,6 +50,8 @@ pub struct Workspace {
     pub(crate) metadata: WorkspaceMetadata,
     /// 0-based creation order, used for stable sort in the sidebar.
     pub(crate) creation_order: usize,
+    /// Whether this workspace is local or connected to a remote host via SSH.
+    pub(crate) kind: WorkspaceKind,
 }
 
 impl Workspace {
@@ -54,6 +68,7 @@ impl Workspace {
             pane_tree: None,
             metadata: WorkspaceMetadata::default(),
             creation_order,
+            kind: WorkspaceKind::default(),
         }
     }
 
@@ -90,6 +105,12 @@ impl Workspace {
     #[must_use]
     pub fn metadata(&self) -> &WorkspaceMetadata {
         &self.metadata
+    }
+
+    /// Return the workspace kind (local or remote).
+    #[must_use]
+    pub fn kind(&self) -> &WorkspaceKind {
+        &self.kind
     }
 }
 

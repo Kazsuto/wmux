@@ -6,7 +6,7 @@
 ## Project Summary
 - **Product**: wmux — Native Windows terminal multiplexer with GPU rendering, split panes, integrated browser, and IPC for AI agents
 - **Stack**: Rust (wgpu 28, glyphon 0.10, winit 0.30, vte 0.13, portable-pty 0.9, tokio, webview2-com 0.39, windows 0.62, clap 4), Go (SSH daemon)
-- **Current state**: wmux-core (IMPLEMENTED: terminal, grid, scrollback, VTE, OSC, events), wmux-pty (IMPLEMENTED: manager, actor, shell detection), wmux-render (IMPLEMENTED: GPU context, QuadPipeline, GlyphonRenderer), wmux-ui (basic: winit event loop + demo render), wmux-app (entry point). wmux-ipc/cli/browser/config are stubs.
+- **Current state**: wmux-core (IMPLEMENTED: terminal, grid, scrollback, VTE, OSC, events, focus routing, surface manager, workspace manager), wmux-pty (IMPLEMENTED: manager, actor, shell detection), wmux-render (IMPLEMENTED: GPU context, QuadPipeline, GlyphonRenderer, multi-pane rendering), wmux-ui (IMPLEMENTED: winit event loop, keyboard shortcuts, input dispatch), wmux-ipc (IMPLEMENTED: Named Pipes server, JSON-RPC v2, auth, handler router), wmux-cli (IMPLEMENTED: Named Pipe client, CLI commands), wmux-browser (IMPLEMENTED: WebView2 panel, COM lifecycle, automation), wmux-app (entry point), wmux-config (stub).
 
 ## How to Use These Specs
 
@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 28 done, 0 in progress, 22 pending (56% complete)
+> **Current progress**: 36 done, 0 in progress, 14 pending (72% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -109,35 +109,33 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > 2/2 done
 
-### Wave 8 — UI Layout, IPC Handlers, CLI & Browser Panel (needs Wave 7)
+### Wave 8 — UI Layout, IPC Handlers, CLI & Browser Panel (needs Wave 7) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L2_03](L2_03-focus-routing-keyboard-shortcuts.md) | Focus Routing + Keyboard Shortcuts | P0 | 2h | L2_02 | ⬜ |
-| [L2_04](L2_04-multi-pane-gpu-rendering.md) | Multi-Pane GPU Rendering | P0 | 2.5h | L2_02, L0_03 | ⬜ |
-| [L2_06](L2_06-surface-tab-system.md) | Surface Tab System | P1 | 2h | L2_02 | ⬜ |
-| [L2_07](L2_07-workspace-lifecycle.md) | Workspace Lifecycle | P0 | 2h | L2_02 | ⬜ |
-| [L2_10](L2_10-ipc-authentication.md) | IPC Authentication | P1 | 2h | L2_09 | ⬜ |
-| [L2_11](L2_11-ipc-handler-trait-router.md) | IPC Handler Trait + Router | P0 | 2h | L2_09 | ⬜ |
-| [L2_15](L2_15-cli-client-foundation.md) | CLI Client Foundation | P0 | 2h | L2_09 | ⬜ |
-| [L3_04](L3_04-webview2-browser-panel.md) | WebView2 Browser Panel | P1 | 2.5h | L3_03, L2_02 | ⬜ |
+| [L2_03](L2_03-focus-routing-keyboard-shortcuts.md) | Focus Routing + Keyboard Shortcuts | P0 | 2h | L2_02 | ✅ |
+| [L2_04](L2_04-multi-pane-gpu-rendering.md) | Multi-Pane GPU Rendering | P0 | 2.5h | L2_02, L0_03 | ✅ |
+| [L2_06](L2_06-surface-tab-system.md) | Surface Tab System | P1 | 2h | L2_02 | ✅ |
+| [L2_07](L2_07-workspace-lifecycle.md) | Workspace Lifecycle | P0 | 2h | L2_02 | ✅ |
+| [L2_10](L2_10-ipc-authentication.md) | IPC Authentication | P1 | 2h | L2_09 | ✅ |
+| [L2_11](L2_11-ipc-handler-trait-router.md) | IPC Handler Trait + Router | P0 | 2h | L2_09 | ✅ |
+| [L2_15](L2_15-cli-client-foundation.md) | CLI Client Foundation | P0 | 2h | L2_09 | ✅ |
+| [L3_04](L3_04-webview2-browser-panel.md) | WebView2 Browser Panel | P1 | 2.5h | L3_03, L2_02 | ✅ |
 
-> `/apex implement wave 8 in teams mode`
-> ⚠️ File conflict risks: L2_06+L2_07 (wmux-core), L2_10+L2_11 (wmux-ipc) — different modules, manageable
+> 8/8 done
 
-### Wave 9 — Sidebar, Domain Handlers, Session & Advanced (needs Wave 8)
+### Wave 9 — Sidebar, Domain Handlers, Session & Advanced (needs Wave 8) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L2_05](L2_05-draggable-dividers-pane-resize.md) | Draggable Dividers + Pane Resize | P1 | 2h | L2_04 | ⬜ |
-| [L2_08](L2_08-sidebar-ui-rendering.md) | Sidebar UI Rendering | P0 | 2.5h | L2_07, L0_03 | ⬜ |
-| [L2_12](L2_12-workspace-surface-ipc-handlers.md) | Workspace & Surface IPC Handlers | P0 | 2.5h | L2_11, L2_07 | ⬜ |
-| [L2_13](L2_13-input-read-ipc-handlers.md) | Input & Read IPC Handlers | P0 | 2h | L2_11 | ⬜ |
-| [L3_01](L3_01-session-auto-save.md) | Session Auto-Save | P1 | 2.5h | L2_07 | ⬜ |
-| [L3_07](L3_07-browser-ipc-handlers.md) | Browser IPC Handlers | P1 | 2h | L2_11, L3_05, L3_06 | ⬜ |
-| [L4_02](L4_02-terminal-search.md) | Terminal Search | P2 | 2h | L1_03, L2_04 | ⬜ |
-| [L4_03](L4_03-ssh-remote.md) | SSH Remote | P2 | 3h | L2_09, L2_07 | ⬜ |
+| [L2_05](L2_05-draggable-dividers-pane-resize.md) | Draggable Dividers + Pane Resize | P1 | 2h | L2_04 | ✅ |
+| [L2_08](L2_08-sidebar-ui-rendering.md) | Sidebar UI Rendering | P0 | 2.5h | L2_07, L0_03 | ✅ |
+| [L2_12](L2_12-workspace-surface-ipc-handlers.md) | Workspace & Surface IPC Handlers | P0 | 2.5h | L2_11, L2_07 | ✅ |
+| [L2_13](L2_13-input-read-ipc-handlers.md) | Input & Read IPC Handlers | P0 | 2h | L2_11 | ✅ |
+| [L3_01](L3_01-session-auto-save.md) | Session Auto-Save | P1 | 2.5h | L2_07 | ✅ |
+| [L3_07](L3_07-browser-ipc-handlers.md) | Browser IPC Handlers | P1 | 2h | L2_11, L3_05, L3_06 | ✅ |
+| [L4_02](L4_02-terminal-search.md) | Terminal Search | P2 | 2h | L1_03, L2_04 | ✅ |
+| [L4_03](L4_03-ssh-remote.md) | SSH Remote | P2 | 3h | L2_09, L2_07 | ✅ |
 
-> `/apex implement wave 9 in teams mode`
-> ⚠️ File conflict risks: L2_12+L2_13+L3_07 (wmux-ipc) — different handler modules, manageable
+> 8/8 done
 
 ### Wave 10 — Metadata IPC, Session Restore & Polish (needs Wave 9)
 | Task | Title | Priority | Effort | Depends On | Status |

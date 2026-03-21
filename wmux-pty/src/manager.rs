@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Write};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize, PtySystem};
-
+use crate::conpty::{create_conpty, ConPtyHandle};
 use crate::error::PtyError;
 use crate::shell::{detect_shell, ShellType};
+use crate::spawn::{spawn_command, ChildProcess};
 
 const HOOK_POWERSHELL: &str = include_str!("../../resources/shell-integration/wmux.ps1");
 const HOOK_BASH: &str = include_str!("../../resources/shell-integration/wmux.bash");
@@ -44,13 +44,13 @@ impl Default for SpawnConfig {
 
 /// Handle to a running PTY session.
 ///
-/// Provides reader/writer access to the terminal I/O and control over
-/// the child process and terminal dimensions.
+/// Owns the ConPTY handle, I/O pipe files, and child process. The actor
+/// consumes this via [`into_parts`] to distribute components across tasks.
 pub struct PtyHandle {
-    reader: Box<dyn Read + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
+    reader: File,
+    writer: File,
+    child: ChildProcess,
+    conpty: ConPtyHandle,
 }
 
 impl fmt::Debug for PtyHandle {
@@ -60,58 +60,22 @@ impl fmt::Debug for PtyHandle {
 }
 
 impl PtyHandle {
-    /// Get a mutable reference to the PTY reader (terminal output).
-    #[inline]
-    pub fn reader_mut(&mut self) -> &mut (dyn Read + Send) {
-        &mut *self.reader
-    }
-
-    /// Get a mutable reference to the PTY writer (terminal input).
-    #[inline]
-    pub fn writer_mut(&mut self) -> &mut (dyn Write + Send) {
-        &mut *self.writer
-    }
-
-    /// Get a mutable reference to the child process.
-    #[inline]
-    pub fn child_mut(&mut self) -> &mut (dyn Child + Send + Sync) {
-        &mut *self.child
-    }
-
-    /// Clone an additional reader from the master PTY.
-    pub fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, PtyError> {
-        self.master
-            .try_clone_reader()
-            .map_err(|e| PtyError::CloneReaderFailed(e.into()))
-    }
-
     /// Resize the terminal to the given dimensions.
+    ///
+    /// `cols` is clamped to a minimum of 2 to prevent ConPTY bug #19922
+    /// (a 2-column character on a 1-column terminal causes an infinite loop).
+    /// `rows` is clamped to a minimum of 1.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
         tracing::debug!(rows, cols, "resizing pty");
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| PtyError::ResizeFailed(e.into()))
+        self.conpty.resize(cols, rows)
     }
 
     /// Consume the handle, returning its individual components.
     ///
     /// Used by [`PtyActorHandle`](crate::PtyActorHandle) to move each component
     /// into separate async tasks.
-    #[allow(clippy::type_complexity)]
-    pub fn into_parts(
-        self,
-    ) -> (
-        Box<dyn Read + Send>,
-        Box<dyn Write + Send>,
-        Box<dyn Child + Send + Sync>,
-        Box<dyn MasterPty + Send>,
-    ) {
-        (self.reader, self.writer, self.child, self.master)
+    pub fn into_parts(self) -> (File, File, ChildProcess, ConPtyHandle) {
+        (self.reader, self.writer, self.child, self.conpty)
     }
 }
 
@@ -146,26 +110,31 @@ fn ensure_hook_files() -> Result<PathBuf, PtyError> {
     Ok(hook_dir)
 }
 
-/// Configure the `CommandBuilder` to source the wmux shell integration hook on startup.
-fn inject_shell_hooks(cmd: &mut CommandBuilder, shell_type: &ShellType, hook_dir: &Path) {
+/// Collect shell arguments including hook injection into a `Vec<String>`.
+fn build_shell_args(
+    base_args: &[String],
+    shell_type: &ShellType,
+    hook_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut args: Vec<String> = base_args.to_vec();
+
+    let Some(hook_dir) = hook_dir else {
+        return args;
+    };
+
     match shell_type {
         ShellType::Pwsh | ShellType::PowerShell => {
             let hook_path = hook_dir.join("wmux.ps1");
-            // Escape single quotes in the path (PowerShell convention: '' inside '...')
             let hook_path_str = hook_path.to_string_lossy().replace('\'', "''");
-            // -NoExit keeps PowerShell interactive after running -Command
-            // -ExecutionPolicy Bypass allows loading an unsigned script for this session
-            cmd.arg("-NoExit");
-            cmd.arg("-ExecutionPolicy");
-            cmd.arg("Bypass");
-            cmd.arg("-Command");
-            cmd.arg(format!(". '{hook_path_str}'"));
+            args.push("-NoExit".to_string());
+            args.push("-ExecutionPolicy".to_string());
+            args.push("Bypass".to_string());
+            args.push("-Command".to_string());
+            args.push(format!(". '{hook_path_str}'"));
             tracing::debug!(hook = %hook_path.display(), "injected PowerShell shell integration hook");
         }
         ShellType::Bash => {
             let hook_path = hook_dir.join("wmux.bash");
-            // Create a wrapper rcfile: source ~/.bashrc first, then the wmux hook.
-            // This replaces the default rcfile via --rcfile without losing the user's config.
             let wrapper = std::env::temp_dir().join("wmux_bash_rc.sh");
             let content = format!(
                 "[ -f ~/.bashrc ] && . ~/.bashrc\n. '{}'\n",
@@ -173,35 +142,33 @@ fn inject_shell_hooks(cmd: &mut CommandBuilder, shell_type: &ShellType, hook_dir
             );
             if let Err(e) = std::fs::write(&wrapper, content) {
                 tracing::warn!(error = %e, "failed to write bash wrapper rcfile, skipping hook injection");
-                return;
+                return args;
             }
             tracing::debug!(hook = %hook_path.display(), "injected Bash shell integration hook");
-            cmd.arg("--rcfile");
-            cmd.arg(wrapper);
+            args.push("--rcfile".to_string());
+            args.push(wrapper.to_string_lossy().to_string());
         }
         ShellType::Cmd => {
             tracing::debug!("cmd.exe does not support shell integration hooks, skipping");
         }
     }
+
+    args
 }
 
 /// Manages PTY lifecycle: shell detection, spawning, and handle creation.
-pub struct PtyManager {
-    pty_system: Box<dyn PtySystem + Send>,
-}
-
-impl fmt::Debug for PtyManager {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PtyManager").finish_non_exhaustive()
-    }
-}
+///
+/// Uses ConPTY directly via the `windows` crate — no portable-pty dependency.
+/// ConPTY is created with `PSEUDOCONSOLE_RESIZE_QUIRK` to prevent reflow
+/// output on resize, and supports proper 24H2+ shutdown via
+/// `ReleasePseudoConsole`.
+#[derive(Debug)]
+pub struct PtyManager;
 
 impl PtyManager {
-    /// Create a new `PtyManager` using the native PTY system (ConPTY on Windows).
+    /// Create a new `PtyManager`.
     pub fn new() -> Self {
-        Self {
-            pty_system: native_pty_system(),
-        }
+        Self
     }
 
     /// Spawn a new PTY session with the given configuration.
@@ -224,20 +191,14 @@ impl PtyManager {
             }
         };
 
-        // Build command
-        let mut cmd = CommandBuilder::new(&shell_path);
-        for arg in &config.args {
-            cmd.arg(arg);
-        }
-
-        // Set working directory
+        // Resolve working directory
         let cwd = config
             .working_directory
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        if cwd.is_dir() {
-            cmd.cwd(&cwd);
+        let cwd = if cwd.is_dir() {
             tracing::debug!(cwd = %cwd.display(), "set working directory");
+            cwd
         } else {
             let fallback = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             tracing::warn!(
@@ -245,65 +206,44 @@ impl PtyManager {
                 fallback = %fallback.display(),
                 "working directory does not exist, using fallback"
             );
-            cmd.cwd(&fallback);
-        }
-
-        // Inject standard environment variables
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("TERM_PROGRAM", "wmux");
-
-        // Inject WMUX_* variables from config
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
-
-        // Inject shell integration hooks (OSC 7 CWD tracking, OSC 133 prompt marks)
-        match ensure_hook_files() {
-            Ok(hook_dir) => inject_shell_hooks(&mut cmd, &shell_type, &hook_dir),
-            Err(e) => tracing::warn!(error = %e, "failed to set up shell integration hook files"),
-        }
-
-        // Open PTY pair
-        let size = PtySize {
-            rows: config.rows,
-            cols: config.cols,
-            pixel_width: 0,
-            pixel_height: 0,
+            fallback
         };
 
-        let pair = self
-            .pty_system
-            .openpty(size)
-            .map_err(|e| PtyError::SpawnFailed(e.into()))?;
+        // Build environment variables
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm-256color".to_string());
+        env.insert("TERM_PROGRAM".to_string(), "wmux".to_string());
+        env.extend(config.env);
 
-        // Spawn command in the slave PTY
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| PtyError::SpawnFailed(e.into()))?;
+        // Inject shell integration hooks
+        let hook_dir = match ensure_hook_files() {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to set up shell integration hook files");
+                None
+            }
+        };
+        let args = build_shell_args(&config.args, &shell_type, hook_dir.as_deref());
+
+        // Create ConPTY with PSEUDOCONSOLE_RESIZE_QUIRK
+        let pair = create_conpty(config.cols, config.rows)?;
+
+        // Spawn shell inside the ConPTY
+        let child = spawn_command(pair.conpty.hpcon(), &shell_path, &args, &env, &cwd)?;
 
         tracing::info!(
             shell = %shell_path.display(),
             rows = config.rows,
             cols = config.cols,
-            "pty session spawned"
+            pid = child.pid(),
+            "pty session spawned (ConPTY direct)"
         );
 
-        // Obtain reader and writer from master
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| PtyError::SpawnFailed(e.into()))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| PtyError::SpawnFailed(e.into()))?;
-
         Ok(PtyHandle {
-            reader,
-            writer,
+            reader: pair.output_read,
+            writer: pair.input_write,
             child,
-            master: pair.master,
+            conpty: pair.conpty,
         })
     }
 }
@@ -360,8 +300,28 @@ mod tests {
 
     #[test]
     fn pty_manager_default() {
-        // Should not panic
         let _manager = PtyManager::default();
+    }
+
+    #[test]
+    fn build_shell_args_powershell_hooks() {
+        let hook_dir = PathBuf::from("C:/test/hooks");
+        let args = build_shell_args(&[], &ShellType::Pwsh, Some(&hook_dir));
+        assert!(args.contains(&"-NoExit".to_string()));
+        assert!(args.contains(&"-ExecutionPolicy".to_string()));
+        assert!(args.contains(&"Bypass".to_string()));
+    }
+
+    #[test]
+    fn build_shell_args_no_hook_dir() {
+        let args = build_shell_args(&["--login".to_string()], &ShellType::Bash, None);
+        assert_eq!(args, vec!["--login".to_string()]);
+    }
+
+    #[test]
+    fn build_shell_args_cmd_no_hooks() {
+        let args = build_shell_args(&[], &ShellType::Cmd, Some(Path::new("C:/hooks")));
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -383,7 +343,7 @@ mod tests {
         // Normal resize
         assert!(handle.resize(50, 120).is_ok());
 
-        // Small resize (1x1) should not panic
+        // Small resize: cols clamped to 2 (ConPTY bug #19922 prevention)
         assert!(handle.resize(1, 1).is_ok());
     }
 

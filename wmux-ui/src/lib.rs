@@ -1,8 +1,11 @@
+pub mod divider;
 pub mod error;
 pub mod event;
 pub mod input;
 pub mod mouse;
+pub mod search;
 pub mod shortcuts;
+pub mod sidebar;
 pub mod toast;
 pub mod window;
 

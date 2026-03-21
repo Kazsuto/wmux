@@ -128,10 +128,10 @@ impl TerminalRenderer {
         let mut dirty_buf = std::mem::take(&mut self.dirty_buf);
         dirty_buf.clear();
         if scroll_changed {
-            let _ = grid.take_dirty_rows(); // consume and discard to reset flags
+            grid.reset_dirty();
             dirty_buf.extend(0..self.rows);
         } else {
-            dirty_buf.extend(grid.take_dirty_rows());
+            grid.take_dirty_rows_into(&mut dirty_buf);
         };
 
         for &row_idx in &dirty_buf {
@@ -208,7 +208,7 @@ impl TerminalRenderer {
     /// Same logic as [`update`] but reads from a cloned `Grid` and
     /// pre-extracted scrollback rows instead of live references.
     ///
-    /// - `grid`: cloned grid (dirty flags will be consumed via `take_dirty_rows`).
+    /// - `grid`: cloned grid (dirty flags consumed by the caller beforehand).
     /// - `viewport_offset`: scrollback viewport position.
     /// - `scrollback_len`: total scrollback row count.
     /// - `scrollback_visible_rows`: only the rows visible in the current viewport
@@ -318,13 +318,15 @@ impl TerminalRenderer {
     /// Used by the multi-pane render loop: each pane's renderer produces its
     /// text areas, they are collected into one slice, and a single
     /// `GlyphonRenderer::prepare_text_areas` call uploads everything at once.
+    ///
+    /// Returns an iterator to avoid per-frame `Vec` allocation.
     pub fn text_areas(
         &self,
         pane_origin: (f32, f32),
         pane_rect: wmux_core::rect::Rect,
         surface_width: u32,
         surface_height: u32,
-    ) -> Vec<TextArea<'_>> {
+    ) -> impl Iterator<Item = TextArea<'_>> + '_ {
         let ch = self.metrics.cell_height;
         let (x_off, y_off) = pane_origin;
 
@@ -340,7 +342,7 @@ impl TerminalRenderer {
         self.row_buffers
             .iter()
             .enumerate()
-            .map(|(r, buf)| TextArea {
+            .map(move |(r, buf)| TextArea {
                 buffer: buf,
                 left: x_off,
                 top: y_off + r as f32 * ch,
@@ -351,10 +353,9 @@ impl TerminalRenderer {
                     right: bounds_right,
                     bottom: bounds_bottom,
                 },
-                default_color: GlyphonColor::rgb(204, 204, 204),
+                default_color: crate::DEFAULT_TEXT_COLOR,
                 custom_glyphs: &[],
             })
-            .collect()
     }
 
     /// Resize the terminal — rebuilds all row buffers for the new dimensions.

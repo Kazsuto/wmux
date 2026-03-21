@@ -11,8 +11,8 @@ pub enum PtyError {
     #[error("pty resize failed")]
     ResizeFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("clone reader failed")]
-    CloneReaderFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("ConPTY creation failed: {0}")]
+    ConPtyCreationFailed(String),
 
     #[error("pty actor channel closed")]
     ChannelClosed,

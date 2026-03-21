@@ -206,7 +206,7 @@ impl Grid {
         }
 
         // Mark all rows dirty.
-        self.dirty.iter_mut().for_each(|d| *d = true);
+        self.dirty.fill(true);
     }
 
     /// Scroll the grid down by `n` rows. The bottom `n` rows are discarded,
@@ -224,7 +224,7 @@ impl Grid {
         }
 
         // Mark all rows dirty.
-        self.dirty.iter_mut().for_each(|d| *d = true);
+        self.dirty.fill(true);
     }
 
     /// Resize the grid. On shrink, excess cells/rows are truncated.
@@ -269,7 +269,7 @@ impl Grid {
         for cell in &mut self.cells {
             *cell = Cell::default();
         }
-        self.dirty.iter_mut().for_each(|d| *d = true);
+        self.dirty.fill(true);
     }
 
     /// Return an immutable slice of all cells in `row`.
@@ -309,16 +309,30 @@ impl Grid {
         self.cells[start..end].to_vec()
     }
 
-    /// Return the indices of all dirty rows and reset all dirty flags.
-    pub fn take_dirty_rows(&mut self) -> Vec<u16> {
-        let mut result = Vec::with_capacity(self.rows as usize);
+    /// Mark all rows as dirty (forces a full re-render on next frame).
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty.fill(true);
+    }
+
+    /// Append dirty row indices to `out` and reset all dirty flags.
+    ///
+    /// Reuses the caller's buffer to avoid per-frame allocation in the render
+    /// hot path.
+    pub fn take_dirty_rows_into(&mut self, out: &mut Vec<u16>) {
         for (i, flag) in self.dirty.iter_mut().enumerate() {
             if *flag {
-                result.push(i as u16);
+                out.push(i as u16);
                 *flag = false;
             }
         }
-        result
+    }
+
+    /// Reset all dirty flags without collecting indices.
+    ///
+    /// Used when the caller already knows it needs to redraw every row
+    /// (e.g. after a scroll offset change).
+    pub fn reset_dirty(&mut self) {
+        self.dirty.fill(false);
     }
 
     /// Immutable reference to the cursor state.
@@ -425,6 +439,13 @@ mod tests {
     use crate::color::Color;
     use compact_str::CompactString;
 
+    /// Test helper: collect dirty rows into a Vec (wraps the zero-alloc API).
+    fn take_dirty(grid: &mut Grid) -> Vec<u16> {
+        let mut out = Vec::new();
+        grid.take_dirty_rows_into(&mut out);
+        out
+    }
+
     #[test]
     fn new_grid_defaults() {
         let grid = Grid::new(80, 24);
@@ -452,12 +473,12 @@ mod tests {
     fn dirty_tracking() {
         let mut grid = Grid::new(80, 24);
         // Fresh grid has no dirty rows.
-        assert!(grid.take_dirty_rows().is_empty());
+        assert!(take_dirty(&mut grid).is_empty());
 
         grid.set_cell(0, 5, Cell::default());
         grid.set_cell(0, 10, Cell::default());
 
-        let dirty = grid.take_dirty_rows();
+        let dirty = take_dirty(&mut grid);
         assert_eq!(dirty, vec![5, 10]);
     }
 
@@ -465,9 +486,9 @@ mod tests {
     fn take_dirty_rows_twice_returns_empty() {
         let mut grid = Grid::new(80, 24);
         grid.set_cell(0, 0, Cell::default());
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
-        assert!(grid.take_dirty_rows().is_empty());
+        assert!(take_dirty(&mut grid).is_empty());
     }
 
     #[test]
@@ -478,12 +499,12 @@ mod tests {
             ..Cell::default()
         };
         grid.set_cell(0, 3, cell);
-        grid.take_dirty_rows(); // clear dirty flags
+        grid.reset_dirty(); // clear dirty flags
 
         grid.clear_row(3);
         assert_eq!(grid.cell(0, 3), &Cell::default());
 
-        let dirty = grid.take_dirty_rows();
+        let dirty = take_dirty(&mut grid);
         assert!(dirty.contains(&3));
     }
 
@@ -498,7 +519,7 @@ mod tests {
             };
             grid.set_cell(0, row, cell);
         }
-        grid.take_dirty_rows(); // clear
+        grid.reset_dirty(); // clear
 
         grid.scroll_up(2);
 
@@ -606,7 +627,7 @@ mod tests {
             );
         }
         grid.set_cursor_pos(2, 0);
-        grid.take_dirty_rows(); // clear
+        grid.reset_dirty(); // clear
 
         grid.insert_chars(2);
 
@@ -634,7 +655,7 @@ mod tests {
             );
         }
         grid.set_cursor_pos(1, 0);
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
         grid.delete_chars(2);
 
@@ -671,11 +692,11 @@ mod tests {
     #[test]
     fn clear_marks_all_dirty() {
         let mut grid = Grid::new(4, 4);
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
         grid.clear();
 
-        let dirty = grid.take_dirty_rows();
+        let dirty = take_dirty(&mut grid);
         assert_eq!(dirty.len(), 4);
     }
 
@@ -735,7 +756,7 @@ mod tests {
             };
             grid.set_cell(0, row, cell);
         }
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
         // Scroll rows 1..=4 up by 1.
         grid.scroll_up_in_region(1, 4, 1);
@@ -758,7 +779,7 @@ mod tests {
             };
             grid.set_cell(0, row, cell);
         }
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
         // Scroll rows 1..=4 down by 2.
         grid.scroll_down_in_region(1, 4, 2);
@@ -798,12 +819,12 @@ mod tests {
             ..Cell::default()
         };
         grid.set_cell(0, 0, cell);
-        grid.take_dirty_rows();
+        grid.reset_dirty();
 
         // top > bottom: no-op
         grid.scroll_up_in_region(3, 1, 1);
         assert_eq!(grid.cell(0, 0).grapheme.as_str(), "A");
-        assert!(grid.take_dirty_rows().is_empty());
+        assert!(take_dirty(&mut grid).is_empty());
 
         // bottom >= rows: no-op
         grid.scroll_down_in_region(0, 10, 1);

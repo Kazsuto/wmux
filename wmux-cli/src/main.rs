@@ -38,6 +38,11 @@ enum Commands {
     Notify,
     /// Browser panel operations
     Browser,
+    /// SSH remote workspace management
+    Ssh {
+        #[command(subcommand)]
+        cmd: commands::ssh::SshCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,6 +96,16 @@ async fn main() -> Result<()> {
         Commands::Browser => {
             eprintln!("browser commands not yet implemented");
             1
+        }
+        Commands::Ssh { cmd } => {
+            let ok = commands::ssh::handle(&client, cli.json, cmd)
+                .await
+                .context("ssh command failed")?;
+            if ok {
+                0
+            } else {
+                1
+            }
         }
     };
 

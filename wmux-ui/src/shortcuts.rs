@@ -46,6 +46,10 @@ pub enum ShortcutAction {
     /// Ctrl+Shift+V — paste from clipboard.
     Paste,
 
+    // Sidebar
+    /// Ctrl+B — toggle sidebar visibility.
+    ToggleSidebar,
+
     // Future placeholders (detected but not yet implemented)
     /// Ctrl+Shift+P — open command palette (Task L4_01).
     CommandPalette,
@@ -106,6 +110,9 @@ impl ShortcutMap {
 
                     // Surface/Tab
                     (false, false, "t" | "T") => return Some(ShortcutAction::NewSurface),
+
+                    // Sidebar
+                    (false, false, "b" | "B") => return Some(ShortcutAction::ToggleSidebar),
 
                     // Clipboard
                     (true, false, "c" | "C") => return Some(ShortcutAction::Copy),

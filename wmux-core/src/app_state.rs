@@ -11,12 +11,12 @@ use crate::notification::{Notification, NotificationEvent, NotificationSource, N
 use crate::pane_registry::{PaneRegistry, PaneState};
 use crate::pane_tree::PaneTree;
 use crate::rect::Rect;
-use crate::surface::SplitDirection;
+use crate::surface::{PanelKind, SplitDirection};
 use crate::surface_manager::Surface;
 use crate::types::{PaneId, SurfaceId, WorkspaceId};
 use crate::workspace_manager::WorkspaceManager;
 
-// TODO: route through i18n system when available.
+// TODO(L2_16): route through i18n system when wmux-config i18n is implemented.
 const PROCESS_EXITED_MSG: &str = "\r\n[Process exited]\r\n";
 const PROCESS_EXITED_ERROR_MSG: &str = "\r\n[Process exited with error]\r\n";
 
@@ -125,6 +125,9 @@ pub enum AppCommand {
     /// Rename a workspace by ID.
     RenameWorkspace { id: WorkspaceId, name: String },
 
+    /// Reorder a workspace from one index to another.
+    ReorderWorkspace { from: usize, to: usize },
+
     /// Toggle zoom on a pane (zoomed pane fills the entire viewport).
     ToggleZoom { pane_id: PaneId },
 
@@ -133,8 +136,12 @@ pub enum AppCommand {
 
     // ─── Surface (tab) commands ───────────────────────────────────────────────
     /// Create a new surface in a pane. Returns the new surface's ID.
+    ///
+    /// `backing_pane_id` is the PaneId of the hidden PaneState (with its own
+    /// Terminal and PTY) that will back the new surface.
     CreateSurface {
         pane_id: PaneId,
+        backing_pane_id: PaneId,
         reply: oneshot::Sender<Result<SurfaceId, CoreError>>,
     },
 
@@ -146,6 +153,67 @@ pub enum AppCommand {
 
     /// Cycle the active surface in a pane (forward or backward).
     CycleSurface { pane_id: PaneId, forward: bool },
+
+    // ─── IPC Query commands ───────────────────────────────────────────────
+    /// Get the focused pane ID.
+    GetFocusedPaneId {
+        reply: oneshot::Sender<Option<PaneId>>,
+    },
+
+    /// Find which pane contains a given surface.
+    FindPaneForSurface {
+        surface_id: SurfaceId,
+        reply: oneshot::Sender<Option<PaneId>>,
+    },
+
+    /// Read terminal text content from a pane's grid and scrollback.
+    ReadText {
+        pane_id: PaneId,
+        start: Option<i32>,
+        end: Option<i32>,
+        reply: oneshot::Sender<String>,
+    },
+
+    /// List all workspaces with their metadata.
+    ListWorkspaces {
+        reply: oneshot::Sender<Vec<WorkspaceSnapshot>>,
+    },
+
+    /// Get the current (active) workspace info.
+    GetCurrentWorkspace {
+        reply: oneshot::Sender<WorkspaceSnapshot>,
+    },
+
+    /// Switch workspace by ID. Returns true if found.
+    SelectWorkspaceById {
+        id: WorkspaceId,
+        reply: oneshot::Sender<bool>,
+    },
+
+    /// List surfaces across all panes in a workspace.
+    ListSurfaces {
+        workspace_id: Option<WorkspaceId>,
+        reply: oneshot::Sender<Vec<PaneSurfaceInfo>>,
+    },
+
+    /// Focus a specific surface within a pane.
+    FocusSurface {
+        pane_id: PaneId,
+        surface_id: SurfaceId,
+    },
+
+    /// Switch to a surface by index within a pane.
+    SwitchSurfaceIndex { pane_id: PaneId, index: usize },
+
+    /// Reorder surfaces within a pane (drag-and-drop).
+    ReorderSurface {
+        pane_id: PaneId,
+        from: usize,
+        to: usize,
+    },
+
+    /// Resize a split by setting the ratio on a pane's parent split node.
+    ResizeSplit { pane_id: PaneId, ratio: f32 },
 
     /// Shut down the actor.
     Shutdown,
@@ -240,6 +308,11 @@ impl fmt::Debug for AppCommand {
                 .field("id", id)
                 .field("name", name)
                 .finish(),
+            Self::ReorderWorkspace { from, to } => f
+                .debug_struct("ReorderWorkspace")
+                .field("from", from)
+                .field("to", to)
+                .finish(),
             Self::ToggleZoom { pane_id } => f
                 .debug_struct("ToggleZoom")
                 .field("pane_id", pane_id)
@@ -248,9 +321,14 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("NavigateFocus")
                 .field("direction", direction)
                 .finish(),
-            Self::CreateSurface { pane_id, .. } => f
+            Self::CreateSurface {
+                pane_id,
+                backing_pane_id,
+                ..
+            } => f
                 .debug_struct("CreateSurface")
                 .field("pane_id", pane_id)
+                .field("backing_pane_id", backing_pane_id)
                 .finish_non_exhaustive(),
             Self::CloseSurface {
                 pane_id,
@@ -264,6 +342,56 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("CycleSurface")
                 .field("pane_id", pane_id)
                 .field("forward", forward)
+                .finish(),
+            Self::GetFocusedPaneId { .. } => write!(f, "GetFocusedPaneId"),
+            Self::FindPaneForSurface { surface_id, .. } => f
+                .debug_struct("FindPaneForSurface")
+                .field("surface_id", surface_id)
+                .finish_non_exhaustive(),
+            Self::ReadText {
+                pane_id,
+                start,
+                end,
+                ..
+            } => f
+                .debug_struct("ReadText")
+                .field("pane_id", pane_id)
+                .field("start", start)
+                .field("end", end)
+                .finish_non_exhaustive(),
+            Self::ListWorkspaces { .. } => write!(f, "ListWorkspaces"),
+            Self::GetCurrentWorkspace { .. } => write!(f, "GetCurrentWorkspace"),
+            Self::SelectWorkspaceById { id, .. } => f
+                .debug_struct("SelectWorkspaceById")
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::ListSurfaces { workspace_id, .. } => f
+                .debug_struct("ListSurfaces")
+                .field("workspace_id", workspace_id)
+                .finish_non_exhaustive(),
+            Self::FocusSurface {
+                pane_id,
+                surface_id,
+            } => f
+                .debug_struct("FocusSurface")
+                .field("pane_id", pane_id)
+                .field("surface_id", surface_id)
+                .finish(),
+            Self::SwitchSurfaceIndex { pane_id, index } => f
+                .debug_struct("SwitchSurfaceIndex")
+                .field("pane_id", pane_id)
+                .field("index", index)
+                .finish(),
+            Self::ReorderSurface { pane_id, from, to } => f
+                .debug_struct("ReorderSurface")
+                .field("pane_id", pane_id)
+                .field("from", from)
+                .field("to", to)
+                .finish(),
+            Self::ResizeSplit { pane_id, ratio } => f
+                .debug_struct("ResizeSplit")
+                .field("pane_id", pane_id)
+                .field("ratio", ratio)
                 .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
@@ -323,6 +451,12 @@ pub struct PaneRenderData {
     pub modes: TerminalMode,
     /// Whether the shell process has exited.
     pub process_exited: bool,
+    /// Number of surfaces (tabs) in this pane.
+    pub surface_count: usize,
+    /// Display titles for each surface.
+    pub surface_titles: Vec<String>,
+    /// Index of the currently active surface.
+    pub active_surface: usize,
 }
 
 impl fmt::Debug for PaneRenderData {
@@ -338,8 +472,31 @@ impl fmt::Debug for PaneRenderData {
             )
             .field("modes", &self.modes)
             .field("process_exited", &self.process_exited)
+            .field("surface_count", &self.surface_count)
+            .field("active_surface", &self.active_surface)
             .finish_non_exhaustive()
     }
+}
+
+// ─── IPC Snapshots ──────────────────────────────────────────────────────
+
+/// Snapshot of a workspace for IPC queries.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSnapshot {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub active: bool,
+    pub pane_count: usize,
+}
+
+/// Snapshot of a surface for IPC queries.
+#[derive(Debug, Clone)]
+pub struct PaneSurfaceInfo {
+    pub surface_id: SurfaceId,
+    pub pane_id: PaneId,
+    pub title: String,
+    pub kind: PanelKind,
+    pub active: bool,
 }
 
 // ─── Handle ──────────────────────────────────────────────────────────────────
@@ -574,13 +731,31 @@ impl AppStateHandle {
             .try_send(AppCommand::RenameWorkspace { id, name });
     }
 
+    /// Reorder a workspace from one index to another. Fire-and-forget.
+    pub fn reorder_workspace(&self, from: usize, to: usize) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::ReorderWorkspace { from, to });
+    }
+
     // ─── Surface handle methods ────────────────────────────────────────────────
 
     /// Create a new surface in a pane. Returns the new surface's ID.
-    pub async fn create_surface(&self, pane_id: PaneId) -> Result<SurfaceId, CoreError> {
+    ///
+    /// `backing_pane_id` must already be registered via `register_pane`.
+    /// It will become a "hidden pane" backing this surface's Terminal and PTY.
+    pub async fn create_surface(
+        &self,
+        pane_id: PaneId,
+        backing_pane_id: PaneId,
+    ) -> Result<SurfaceId, CoreError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(AppCommand::CreateSurface { pane_id, reply: tx })
+            .send(AppCommand::CreateSurface {
+                pane_id,
+                backing_pane_id,
+                reply: tx,
+            })
             .await
             .map_err(|_| CoreError::PaneNotFound {
                 pane_id: pane_id.to_string(),
@@ -617,6 +792,135 @@ impl AppStateHandle {
         {
             tracing::warn!(pane_id = %pane_id, "command channel full, CycleSurface dropped");
         }
+    }
+
+    // ─── IPC Query handle methods ────────────────────────────────────────
+
+    /// Get the currently focused pane ID.
+    pub async fn get_focused_pane_id(&self) -> Option<PaneId> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::GetFocusedPaneId { reply: tx })
+            .await
+            .ok()?;
+        rx.await.ok()?
+    }
+
+    /// Find which pane contains a given surface.
+    pub async fn find_pane_for_surface(&self, surface_id: SurfaceId) -> Option<PaneId> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::FindPaneForSurface {
+                surface_id,
+                reply: tx,
+            })
+            .await
+            .ok()?;
+        rx.await.ok()?
+    }
+
+    /// Read terminal text from a pane's grid and scrollback.
+    pub async fn read_text(
+        &self,
+        pane_id: PaneId,
+        start: Option<i32>,
+        end: Option<i32>,
+    ) -> Option<String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::ReadText {
+                pane_id,
+                start,
+                end,
+                reply: tx,
+            })
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// List all workspaces.
+    pub async fn list_workspaces(&self) -> Vec<WorkspaceSnapshot> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::ListWorkspaces { reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Get the current workspace info.
+    pub async fn get_current_workspace(&self) -> Option<WorkspaceSnapshot> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::GetCurrentWorkspace { reply: tx })
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// Switch workspace by ID. Returns true if found.
+    pub async fn select_workspace_by_id(&self, id: WorkspaceId) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::SelectWorkspaceById { id, reply: tx })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    /// List all surfaces in a workspace (or active workspace if None).
+    pub async fn list_surfaces(&self, workspace_id: Option<WorkspaceId>) -> Vec<PaneSurfaceInfo> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::ListSurfaces {
+                workspace_id,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Focus a specific surface within a pane. Fire-and-forget.
+    pub fn focus_surface(&self, pane_id: PaneId, surface_id: SurfaceId) {
+        let _ = self.cmd_tx.try_send(AppCommand::FocusSurface {
+            pane_id,
+            surface_id,
+        });
+    }
+
+    /// Switch to a surface by index within a pane. Fire-and-forget.
+    pub fn cycle_surface_to_index(&self, pane_id: PaneId, index: usize) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::SwitchSurfaceIndex { pane_id, index });
+    }
+
+    /// Reorder surfaces within a pane (drag-and-drop). Fire-and-forget.
+    pub fn reorder_surface(&self, pane_id: PaneId, from: usize, to: usize) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::ReorderSurface { pane_id, from, to });
+    }
+
+    /// Resize a split ratio on a pane's parent split node. Fire-and-forget.
+    pub fn resize_split(&self, pane_id: PaneId, ratio: f32) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::ResizeSplit { pane_id, ratio });
     }
 
     /// Shut down the actor. Fire-and-forget.
@@ -663,8 +967,15 @@ struct AppStateActor {
 impl AppStateActor {
     async fn run(mut self) {
         tracing::info!("AppState actor loop started");
-        while let Some(cmd) = self.cmd_rx.recv().await {
-            match cmd {
+
+        let mut save_interval = tokio::time::interval(std::time::Duration::from_secs(8));
+        save_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                cmd = self.cmd_rx.recv() => {
+                    let Some(cmd) = cmd else { break; };
+                    match cmd {
                 AppCommand::RegisterPane { pane_id, state } => {
                     self.registry.register(pane_id, *state);
                     // Initialize the active workspace's pane_tree on first pane
@@ -701,7 +1012,8 @@ impl AppStateActor {
                     self.handle_scroll(pane_id, delta);
                 }
                 AppCommand::ResetViewport { pane_id } => {
-                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                    let target = self.resolve_terminal_pane(pane_id);
+                    if let Some(pane) = self.registry.get_mut(target) {
                         pane.terminal.reset_viewport();
                     }
                 }
@@ -713,9 +1025,10 @@ impl AppStateActor {
                     selection,
                     reply,
                 } => {
+                    let target = self.resolve_terminal_pane(pane_id);
                     let text = self
                         .registry
-                        .get(pane_id)
+                        .get(target)
                         .map(|pane| {
                             selection.extract_text(pane.terminal.grid(), pane.terminal.scrollback())
                         })
@@ -827,20 +1140,35 @@ impl AppStateActor {
                         tracing::warn!(error = %e, workspace_id = %id, "RenameWorkspace failed");
                     }
                 }
+                AppCommand::ReorderWorkspace { from, to } => {
+                    if let Err(e) = self.workspace_manager.reorder(from, to) {
+                        tracing::warn!(error = %e, from, to, "ReorderWorkspace failed");
+                    }
+                }
 
                 // ─── Surface commands ─────────────────────────────────────────
-                AppCommand::CreateSurface { pane_id, reply } => {
+                AppCommand::CreateSurface { pane_id, backing_pane_id, reply } => {
                     let result = if let Some(pane) = self.registry.get_mut(pane_id) {
-                        let surface = Surface::new("shell");
+                        let surface = Surface::new("shell", backing_pane_id);
                         let id = surface.id;
                         pane.surfaces.add(surface);
-                        tracing::info!(pane_id = %pane_id, surface_id = %id, "surface created");
+                        // Switch to the newly created surface.
+                        let _ = pane.surfaces.switch_to_id(id);
+                        tracing::info!(
+                            pane_id = %pane_id,
+                            surface_id = %id,
+                            backing = %backing_pane_id,
+                            "surface created",
+                        );
                         Ok(id)
                     } else {
                         Err(CoreError::PaneNotFound {
                             pane_id: pane_id.to_string(),
                         })
                     };
+                    if result.is_ok() {
+                        let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    }
                     let _ = reply.send(result);
                 }
 
@@ -848,14 +1176,23 @@ impl AppStateActor {
                     pane_id,
                     surface_id,
                 } => {
-                    // Determine if the pane becomes empty after surface removal.
+                    // Find the backing pane and determine if the pane becomes empty.
                     // Scoped borrow so we can call registry.remove afterwards.
-                    let pane_now_empty = if let Some(pane) = self.registry.get_mut(pane_id) {
-                        pane.surfaces.remove(surface_id);
-                        pane.surfaces.is_empty()
-                    } else {
-                        false
-                    };
+                    let (backing_pane_id, pane_now_empty) =
+                        if let Some(pane) = self.registry.get_mut(pane_id) {
+                            let backing = pane.surfaces.find(surface_id).map(|s| s.pane_id);
+                            pane.surfaces.remove(surface_id);
+                            (backing, pane.surfaces.is_empty())
+                        } else {
+                            (None, false)
+                        };
+
+                    // Remove the hidden backing pane (stops its PTY).
+                    if let Some(bpid) = backing_pane_id {
+                        if bpid != pane_id {
+                            self.registry.remove(bpid);
+                        }
+                    }
 
                     if pane_now_empty {
                         tracing::info!(pane_id = %pane_id, "last surface closed, closing pane");
@@ -866,25 +1203,171 @@ impl AppStateActor {
                             surface_id = %surface_id,
                             "surface closed"
                         );
+                        // Force full re-render of the now-active surface.
+                        let new_backing = self.resolve_terminal_pane(pane_id);
+                        if let Some(bp) = self.registry.get_mut(new_backing) {
+                            bp.terminal.grid_mut().mark_all_dirty();
+                        }
                         let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
                     }
                 }
 
                 AppCommand::CycleSurface { pane_id, forward } => {
-                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
                         pane.surfaces.cycle(forward);
                         tracing::debug!(pane_id = %pane_id, forward, "surface cycled");
+                        pane.surfaces.active().map(|s| s.pane_id)
+                    } else {
+                        None
+                    };
+                    // Force full re-render of the new backing terminal.
+                    if let Some(bid) = backing_id {
+                        if let Some(bp) = self.registry.get_mut(bid) {
+                            bp.terminal.grid_mut().mark_all_dirty();
+                        }
+                    }
+                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                }
+
+                // ─── IPC Query commands ───────────────────────────────────
+                AppCommand::GetFocusedPaneId { reply } => {
+                    let _ = reply.send(self.registry.focused_id());
+                }
+                AppCommand::FindPaneForSurface { surface_id, reply } => {
+                    let result = self.registry.find_pane_for_surface(surface_id);
+                    let _ = reply.send(result);
+                }
+                AppCommand::ReadText { pane_id, start, end, reply } => {
+                    let text = self.build_read_text(pane_id, start, end);
+                    let _ = reply.send(text);
+                }
+                AppCommand::ListWorkspaces { reply } => {
+                    let active_id = self.workspace_manager.active_id();
+                    let snapshots: Vec<WorkspaceSnapshot> = self
+                        .workspace_manager
+                        .iter()
+                        .map(|ws| {
+                            let pane_count = ws
+                                .pane_tree
+                                .as_ref()
+                                .map_or(0, |t| t.pane_count());
+                            WorkspaceSnapshot {
+                                id: ws.id(),
+                                name: ws.name().to_owned(),
+                                active: ws.id() == active_id,
+                                pane_count,
+                            }
+                        })
+                        .collect();
+                    let _ = reply.send(snapshots);
+                }
+                AppCommand::GetCurrentWorkspace { reply } => {
+                    let ws = self.workspace_manager.active();
+                    let pane_count = ws
+                        .pane_tree
+                        .as_ref()
+                        .map_or(0, |t| t.pane_count());
+                    let _ = reply.send(WorkspaceSnapshot {
+                        id: ws.id(),
+                        name: ws.name().to_owned(),
+                        active: true,
+                        pane_count,
+                    });
+                }
+                AppCommand::SelectWorkspaceById { id, reply } => {
+                    let ok = self.workspace_manager.switch_to_id(id);
+                    if ok {
+                        self.zoomed_pane = None;
+                        let index = self.workspace_manager.active_index();
+                        let _ = self
+                            .event_tx
+                            .try_send(AppEvent::WorkspaceSwitched { index, id });
+                    }
+                    let _ = reply.send(ok);
+                }
+                AppCommand::ListSurfaces { workspace_id, reply } => {
+                    let infos = self.build_surface_list(workspace_id);
+                    let _ = reply.send(infos);
+                }
+                AppCommand::FocusSurface { pane_id, surface_id } => {
+                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
+                        let _ = pane.surfaces.switch_to_id(surface_id);
+                        pane.surfaces.active().map(|s| s.pane_id)
+                    } else {
+                        None
+                    };
+                    if let Some(bid) = backing_id {
+                        if let Some(bp) = self.registry.get_mut(bid) {
+                            bp.terminal.grid_mut().mark_all_dirty();
+                        }
+                    }
+                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                }
+                AppCommand::SwitchSurfaceIndex { pane_id, index } => {
+                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
+                        pane.surfaces.switch_to(index);
+                        pane.surfaces.active().map(|s| s.pane_id)
+                    } else {
+                        None
+                    };
+                    if let Some(bid) = backing_id {
+                        if let Some(bp) = self.registry.get_mut(bid) {
+                            bp.terminal.grid_mut().mark_all_dirty();
+                        }
+                    }
+                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                }
+                AppCommand::ReorderSurface { pane_id, from, to } => {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                        pane.surfaces.reorder(from, to);
                         let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
                     }
                 }
+                AppCommand::ResizeSplit { pane_id, ratio } => {
+                    if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
+                        if let Err(e) = tree.resize_split(pane_id, ratio) {
+                            tracing::warn!(error = %e, pane_id = %pane_id, "ResizeSplit failed");
+                        }
+                    }
+                }
 
-                AppCommand::Shutdown => {
-                    tracing::info!("AppState actor shutting down");
-                    break;
+                        AppCommand::Shutdown => {
+                            tracing::info!("AppState actor shutting down");
+                            break;
+                        }
+                    }
+                }
+                _ = save_interval.tick() => {
+                    self.auto_save();
                 }
             }
         }
+        // Final save on shutdown — must complete before the process exits.
+        // Unlike periodic saves, this one is awaited to guarantee persistence.
+        self.save_session_now().await;
         tracing::info!("AppState actor loop ended");
+    }
+
+    /// Periodic auto-save: fire-and-forget so the actor loop never awaits disk I/O.
+    fn auto_save(&self) {
+        let state = crate::session::build_session_state(&self.workspace_manager, &self.registry);
+        tokio::spawn(async move {
+            if let Err(e) = crate::session::save_session(&state).await {
+                tracing::warn!(error = %e, "auto-save failed");
+            } else {
+                tracing::debug!("session auto-saved");
+            }
+        });
+    }
+
+    /// Save session state and wait for completion (used on shutdown).
+    async fn save_session_now(&self) {
+        let state = crate::session::build_session_state(&self.workspace_manager, &self.registry);
+        if let Err(e) = crate::session::save_session(&state).await {
+            tracing::warn!(error = %e, "final session save failed");
+        } else {
+            tracing::debug!("session saved on shutdown");
+        }
     }
 
     fn handle_pty_output(&mut self, pane_id: PaneId, data: &[u8]) {
@@ -908,8 +1391,8 @@ impl AppStateActor {
                         body,
                         None, // subtitle
                         NotificationSource::Osc,
-                        None, // workspace — TODO: track in L2_07
-                        None, // surface — TODO: track in L2_07
+                        None, // workspace — TODO(L2_07): pass workspace context for notification tracking
+                        None, // surface — TODO(L2_07): pass surface context for notification tracking
                     );
                     if let NotificationEvent::Added { suppressed, .. } = &event {
                         if let Some(n) = self.notification_store.get(notif_id) {
@@ -932,6 +1415,22 @@ impl AppStateActor {
     /// Remove a pane from the registry, clear zoom if needed, and prune the
     /// pane tree.  Shared by `ClosePane` and `CloseSurface` (empty-pane path).
     fn close_pane_internal(&mut self, pane_id: PaneId) {
+        // Remove hidden surface backing panes first (stops their PTYs).
+        let hidden_ids: Vec<PaneId> = self
+            .registry
+            .get(pane_id)
+            .map(|p| {
+                p.surfaces
+                    .iter()
+                    .filter(|s| s.pane_id != pane_id)
+                    .map(|s| s.pane_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for hid in hidden_ids {
+            self.registry.remove(hid);
+        }
+
         self.registry.remove(pane_id);
         if self.zoomed_pane == Some(pane_id) {
             self.zoomed_pane = None;
@@ -943,25 +1442,46 @@ impl AppStateActor {
         }
     }
 
+    /// Resolve the backing terminal pane for a layout pane.
+    ///
+    /// When a layout pane has an active surface whose `pane_id` is registered,
+    /// returns that surface's `pane_id` (the hidden backing pane). Falls back to
+    /// `layout_pane_id` if the pane has no surface, does not exist, or the
+    /// surface's backing pane is not (yet) registered.
+    fn resolve_terminal_pane(&self, layout_pane_id: PaneId) -> PaneId {
+        if let Some(pane) = self.registry.get(layout_pane_id) {
+            if let Some(surface) = pane.surfaces.active() {
+                let backing = surface.pane_id;
+                // Only redirect if the backing pane is actually registered.
+                if backing != layout_pane_id && self.registry.get(backing).is_some() {
+                    return backing;
+                }
+            }
+        }
+        layout_pane_id
+    }
+
     fn handle_send_input(&self, pane_id: PaneId, data: Vec<u8>) {
-        if let Some(pane) = self.registry.get(pane_id) {
+        let target = self.resolve_terminal_pane(pane_id);
+        if let Some(pane) = self.registry.get(target) {
             if !pane.process_exited && pane.pty_write_tx.try_send(data).is_err() {
-                tracing::warn!(pane_id = %pane_id, "PTY write channel full, input dropped");
+                tracing::warn!(pane_id = %target, "PTY write channel full, input dropped");
             }
         }
     }
 
     fn handle_resize(&mut self, pane_id: PaneId, cols: u16, rows: u16) {
-        if let Some(pane) = self.registry.get_mut(pane_id) {
+        let target = self.resolve_terminal_pane(pane_id);
+        if let Some(pane) = self.registry.get_mut(target) {
             let old_cols = pane.terminal.cols();
             let old_rows = pane.terminal.rows();
             if cols != old_cols || rows != old_rows {
                 pane.terminal.resize(cols, rows);
                 if pane.pty_resize_tx.try_send((rows, cols)).is_err() {
-                    tracing::warn!(pane_id = %pane_id, "PTY resize channel full, resize dropped");
+                    tracing::warn!(pane_id = %target, "PTY resize channel full, resize dropped");
                 }
                 tracing::debug!(
-                    pane_id = %pane_id,
+                    pane_id = %target,
                     old_cols, old_rows, cols, rows,
                     "pane resized",
                 );
@@ -970,7 +1490,8 @@ impl AppStateActor {
     }
 
     fn handle_scroll(&mut self, pane_id: PaneId, delta: i32) {
-        if let Some(pane) = self.registry.get_mut(pane_id) {
+        let target = self.resolve_terminal_pane(pane_id);
+        if let Some(pane) = self.registry.get_mut(target) {
             if delta > 0 {
                 pane.terminal.scroll_viewport_up(delta as usize);
             } else if delta < 0 {
@@ -1111,10 +1632,26 @@ impl AppStateActor {
     }
 
     fn build_render_data(&mut self, pane_id: PaneId) -> Option<PaneRenderData> {
-        let pane = self.registry.get_mut(pane_id)?;
+        // Resolve the backing terminal pane (may be a hidden pane for secondary surfaces).
+        let terminal_pane_id = self.resolve_terminal_pane(pane_id);
+
+        // Read surface metadata from the layout pane first (immutable borrow ends here).
+        let (surface_count, surface_titles, active_surface) = {
+            let pane = self.registry.get(pane_id)?;
+            let sc = pane.surfaces.count();
+            let st: Vec<String> = pane.surfaces.iter().map(|s| s.title.clone()).collect();
+            let ai = pane.surfaces.active_index();
+            (sc, st, ai)
+        };
+
+        // Get mutable access to the backing terminal pane (may differ from layout pane).
+        let pane = self.registry.get_mut(terminal_pane_id)?;
 
         // Take dirty rows from the actor's grid (resets flags), then clone.
-        let dirty_rows = pane.terminal.grid_mut().take_dirty_rows();
+        let mut dirty_rows = Vec::with_capacity(pane.terminal.grid().rows() as usize);
+        pane.terminal
+            .grid_mut()
+            .take_dirty_rows_into(&mut dirty_rows);
         let grid = pane.terminal.grid().clone();
         let modes = pane.terminal.modes();
         let viewport_offset = pane.terminal.viewport_offset();
@@ -1145,7 +1682,113 @@ impl AppStateActor {
             scrollback_visible_rows,
             modes,
             process_exited: pane.process_exited,
+            surface_count,
+            surface_titles,
+            active_surface,
         })
+    }
+
+    /// Read terminal text content from a pane's grid and scrollback.
+    ///
+    /// If start/end are None, captures the visible grid only.
+    /// Negative values are relative from the end of the combined buffer.
+    fn build_read_text(&self, pane_id: PaneId, start: Option<i32>, end: Option<i32>) -> String {
+        let terminal_pane_id = self.resolve_terminal_pane(pane_id);
+        let Some(pane) = self.registry.get(terminal_pane_id) else {
+            return String::new();
+        };
+
+        let grid = pane.terminal.grid();
+        let scrollback = pane.terminal.scrollback();
+        let grid_rows = grid.rows() as usize;
+        let sb_len = scrollback.len();
+        let total_lines = sb_len + grid_rows;
+
+        // Resolve range
+        let resolve = |val: i32| -> usize {
+            if val < 0 {
+                (total_lines as i64 + val as i64).max(0) as usize
+            } else {
+                (val as usize).min(total_lines)
+            }
+        };
+
+        let (s, e) = match (start, end) {
+            (Some(s), Some(e)) => (resolve(s), resolve(e)),
+            (Some(s), None) => (resolve(s), total_lines),
+            (None, Some(e)) => (sb_len, resolve(e)), // default start = visible grid start
+            (None, None) => (sb_len, total_lines),   // visible grid only
+        };
+
+        if s >= e || s >= total_lines {
+            return String::new();
+        }
+
+        let cols = grid.cols() as usize;
+        let mut result = String::with_capacity((e - s) * (cols + 1));
+
+        for line_idx in s..e {
+            if line_idx > s {
+                result.push('\n');
+            }
+            if line_idx < sb_len {
+                // Scrollback row
+                if let Some(row) = scrollback.get_row(line_idx) {
+                    for cell in row {
+                        result.push_str(cell.grapheme.as_str());
+                    }
+                }
+            } else {
+                // Grid row
+                let grid_row = (line_idx - sb_len) as u16;
+                if grid_row < grid.rows() {
+                    for col in 0..grid.cols() {
+                        result.push_str(grid.cell(col, grid_row).grapheme.as_str());
+                    }
+                }
+            }
+        }
+
+        // Trim trailing whitespace per line
+        result
+            .lines()
+            .map(|l| l.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Build surface list for IPC ListSurfaces query.
+    fn build_surface_list(&self, workspace_id: Option<WorkspaceId>) -> Vec<PaneSurfaceInfo> {
+        let ws = if let Some(id) = workspace_id {
+            match self.workspace_manager.by_id(id) {
+                Some(ws) => ws,
+                None => return Vec::new(),
+            }
+        } else {
+            self.workspace_manager.active()
+        };
+
+        let pane_ids: Vec<PaneId> = ws
+            .pane_tree
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.pane_ids());
+
+        let mut infos = Vec::new();
+        for pane_id in pane_ids {
+            if let Some(pane) = self.registry.get(pane_id) {
+                let active_id = pane.surfaces.active_id();
+                for surface in pane.surfaces.iter() {
+                    infos.push(PaneSurfaceInfo {
+                        surface_id: surface.id,
+                        pane_id,
+                        title: surface.title.clone(),
+                        kind: surface.kind,
+                        active: active_id == Some(surface.id),
+                    });
+                }
+            }
+        }
+        infos
     }
 }
 
@@ -1160,6 +1803,7 @@ mod tests {
         terminal.set_event_sender(event_tx);
         let (write_tx, _write_rx) = mpsc::channel(16);
         let (resize_tx, _resize_rx) = mpsc::channel(4);
+        let pane_id = PaneId::new();
         PaneState {
             terminal,
             terminal_event_rx: event_rx,
@@ -1167,7 +1811,7 @@ mod tests {
             pty_resize_tx: resize_tx,
             process_exited: false,
             surfaces: crate::surface_manager::SurfaceManager::new(
-                crate::surface_manager::Surface::new("shell"),
+                crate::surface_manager::Surface::new("shell", pane_id),
             ),
         }
     }

@@ -185,6 +185,11 @@ impl MouseHandler {
         MouseAction::Scroll(new_offset)
     }
 
+    /// Get the current click count (1 = single, 2 = double, 3 = triple).
+    pub fn click_count(&self) -> u8 {
+        self.click_count
+    }
+
     /// Get the current selection, if any.
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()

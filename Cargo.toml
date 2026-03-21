@@ -28,7 +28,6 @@ bytemuck = { version = "1", features = ["derive"] }
 
 # Terminal
 vte = "0.13"
-portable-pty = "0.9"
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -70,6 +69,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
 ] }
 
 # Cryptography
@@ -81,6 +82,9 @@ hex = "0.4"
 # Auto-update
 reqwest = { version = "0.12", features = ["json"] }
 semver = "1"
+
+# Search
+regex = "1"
 
 # Internal crates
 wmux-core = { path = "wmux-core" }

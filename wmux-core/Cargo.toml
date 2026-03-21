@@ -10,10 +10,11 @@ tracing.workspace = true
 uuid.workspace = true
 bitflags.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
 compact_str.workspace = true
 vte.workspace = true
 unicode-width.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true

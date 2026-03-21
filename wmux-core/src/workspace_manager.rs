@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use crate::types::WorkspaceId;
 use crate::workspace::Workspace;
 
-// TODO: route through i18n system when available.
+// TODO(L2_16): route through i18n system when wmux-config i18n is implemented.
 const DEFAULT_WORKSPACE_NAME: &str = "Workspace 1";
 
 /// Manages the list of workspaces and tracks the active workspace index.
@@ -175,6 +175,34 @@ impl WorkspaceManager {
     /// Get a mutable reference to a workspace by ID.
     pub fn by_id_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
         self.workspaces.iter_mut().find(|ws| ws.id() == id)
+    }
+
+    /// Move a workspace from one position to another.
+    ///
+    /// Adjusts `active_index` so it still points to the same workspace.
+    /// Returns `Err(CoreError::WorkspaceNotFound)` if either index is out of bounds.
+    pub fn reorder(&mut self, from: usize, to: usize) -> Result<(), CoreError> {
+        let len = self.workspaces.len();
+        if from >= len || to >= len {
+            return Err(CoreError::WorkspaceNotFound {
+                workspace_id: format!("reorder({from}, {to}) out of bounds (len={len})"),
+            });
+        }
+        if from == to {
+            return Ok(());
+        }
+
+        let active_id = self.active_id();
+        let ws = self.workspaces.remove(from);
+        self.workspaces.insert(to, ws);
+
+        // Restore active_index to point to the same workspace.
+        if let Some(pos) = self.workspaces.iter().position(|ws| ws.id() == active_id) {
+            self.active_index = pos;
+        }
+
+        tracing::info!(from, to, "workspace reordered");
+        Ok(())
     }
 
     /// Return the total number of workspaces.
@@ -374,6 +402,61 @@ mod tests {
         let ws3_order = mgr.by_id(id3).unwrap().creation_order();
         assert!(ws1_order < ws2_order);
         assert!(ws2_order < ws3_order);
+    }
+
+    #[test]
+    fn reorder_moves_workspace_forward() {
+        let mut mgr = WorkspaceManager::new();
+        let id2 = mgr.create("WS2");
+        let _id3 = mgr.create("WS3");
+        // Move WS2 (index 1) to index 2
+        mgr.reorder(1, 2).unwrap();
+        let names: Vec<_> = mgr.iter().map(|ws| ws.name()).collect();
+        assert_eq!(names, [DEFAULT_WORKSPACE_NAME, "WS3", "WS2"]);
+        // Active still points to first workspace
+        assert_eq!(mgr.active().name(), DEFAULT_WORKSPACE_NAME);
+        assert!(mgr.by_id(id2).is_some());
+    }
+
+    #[test]
+    fn reorder_moves_workspace_backward() {
+        let mut mgr = WorkspaceManager::new();
+        let _id2 = mgr.create("WS2");
+        let _id3 = mgr.create("WS3");
+        // Move WS3 (index 2) to index 0
+        mgr.reorder(2, 0).unwrap();
+        let names: Vec<_> = mgr.iter().map(|ws| ws.name()).collect();
+        assert_eq!(names, ["WS3", DEFAULT_WORKSPACE_NAME, "WS2"]);
+    }
+
+    #[test]
+    fn reorder_preserves_active_workspace() {
+        let mut mgr = WorkspaceManager::new();
+        let _id2 = mgr.create("WS2");
+        let id3 = mgr.create("WS3");
+        mgr.switch_to_id(id3);
+        assert_eq!(mgr.active().name(), "WS3");
+        // Move WS3 from index 2 to index 0
+        mgr.reorder(2, 0).unwrap();
+        // Active should still be WS3
+        assert_eq!(mgr.active().name(), "WS3");
+        assert_eq!(mgr.active_index(), 0);
+    }
+
+    #[test]
+    fn reorder_same_index_is_noop() {
+        let mut mgr = WorkspaceManager::new();
+        mgr.create("WS2");
+        mgr.reorder(1, 1).unwrap();
+        let names: Vec<_> = mgr.iter().map(|ws| ws.name()).collect();
+        assert_eq!(names, [DEFAULT_WORKSPACE_NAME, "WS2"]);
+    }
+
+    #[test]
+    fn reorder_out_of_bounds_returns_error() {
+        let mut mgr = WorkspaceManager::new();
+        assert!(mgr.reorder(0, 5).is_err());
+        assert!(mgr.reorder(5, 0).is_err());
     }
 
     #[test]

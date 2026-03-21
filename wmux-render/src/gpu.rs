@@ -38,6 +38,7 @@ impl<'window> GpuContext<'window> {
                 label: Some("wmux_device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await?;
@@ -63,7 +64,7 @@ impl<'window> GpuContext<'window> {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode,
-            view_formats: vec![],
+            view_formats: vec![format.add_srgb_suffix()],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
