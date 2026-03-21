@@ -75,7 +75,8 @@ pub struct IpcServer {
     shutdown_rx: mpsc::Receiver<()>,
     security_mode: SecurityMode,
     /// Hex-encoded auth secret used in challenge-response mode. None for other modes.
-    auth_secret: Option<String>,
+    /// Wrapped in `Arc` to avoid cloning the secret string per connection.
+    auth_secret: Option<Arc<String>>,
 }
 
 impl std::fmt::Debug for IpcServer {
@@ -97,6 +98,7 @@ impl IpcServer {
         security_mode: SecurityMode,
         auth_secret: Option<String>,
     ) -> (Self, IpcServerHandle) {
+        let auth_secret = auth_secret.map(Arc::new);
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         let handle = IpcServerHandle {
             shutdown_tx,
@@ -164,16 +166,17 @@ impl IpcServer {
                 result = server.connect() => {
                     match result {
                         Ok(()) => {
+                            // Acquire semaphore permit BEFORE spawning to bound
+                            // the number of in-flight tasks under connection flood.
+                            let permit = match semaphore.clone().acquire_owned().await {
+                                Ok(p) => p,
+                                Err(_) => break, // semaphore closed — shutting down
+                            };
                             let conn_router = Arc::clone(&router);
-                            let permit = Arc::clone(&semaphore);
                             let mode = self.security_mode;
-                            let secret = self.auth_secret.clone();
+                            let secret = self.auth_secret.as_ref().map(Arc::clone);
                             tokio::spawn(async move {
-                                // Acquire semaphore permit to limit concurrency.
-                                let _permit = match permit.acquire().await {
-                                    Ok(p) => p,
-                                    Err(_) => return, // semaphore closed
-                                };
+                                let _permit = permit;
                                 handle_connection(server, conn_router, mode, secret).await;
                             });
                             // Create the next pipe instance for the next connection.
@@ -200,7 +203,7 @@ async fn handle_connection(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     router: Arc<Router>,
     mode: SecurityMode,
-    auth_secret: Option<String>,
+    auth_secret: Option<Arc<String>>,
 ) {
     use tracing::Instrument;
     handle_connection_inner(pipe, router, mode, auth_secret)
@@ -212,7 +215,7 @@ async fn handle_connection_inner(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     router: Arc<Router>,
     mode: SecurityMode,
-    auth_secret: Option<String>,
+    auth_secret: Option<Arc<String>>,
 ) {
     let mut ctx = ConnectionCtx::new(mode);
 
@@ -295,7 +298,7 @@ async fn run_connection_loop(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     router: Arc<Router>,
     mut ctx: ConnectionCtx,
-    auth_secret: Option<String>,
+    auth_secret: Option<Arc<String>>,
 ) {
     let (reader, mut writer) = tokio::io::split(pipe);
     let mut buf_reader = BufReader::new(reader);
@@ -307,7 +310,11 @@ async fn run_connection_loop(
     loop {
         buf.clear();
 
-        let read_result = timeout(Duration::from_secs(30), buf_reader.read_line(&mut buf)).await;
+        let read_result = timeout(
+            Duration::from_secs(30),
+            bounded_read_line(&mut buf_reader, &mut buf),
+        )
+        .await;
 
         match read_result {
             Err(_elapsed) => {
@@ -316,6 +323,9 @@ async fn run_connection_loop(
             }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "failed to read from connection");
+                // Size-limit violations arrive as InvalidData errors.
+                let response = RpcResponse::parse_error();
+                let _ = write_response(&mut writer, &response).await;
                 return;
             }
             Ok(Ok(0)) => {
@@ -325,7 +335,7 @@ async fn run_connection_loop(
             Ok(Ok(_)) => {}
         }
 
-        // Enforce per-request size limit.
+        // Belt-and-suspenders: reject if somehow the buffer exceeds the limit.
         if buf.len() > MAX_REQUEST_SIZE {
             tracing::warn!(
                 size = buf.len(),
@@ -386,7 +396,7 @@ async fn run_connection_loop(
                 &request,
                 &mut ctx,
                 &mut pending_nonce,
-                auth_secret.as_deref(),
+                auth_secret.as_ref().map(|s| s.as_str()),
             );
             if let Err(e) = write_response(&mut writer, &response).await {
                 tracing::warn!(error = %e, "failed to write auth.login response");
@@ -457,29 +467,23 @@ fn handle_auth_login(
         }
         Some(response_hex) => {
             // Step 2: verify HMAC response.
-            let nonce = match pending_nonce.take() {
-                Some(n) => n,
-                None => {
-                    return RpcResponse::error(
-                        &request.id,
-                        RpcErrorCode::InvalidRequest,
-                        "no pending nonce — call auth.login without nonce_response first",
-                    );
-                }
+            let Some(nonce) = pending_nonce.take() else {
+                return RpcResponse::error(
+                    &request.id,
+                    RpcErrorCode::InvalidRequest,
+                    "no pending nonce — call auth.login without nonce_response first",
+                );
             };
 
-            let secret = match auth_secret {
-                Some(s) => s,
-                None => {
-                    tracing::error!(
-                        "auth.login invoked in challenge-response mode but no secret configured"
-                    );
-                    return RpcResponse::error(
-                        &request.id,
-                        RpcErrorCode::InternalError,
-                        "server authentication not configured",
-                    );
-                }
+            let Some(secret) = auth_secret else {
+                tracing::error!(
+                    "auth.login invoked in challenge-response mode but no secret configured"
+                );
+                return RpcResponse::error(
+                    &request.id,
+                    RpcErrorCode::InternalError,
+                    "server authentication not configured",
+                );
             };
 
             // CRITICAL: response_hex and secret are intentionally not logged.
@@ -505,6 +509,60 @@ fn handle_auth_login(
                 )
             }
         }
+    }
+}
+
+/// Read a newline-delimited line into `buf`, aborting with an error if the
+/// line exceeds `MAX_REQUEST_SIZE` bytes.  This prevents a malicious client
+/// from exhausting server memory with a single gigantic line.
+async fn bounded_read_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+) -> std::io::Result<usize> {
+    let max = MAX_REQUEST_SIZE;
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(total); // EOF
+        }
+
+        // Scan for a newline in the buffered data.
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            let line_end = pos + 1;
+            if total + line_end > max {
+                reader.consume(line_end);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "request exceeds maximum size",
+                ));
+            }
+            // Reject invalid UTF-8 rather than silently transforming it
+            // (matches std::io::BufRead::read_line behaviour).
+            let chunk = std::str::from_utf8(&available[..line_end]).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8 in request")
+            })?;
+            buf.push_str(chunk);
+            reader.consume(line_end);
+            total += line_end;
+            return Ok(total);
+        }
+
+        // No newline yet — append and check size.
+        let len = available.len();
+        if total + len > max {
+            reader.consume(len);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "request exceeds maximum size",
+            ));
+        }
+        let chunk = std::str::from_utf8(available).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8 in request")
+        })?;
+        buf.push_str(chunk);
+        reader.consume(len);
+        total += len;
     }
 }
 

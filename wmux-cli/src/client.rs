@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::time::{timeout, Duration};
 use wmux_ipc::protocol::{RpcRequest, RpcResponse};
@@ -68,8 +68,15 @@ impl IpcClient {
             .write_all(payload.as_bytes())
             .await
             .context("failed to send request to wmux")?;
+        write_half
+            .flush()
+            .await
+            .context("failed to flush request to wmux")?;
 
-        let mut reader = BufReader::new(read_half);
+        // Bound the response read to 2 MB to prevent a rogue server from
+        // exhausting client memory.
+        const MAX_RESPONSE_SIZE: u64 = 2 * 1024 * 1024;
+        let mut reader = BufReader::new(read_half.take(MAX_RESPONSE_SIZE));
         let mut line = String::new();
         reader
             .read_line(&mut line)

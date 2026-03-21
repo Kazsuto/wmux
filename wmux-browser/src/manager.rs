@@ -51,12 +51,16 @@ impl BrowserManager {
     }
 
     /// Check if the WebView2 runtime is installed on this system.
-    pub fn is_runtime_available() -> bool {
+    ///
+    /// Requires `&self` to guarantee COM has been initialized via `ComGuard`.
+    pub fn is_runtime_available(&self) -> bool {
         Self::get_runtime_version_string().is_ok()
     }
 
     /// Get the WebView2 runtime version string, if available.
-    pub fn runtime_version() -> Result<String, BrowserError> {
+    ///
+    /// Requires `&self` to guarantee COM has been initialized via `ComGuard`.
+    pub fn runtime_version(&self) -> Result<String, BrowserError> {
         Self::get_runtime_version_string()
     }
 
@@ -176,25 +180,18 @@ impl BrowserManager {
         rect: &Rect,
     ) -> Result<SurfaceId, BrowserError> {
         let surface_id = SurfaceId::new();
+        let (x, y, w, h) = rect_to_bounds(rect)?;
 
         tracing::info!(
             surface_id = %surface_id,
-            x = rect.x,
-            y = rect.y,
-            width = rect.width,
-            height = rect.height,
+            x, y, width = w, height = h,
             "creating browser panel"
         );
 
         let env = self.get_or_create_environment()?.clone();
         let mut panel = BrowserPanel::new(surface_id);
         panel.attach(&env, parent_hwnd)?;
-        panel.set_bounds(
-            rect.x as i32,
-            rect.y as i32,
-            rect.width as i32,
-            rect.height as i32,
-        )?;
+        panel.set_bounds(x, y, w, h)?;
         panel.set_visible(true)?;
 
         self.panels.insert(surface_id, panel);
@@ -209,21 +206,15 @@ impl BrowserManager {
             .get(&id)
             .ok_or_else(|| BrowserError::General(format!("panel not found: {id}")))?;
 
+        let (x, y, w, h) = rect_to_bounds(rect)?;
+
         tracing::debug!(
             surface_id = %id,
-            x = rect.x,
-            y = rect.y,
-            width = rect.width,
-            height = rect.height,
+            x, y, width = w, height = h,
             "resizing browser panel"
         );
 
-        panel.set_bounds(
-            rect.x as i32,
-            rect.y as i32,
-            rect.width as i32,
-            rect.height as i32,
-        )
+        panel.set_bounds(x, y, w, h)
     }
 
     /// Make a panel visible (e.g. on workspace activation).
@@ -320,23 +311,52 @@ impl BrowserManager {
     }
 }
 
+/// Validate a `Rect`'s `f32` fields are finite and non-negative, then cast to `i32`.
+///
+/// Prevents NaN → 0 and Infinity → i32::MAX from reaching the COM `SetBounds` API.
+fn rect_to_bounds(rect: &Rect) -> Result<(i32, i32, i32, i32), BrowserError> {
+    let vals = [rect.x, rect.y, rect.width, rect.height];
+    for v in &vals {
+        if !v.is_finite() || *v < 0.0 {
+            return Err(BrowserError::General(format!(
+                "invalid rect values: x={}, y={}, w={}, h={} (must be finite and non-negative)",
+                rect.x, rect.y, rect.width, rect.height,
+            )));
+        }
+    }
+    Ok((
+        rect.x as i32,
+        rect.y as i32,
+        rect.width as i32,
+        rect.height as i32,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn runtime_detection_does_not_panic() {
-        // This test works on any system — just checks it doesn't panic
-        let _ = BrowserManager::is_runtime_available();
+        // This test requires a BrowserManager instance to guarantee COM init.
+        // On CI without COM, just verify the function compiles and the test
+        // doesn't panic. Real runtime tests are #[ignore].
+        let mgr = BrowserManager::new();
+        if let Ok(mgr) = mgr {
+            let _ = mgr.is_runtime_available();
+        }
     }
 
     #[test]
     fn runtime_version_returns_result() {
-        let result = BrowserManager::runtime_version();
-        match result {
-            Ok(version) => assert!(!version.is_empty()),
-            Err(BrowserError::RuntimeNotInstalled) => {} // expected on some systems
-            Err(e) => panic!("unexpected error: {e}"),
+        let mgr = BrowserManager::new();
+        if let Ok(mgr) = mgr {
+            let result = mgr.runtime_version();
+            match result {
+                Ok(version) => assert!(!version.is_empty()),
+                Err(BrowserError::RuntimeNotInstalled) => {} // expected on some systems
+                Err(e) => panic!("unexpected error: {e}"),
+            }
         }
     }
 

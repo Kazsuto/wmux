@@ -29,15 +29,15 @@ pub struct WorkspaceMetadata {
 #[derive(Debug)]
 pub struct Workspace {
     /// Stable unique identifier for this workspace.
-    pub id: WorkspaceId,
+    pub(crate) id: WorkspaceId,
     /// Display name shown in the sidebar.
-    pub name: String,
+    pub(crate) name: String,
     /// Layout tree — `None` until the first pane is registered.
-    pub pane_tree: Option<PaneTree>,
+    pub(crate) pane_tree: Option<PaneTree>,
     /// Metadata (git, cwd, ports) populated by later tasks.
-    pub metadata: WorkspaceMetadata,
+    pub(crate) metadata: WorkspaceMetadata,
     /// 0-based creation order, used for stable sort in the sidebar.
-    pub creation_order: usize,
+    pub(crate) creation_order: usize,
 }
 
 impl Workspace {

@@ -2,6 +2,9 @@ use crate::error::CoreError;
 use crate::types::WorkspaceId;
 use crate::workspace::Workspace;
 
+// TODO: route through i18n system when available.
+const DEFAULT_WORKSPACE_NAME: &str = "Workspace 1";
+
 /// Manages the list of workspaces and tracks the active workspace index.
 ///
 /// Invariant: `workspaces` is never empty. `active_index` always points to a
@@ -14,10 +17,10 @@ pub struct WorkspaceManager {
 }
 
 impl WorkspaceManager {
-    /// Create a manager with one default workspace named "Workspace 1".
+    /// Create a manager with one default workspace.
     #[must_use]
     pub fn new() -> Self {
-        let default_ws = Workspace::new("Workspace 1", 0);
+        let default_ws = Workspace::new(DEFAULT_WORKSPACE_NAME, 0);
         tracing::info!(
             workspace_id = %default_ws.id(),
             "WorkspaceManager created with default workspace",
@@ -101,7 +104,7 @@ impl WorkspaceManager {
 
     /// Close the workspace with the given ID.
     ///
-    /// - If this is the last workspace, a new empty "Workspace 1" is created
+    /// - If this is the last workspace, a new empty default workspace is created
     ///   before removing it, preserving the invariant that at least one workspace
     ///   always exists.
     /// - If the active workspace is closed, focus shifts to the next workspace
@@ -120,7 +123,7 @@ impl WorkspaceManager {
         if self.workspaces.len() == 1 {
             let order = self.next_creation_order;
             self.next_creation_order += 1;
-            let replacement = Workspace::new("Workspace 1", order);
+            let replacement = Workspace::new(DEFAULT_WORKSPACE_NAME, order);
             tracing::info!(
                 workspace_id = %replacement.id(),
                 "created replacement workspace (was last)",
@@ -201,7 +204,7 @@ mod tests {
         let mgr = WorkspaceManager::new();
         assert_eq!(mgr.count(), 1);
         assert_eq!(mgr.active_index(), 0);
-        assert_eq!(mgr.active().name(), "Workspace 1");
+        assert_eq!(mgr.active().name(), DEFAULT_WORKSPACE_NAME);
     }
 
     #[test]
@@ -263,7 +266,7 @@ mod tests {
         // Should still have one workspace — the replacement.
         assert_eq!(mgr.count(), 1);
         assert_ne!(mgr.active_id(), first_id);
-        assert_eq!(mgr.active().name(), "Workspace 1");
+        assert_eq!(mgr.active().name(), DEFAULT_WORKSPACE_NAME);
     }
 
     #[test]
@@ -349,7 +352,7 @@ mod tests {
         mgr.create("WS2".to_string());
         mgr.create("WS3".to_string());
         let names: Vec<_> = mgr.iter().map(|ws| ws.name()).collect();
-        assert_eq!(names, ["Workspace 1", "WS2", "WS3"]);
+        assert_eq!(names, [DEFAULT_WORKSPACE_NAME, "WS2", "WS3"]);
     }
 
     #[test]

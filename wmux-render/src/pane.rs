@@ -9,7 +9,7 @@ pub const TAB_BAR_HEIGHT: f32 = 24.0;
 pub const BORDER_WIDTH: f32 = 1.0;
 
 /// Describes a pane's position and state for a single rendered frame.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PaneViewport {
     pub pane_id: PaneId,
     /// Layout rect from PaneTree (physical pixels, top-left origin).
@@ -93,11 +93,7 @@ impl PaneRenderer {
         }
 
         let r = &viewport.rect;
-        let tab_width = if viewport.tab_count > 0 {
-            (r.width / viewport.tab_count as f32).max(1.0)
-        } else {
-            r.width
-        };
+        let tab_width = (r.width / viewport.tab_count as f32).max(1.0);
 
         for (i, title) in viewport.tab_titles.iter().enumerate() {
             let tab_x = r.x + i as f32 * tab_width;

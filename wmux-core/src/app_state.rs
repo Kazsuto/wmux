@@ -16,6 +16,18 @@ use crate::surface_manager::Surface;
 use crate::types::{PaneId, SurfaceId, WorkspaceId};
 use crate::workspace_manager::WorkspaceManager;
 
+// TODO: route through i18n system when available.
+const PROCESS_EXITED_MSG: &str = "\r\n[Process exited]\r\n";
+const PROCESS_EXITED_ERROR_MSG: &str = "\r\n[Process exited with error]\r\n";
+
+/// Nominal viewport used for focus navigation when the real size is unknown.
+const FOCUS_NAV_VIEWPORT: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    width: 1920.0,
+    height: 1080.0,
+};
+
 // ─── Focus Direction ─────────────────────────────────────────────────────────
 
 /// Directional navigation for focus movement between adjacent panes.
@@ -663,17 +675,7 @@ impl AppStateActor {
                     }
                 }
                 AppCommand::ClosePane { pane_id } => {
-                    self.registry.remove(pane_id);
-                    // Clear zoom if the zoomed pane is being closed.
-                    if self.zoomed_pane == Some(pane_id) {
-                        self.zoomed_pane = None;
-                    }
-                    // Keep the active workspace's pane_tree in sync.
-                    if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
-                        if let Err(e) = tree.close_pane(pane_id) {
-                            tracing::warn!(error = %e, "failed to close pane in tree");
-                        }
-                    }
+                    self.close_pane_internal(pane_id);
                 }
                 AppCommand::ProcessPtyOutput { pane_id, data } => {
                     self.handle_pty_output(pane_id, &data);
@@ -856,17 +858,8 @@ impl AppStateActor {
                     };
 
                     if pane_now_empty {
-                        // Last surface removed — close the pane.
                         tracing::info!(pane_id = %pane_id, "last surface closed, closing pane");
-                        self.registry.remove(pane_id);
-                        if self.zoomed_pane == Some(pane_id) {
-                            self.zoomed_pane = None;
-                        }
-                        if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
-                            if let Err(e) = tree.close_pane(pane_id) {
-                                tracing::warn!(error = %e, "failed to close pane in tree");
-                            }
-                        }
+                        self.close_pane_internal(pane_id);
                     } else if self.registry.get(pane_id).is_some() {
                         tracing::info!(
                             pane_id = %pane_id,
@@ -936,6 +929,20 @@ impl AppStateActor {
         let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
     }
 
+    /// Remove a pane from the registry, clear zoom if needed, and prune the
+    /// pane tree.  Shared by `ClosePane` and `CloseSurface` (empty-pane path).
+    fn close_pane_internal(&mut self, pane_id: PaneId) {
+        self.registry.remove(pane_id);
+        if self.zoomed_pane == Some(pane_id) {
+            self.zoomed_pane = None;
+        }
+        if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
+            if let Err(e) = tree.close_pane(pane_id) {
+                tracing::warn!(error = %e, "failed to close pane in tree");
+            }
+        }
+    }
+
     fn handle_send_input(&self, pane_id: PaneId, data: Vec<u8>) {
         if let Some(pane) = self.registry.get(pane_id) {
             if !pane.process_exited && pane.pty_write_tx.try_send(data).is_err() {
@@ -976,9 +983,9 @@ impl AppStateActor {
         if let Some(pane) = self.registry.get_mut(pane_id) {
             pane.process_exited = true;
             let msg = if success {
-                "\r\n[Process exited]\r\n"
+                PROCESS_EXITED_MSG
             } else {
-                "\r\n[Process exited with error]\r\n"
+                PROCESS_EXITED_ERROR_MSG
             };
             pane.terminal.process(msg.as_bytes());
             tracing::info!(pane_id = %pane_id, success, "pane process exited");
@@ -995,19 +1002,16 @@ impl AppStateActor {
     /// the requested direction relative to the focused pane. The closest such
     /// pane (by Euclidean distance between centers) wins.
     fn handle_navigate_focus(&mut self, direction: FocusDirection) {
-        let focused_id = match self.registry.focused_id() {
-            Some(id) => id,
-            None => return,
+        let Some(focused_id) = self.registry.focused_id() else {
+            return;
         };
 
         // Use the current pane_tree for layout; no need for real pixel coords.
-        let tree = match self.workspace_manager.active().pane_tree.as_ref() {
-            Some(t) => t,
-            None => return,
+        let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() else {
+            return;
         };
 
-        // Use a nominal viewport large enough to get meaningful geometry.
-        let viewport = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let viewport = FOCUS_NAV_VIEWPORT;
         let layout = tree.layout(viewport);
 
         if layout.len() < 2 {

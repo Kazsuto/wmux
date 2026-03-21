@@ -74,6 +74,8 @@ pub struct TerminalRenderer {
     last_viewport_offset: usize,
     /// Reusable cell buffer for row rendering (avoids per-row allocation).
     cell_buf: Vec<wmux_core::cell::Cell>,
+    /// Reusable dirty row indices buffer (avoids per-frame allocation).
+    dirty_buf: Vec<u16>,
 }
 
 impl TerminalRenderer {
@@ -89,6 +91,7 @@ impl TerminalRenderer {
             rows,
             last_viewport_offset: 0,
             cell_buf: Vec::with_capacity(cols as usize),
+            dirty_buf: Vec::with_capacity(rows as usize),
         }
     }
 
@@ -120,14 +123,18 @@ impl TerminalRenderer {
         let scroll_changed = vp_offset != self.last_viewport_offset;
         self.last_viewport_offset = vp_offset;
 
-        let dirty: Vec<u16> = if scroll_changed {
+        // Swap out dirty_buf to avoid holding an immutable borrow on `self`
+        // while calling &mut self methods in the loop body.
+        let mut dirty_buf = std::mem::take(&mut self.dirty_buf);
+        dirty_buf.clear();
+        if scroll_changed {
             let _ = grid.take_dirty_rows(); // consume and discard to reset flags
-            (0..self.rows).collect()
+            dirty_buf.extend(0..self.rows);
         } else {
-            grid.take_dirty_rows()
+            dirty_buf.extend(grid.take_dirty_rows());
         };
 
-        for row_idx in dirty {
+        for &row_idx in &dirty_buf {
             let r = row_idx as usize;
             let y = r as f32 * ch;
 
@@ -150,6 +157,7 @@ impl TerminalRenderer {
                 );
             }
         }
+        self.dirty_buf = dirty_buf;
 
         // Render cursor quad on top of everything.
         let cursor = grid.cursor();
@@ -168,7 +176,7 @@ impl TerminalRenderer {
     ///   pane and do not bleed into adjacent panes.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         glyphon: &mut GlyphonRenderer,
@@ -177,39 +185,11 @@ impl TerminalRenderer {
         pane_origin: (f32, f32),
         pane_rect: wmux_core::rect::Rect,
     ) -> Result<(), RenderError> {
-        let ch = self.metrics.cell_height;
-        let (x_off, y_off) = pane_origin;
-
-        // Clamp the TextBounds to the intersection of pane rect and surface.
-        let bounds_left = pane_rect.x.max(0.0) as i32;
-        let bounds_top = pane_rect.y.max(0.0) as i32;
-        let bounds_right = (pane_rect.x + pane_rect.width)
-            .min(surface_width as f32)
-            .max(0.0) as i32;
-        let bounds_bottom = (pane_rect.y + pane_rect.height)
-            .min(surface_height as f32)
-            .max(0.0) as i32;
-
-        let text_areas: Vec<TextArea<'_>> = self
-            .row_buffers
-            .iter()
-            .enumerate()
-            .map(|(r, buf)| TextArea {
-                buffer: buf,
-                left: x_off,
-                top: y_off + r as f32 * ch,
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: bounds_left,
-                    top: bounds_top,
-                    right: bounds_right,
-                    bottom: bounds_bottom,
-                },
-                default_color: GlyphonColor::rgb(204, 204, 204),
-                custom_glyphs: &[],
-            })
-            .collect();
-        glyphon.prepare_text_areas(device, queue, text_areas)
+        glyphon.prepare_text_areas(
+            device,
+            queue,
+            self.text_areas(pane_origin, pane_rect, surface_width, surface_height),
+        )
     }
 
     /// Render the prepared terminal text into the active render pass.
@@ -263,10 +243,12 @@ impl TerminalRenderer {
         self.last_viewport_offset = viewport_offset;
 
         // If viewport moved, re-render all rows; otherwise use provided dirty list.
-        let all_rows: Vec<u16>;
+        // Swap out dirty_buf to avoid borrow conflicts with &mut self in the loop.
+        let mut dirty_buf = std::mem::take(&mut self.dirty_buf);
+        dirty_buf.clear();
         let dirty: &[u16] = if scroll_changed {
-            all_rows = (0..self.rows).collect();
-            &all_rows
+            dirty_buf.extend(0..self.rows);
+            &dirty_buf
         } else {
             dirty_rows
         };
@@ -313,6 +295,7 @@ impl TerminalRenderer {
                 );
             }
         }
+        self.dirty_buf = dirty_buf;
 
         let cursor = grid.cursor();
         if cursor.visible && self.cursor_visible {
@@ -320,13 +303,68 @@ impl TerminalRenderer {
         }
     }
 
+    /// Return the current column count.
+    pub fn cols(&self) -> u16 {
+        self.cols
+    }
+
+    /// Return the current row count.
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
+
+    /// Build `TextArea` descriptors for all visible rows without uploading to GPU.
+    ///
+    /// Used by the multi-pane render loop: each pane's renderer produces its
+    /// text areas, they are collected into one slice, and a single
+    /// `GlyphonRenderer::prepare_text_areas` call uploads everything at once.
+    pub fn text_areas(
+        &self,
+        pane_origin: (f32, f32),
+        pane_rect: wmux_core::rect::Rect,
+        surface_width: u32,
+        surface_height: u32,
+    ) -> Vec<TextArea<'_>> {
+        let ch = self.metrics.cell_height;
+        let (x_off, y_off) = pane_origin;
+
+        let bounds_left = pane_rect.x.max(0.0) as i32;
+        let bounds_top = pane_rect.y.max(0.0) as i32;
+        let bounds_right = (pane_rect.x + pane_rect.width)
+            .min(surface_width as f32)
+            .max(0.0) as i32;
+        let bounds_bottom = (pane_rect.y + pane_rect.height)
+            .min(surface_height as f32)
+            .max(0.0) as i32;
+
+        self.row_buffers
+            .iter()
+            .enumerate()
+            .map(|(r, buf)| TextArea {
+                buffer: buf,
+                left: x_off,
+                top: y_off + r as f32 * ch,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: bounds_left,
+                    top: bounds_top,
+                    right: bounds_right,
+                    bottom: bounds_bottom,
+                },
+                default_color: GlyphonColor::rgb(204, 204, 204),
+                custom_glyphs: &[],
+            })
+            .collect()
+    }
+
     /// Resize the terminal — rebuilds all row buffers for the new dimensions.
     pub fn resize(&mut self, cols: u16, rows: u16, font_system: &mut glyphon::FontSystem) {
         self.cols = cols;
         self.rows = rows;
         self.row_buffers = build_row_buffers(font_system, &self.metrics, cols, rows);
-        // Resize reusable buffer to match new column count.
+        // Resize reusable buffers.
         self.cell_buf = Vec::with_capacity(cols as usize);
+        self.dirty_buf = Vec::with_capacity(rows as usize);
     }
 
     /// Populate `cell_buf` with cells for the given visible row.
@@ -378,9 +416,9 @@ impl TerminalRenderer {
         if grid_row >= grid.rows() {
             return false;
         }
-        for c in 0..cols.min(grid.cols() as usize) {
-            self.cell_buf.push(grid.cell(c as u16, grid_row).clone());
-        }
+        let row = grid.row_slice(grid_row);
+        let len = cols.min(row.len());
+        self.cell_buf.extend_from_slice(&row[..len]);
         true
     }
 }
@@ -443,10 +481,10 @@ fn update_row_buffer(
     let default_attrs = Attrs::new().family(Family::Monospace);
 
     // Build one span per cell so each character gets its own color/weight.
-    // Borrows graphemes directly from cell_buf — no owned String allocation needed.
-    let spans: Vec<(&str, Attrs<'_>)> = cells
-        .iter()
-        .map(|cell| {
+    // Pass the iterator directly to set_rich_text to avoid per-row Vec allocation.
+    buf.set_rich_text(
+        font_system,
+        cells.iter().map(|cell| {
             let text: &str =
                 if cell.grapheme.is_empty() || cell.flags.contains(CellFlags::WIDE_SPACER) {
                     " "
@@ -475,10 +513,11 @@ fn update_row_buffer(
             }
 
             (text, attrs)
-        })
-        .collect();
-
-    buf.set_rich_text(font_system, spans, &default_attrs, Shaping::Advanced, None);
+        }),
+        &default_attrs,
+        Shaping::Advanced,
+        None,
+    );
     buf.shape_until_scroll(font_system, false);
 }
 

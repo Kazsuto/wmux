@@ -272,7 +272,26 @@ impl Grid {
         self.dirty.iter_mut().for_each(|d| *d = true);
     }
 
-    /// Copy cells from the given row into a `Row` (Vec<Cell>).
+    /// Return an immutable slice of all cells in `row`.
+    ///
+    /// This is the zero-copy counterpart of [`extract_row`] — it borrows
+    /// directly from the flat cell buffer, avoiding any allocation.
+    ///
+    /// # Panics
+    /// Panics if `row >= rows`.
+    #[inline]
+    pub fn row_slice(&self, row: u16) -> &[Cell] {
+        assert!(
+            row < self.rows,
+            "row out of bounds: {row} in {} rows",
+            self.rows
+        );
+        let start = self.idx(0, row);
+        let end = start + self.cols as usize;
+        &self.cells[start..end]
+    }
+
+    /// Copy cells from the given row into a `Row` (`Vec<Cell>`).
     ///
     /// Used to capture rows before they scroll off the grid into the
     /// scrollback buffer.

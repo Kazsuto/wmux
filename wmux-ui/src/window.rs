@@ -4,6 +4,7 @@ use crate::mouse::{MouseAction, MouseButton, MouseHandler};
 use crate::shortcuts::{ShortcutAction, ShortcutMap};
 use crate::toast::{self, ToastService};
 use crate::UiError;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use winit::{
@@ -31,7 +32,8 @@ struct UiState<'window> {
     gpu: GpuContext<'window>,
     quads: QuadPipeline,
     glyphon: GlyphonRenderer,
-    terminal_renderer: TerminalRenderer,
+    /// Per-pane terminal renderers. Created/removed as panes are split/closed.
+    renderers: HashMap<PaneId, TerminalRenderer>,
     metrics: TerminalMetrics,
 
     // Input
@@ -51,10 +53,13 @@ struct UiState<'window> {
     process_exited: bool,
     /// Cached terminal modes from the last render snapshot.
     terminal_modes: TerminalMode,
+    /// Cached pane layout from the last render — used for hit-testing on
+    /// mouse clicks without blocking on the actor.
+    last_layout: Vec<(PaneId, wmux_core::rect::Rect)>,
 }
 
 impl UiState<'_> {
-    /// Render a frame: get layout from actor, draw borders, render focused pane.
+    /// Render a frame: get layout from actor, draw borders, render ALL panes.
     fn render(
         &mut self,
         app_state: &AppStateHandle,
@@ -63,8 +68,10 @@ impl UiState<'_> {
         let surface_viewport =
             wmux_core::rect::Rect::new(0.0, 0.0, self.gpu.width() as f32, self.gpu.height() as f32);
 
-        // Get pane layout from the actor (blocks briefly).
+        // Get pane layout from the actor (blocks briefly — acceptable once per frame).
         let layout = rt.block_on(app_state.get_layout(surface_viewport));
+        // Cache for non-blocking hit-testing on mouse clicks.
+        self.last_layout.clone_from(&layout);
 
         // Build PaneViewport descriptors for border rendering.
         let viewports: Vec<wmux_render::PaneViewport> = layout
@@ -89,17 +96,11 @@ impl UiState<'_> {
             [0.2, 0.6, 0.9, 1.0],
         );
 
-        // Dark background fill for non-focused panes.
-        for vp in &viewports {
-            if !vp.focused {
-                self.quads.push_quad(
-                    vp.rect.x,
-                    vp.rect.y,
-                    vp.rect.width,
-                    vp.rect.height,
-                    [0.08, 0.08, 0.1, 1.0],
-                );
-            }
+        // Remove renderers for panes that no longer exist in the layout.
+        {
+            let live_ids: std::collections::HashSet<PaneId> =
+                layout.iter().map(|(id, _)| *id).collect();
+            self.renderers.retain(|id, _| live_ids.contains(id));
         }
 
         // Determine the focused pane rect (falls back to full surface for single-pane).
@@ -109,51 +110,85 @@ impl UiState<'_> {
             .map(|vp| vp.rect)
             .unwrap_or(surface_viewport);
 
-        // Request render data for the focused pane only.
-        let render_data = rt.block_on(app_state.get_render_data(self.focused_pane));
+        // Render terminal content for ALL panes.
+        for (pane_id, rect) in &layout {
+            // Compute per-pane terminal dimensions from the pane rect.
+            let pane_cols = ((rect.width / self.metrics.cell_width).floor().max(1.0) as u32)
+                .min(u16::MAX as u32) as u16;
+            let pane_rows = ((rect.height / self.metrics.cell_height).floor().max(1.0) as u32)
+                .min(u16::MAX as u32) as u16;
 
-        if let Some(data) = render_data {
-            self.process_exited = data.process_exited;
-            self.terminal_modes = data.modes;
+            // Ensure a renderer exists for this pane, creating or resizing as needed.
+            if !self.renderers.contains_key(pane_id) {
+                let renderer =
+                    TerminalRenderer::new(self.glyphon.font_system(), pane_cols, pane_rows);
+                self.renderers.insert(*pane_id, renderer);
+            }
+            let renderer = self.renderers.get_mut(pane_id).expect("just inserted");
+            if renderer.cols() != pane_cols || renderer.rows() != pane_rows {
+                renderer.resize(pane_cols, pane_rows, self.glyphon.font_system());
+                // Notify the actor so the terminal grid and PTY are resized too.
+                app_state.resize_pane(*pane_id, pane_cols, pane_rows);
+            }
 
-            // Render terminal content at the focused pane's origin.
-            self.terminal_renderer.update_from_snapshot(
-                &data.grid,
-                &data.dirty_rows,
-                data.viewport_offset,
-                &data.scrollback_visible_rows,
-                self.glyphon.font_system(),
-                &mut self.quads,
-                (focused_rect.x, focused_rect.y),
-            );
-
-            // Selection highlight overlay, offset by the pane's origin.
-            if let Some(sel) = self.mouse.selection() {
-                let (start, end) = sel.normalized();
-                let cols = self.cols as usize;
-                for row in start.row..=end.row {
-                    let col_start = if row == start.row { start.col } else { 0 };
-                    let col_end = if row == end.row { end.col + 1 } else { cols };
-                    let x = focused_rect.x + col_start as f32 * self.metrics.cell_width;
-                    let y = focused_rect.y + row as f32 * self.metrics.cell_height;
-                    let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
-                    let h = self.metrics.cell_height;
-                    self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
+            // Get render data for this pane.
+            let render_data = rt.block_on(app_state.get_render_data(*pane_id));
+            if let Some(data) = render_data {
+                if *pane_id == self.focused_pane {
+                    self.process_exited = data.process_exited;
+                    self.terminal_modes = data.modes;
                 }
+                renderer.update_from_snapshot(
+                    &data.grid,
+                    &data.dirty_rows,
+                    data.viewport_offset,
+                    &data.scrollback_visible_rows,
+                    self.glyphon.font_system(),
+                    &mut self.quads,
+                    (rect.x, rect.y),
+                );
             }
         }
 
-        // Upload GPU data.
+        // Selection highlight overlay on the focused pane only.
+        if let Some(sel) = self.mouse.selection() {
+            let (start, end) = sel.normalized();
+            let pane_cols = (focused_rect.width / self.metrics.cell_width)
+                .floor()
+                .max(1.0) as usize;
+            for row in start.row..=end.row {
+                let col_start = if row == start.row { start.col } else { 0 };
+                let col_end = if row == end.row {
+                    end.col + 1
+                } else {
+                    pane_cols
+                };
+                let x = focused_rect.x + col_start as f32 * self.metrics.cell_width;
+                let y = focused_rect.y + row as f32 * self.metrics.cell_height;
+                let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
+                let h = self.metrics.cell_height;
+                self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
+            }
+        }
+
+        // Upload quad GPU data.
         self.quads.prepare(&self.gpu.queue);
-        self.terminal_renderer.prepare(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut self.glyphon,
-            self.gpu.width(),
-            self.gpu.height(),
-            (focused_rect.x, focused_rect.y),
-            focused_rect,
-        )?;
+
+        // Collect text areas from ALL pane renderers, then prepare glyphon once.
+        let surface_w = self.gpu.width();
+        let surface_h = self.gpu.height();
+        let all_text_areas: Vec<_> = layout
+            .iter()
+            .filter_map(|(pane_id, rect)| {
+                self.renderers
+                    .get(pane_id)
+                    .map(|r| r.text_areas((rect.x, rect.y), *rect, surface_w, surface_h))
+            })
+            .flatten()
+            .collect();
+
+        self.glyphon
+            .prepare_text_areas(&self.gpu.device, &self.gpu.queue, all_text_areas)?;
 
         // Render pass.
         let output = self.gpu.surface.get_current_texture()?;
@@ -193,8 +228,7 @@ impl UiState<'_> {
 
             // Backgrounds + borders + cursor + selection first, then text on top.
             self.quads.render(&mut render_pass);
-            self.terminal_renderer
-                .render(&mut render_pass, &self.glyphon)?;
+            self.glyphon.render(&mut render_pass)?;
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -204,12 +238,29 @@ impl UiState<'_> {
         Ok(())
     }
 
-    /// Convert the current cursor pixel position to cell coordinates.
+    /// Convert the current cursor pixel position to pane-local cell coordinates.
+    ///
+    /// Uses the cached layout to find the focused pane's origin and dimensions,
+    /// so that mouse events produce coordinates relative to the pane, not the
+    /// full window surface.
     fn cursor_cell(&self) -> (usize, usize) {
-        let max_col = (self.cols as usize).saturating_sub(1);
-        let max_row = (self.rows as usize).saturating_sub(1);
-        let col = (self.cursor_pos.0.max(0.0) as f32 / self.metrics.cell_width) as usize;
-        let row = (self.cursor_pos.1.max(0.0) as f32 / self.metrics.cell_height) as usize;
+        let (origin_x, origin_y, pane_cols, pane_rows) = self
+            .last_layout
+            .iter()
+            .find(|(id, _)| *id == self.focused_pane)
+            .map(|(_, rect)| {
+                let cols = (rect.width / self.metrics.cell_width).floor().max(1.0) as usize;
+                let rows = (rect.height / self.metrics.cell_height).floor().max(1.0) as usize;
+                (rect.x as f64, rect.y as f64, cols, rows)
+            })
+            .unwrap_or((0.0, 0.0, self.cols as usize, self.rows as usize));
+
+        let max_col = pane_cols.saturating_sub(1);
+        let max_row = pane_rows.saturating_sub(1);
+        let local_x = (self.cursor_pos.0 - origin_x).max(0.0);
+        let local_y = (self.cursor_pos.1 - origin_y).max(0.0);
+        let col = (local_x as f32 / self.metrics.cell_width) as usize;
+        let row = (local_y as f32 / self.metrics.cell_height) as usize;
         (col.min(max_col), row.min(max_row))
     }
 
@@ -482,7 +533,8 @@ fn handle_shortcut(
             rt_handle.spawn(async move {
                 // 1. Create workspace (actor auto-switches to it)
                 let _ws_id = app_state_clone
-                    .create_workspace("New Workspace".to_string())
+                    // TODO: route through i18n system when available.
+                    .create_workspace("New Workspace".to_owned())
                     .await;
 
                 // 2. Spawn a pane with PTY in the new (now active) workspace
@@ -595,12 +647,15 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
         // Compute terminal dimensions from window size and font metrics
         let metrics = TerminalMetrics::new(glyphon.font_system());
-        let cols = ((gpu.width() as f32) / metrics.cell_width).floor() as u16;
-        let rows = ((gpu.height() as f32) / metrics.cell_height).floor() as u16;
-        let cols = cols.max(1);
-        let rows = rows.max(1);
+        let cols = ((gpu.width() as f32) / metrics.cell_width).floor().max(1.0) as u32;
+        let rows = ((gpu.height() as f32) / metrics.cell_height)
+            .floor()
+            .max(1.0) as u32;
+        let cols = cols.min(u16::MAX as u32) as u16;
+        let rows = rows.min(u16::MAX as u32) as u16;
 
-        let terminal_renderer = TerminalRenderer::new(glyphon.font_system(), cols, rows);
+        // Per-pane renderers are created lazily in the render loop.
+        let renderers: HashMap<PaneId, TerminalRenderer> = HashMap::new();
 
         // Initialize Windows Toast notification support.
         toast::init_aumid();
@@ -658,7 +713,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             gpu,
             quads,
             glyphon,
-            terminal_renderer,
+            renderers,
             metrics,
             input: InputHandler::new(),
             mouse: MouseHandler::new(),
@@ -671,6 +726,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             rows,
             process_exited: false,
             terminal_modes: TerminalMode::empty(),
+            last_layout: Vec::new(),
         });
     }
 
@@ -708,9 +764,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let state = match self.state.as_mut() {
-            Some(s) => s,
-            None => return,
+        let Some(state) = self.state.as_mut() else {
+            return;
         };
 
         match event {
@@ -730,22 +785,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     state.glyphon.resize(&state.gpu.queue, w, h);
 
                     // Terminal resize
-                    let new_cols = ((w as f32) / state.metrics.cell_width).floor() as u16;
-                    let new_rows = ((h as f32) / state.metrics.cell_height).floor() as u16;
-                    let new_cols = new_cols.max(1);
-                    let new_rows = new_rows.max(1);
+                    let new_cols = ((w as f32) / state.metrics.cell_width).floor().max(1.0) as u32;
+                    let new_rows = ((h as f32) / state.metrics.cell_height).floor().max(1.0) as u32;
+                    let new_cols = new_cols.min(u16::MAX as u32) as u16;
+                    let new_rows = new_rows.min(u16::MAX as u32) as u16;
 
                     if new_cols != state.cols || new_rows != state.rows {
                         state.cols = new_cols;
                         state.rows = new_rows;
-                        state.terminal_renderer.resize(
-                            new_cols,
-                            new_rows,
-                            state.glyphon.font_system(),
-                        );
-                        // Resize via actor (handles terminal + PTY).
-                        self.app_state
-                            .resize_pane(state.focused_pane, new_cols, new_rows);
+                        // Per-pane renderer + PTY resizing is handled in render()
+                        // based on each pane's actual rect dimensions.
                     }
 
                     state.window.request_redraw();
@@ -815,14 +864,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 if elem_state == ElementState::Pressed {
                     let px = state.cursor_pos.0 as f32;
                     let py = state.cursor_pos.1 as f32;
-                    let viewport = wmux_core::rect::Rect::new(
-                        0.0,
-                        0.0,
-                        state.gpu.width() as f32,
-                        state.gpu.height() as f32,
-                    );
-                    let layout = self.rt_handle.block_on(self.app_state.get_layout(viewport));
-                    for (pane_id, rect) in &layout {
+                    // Use cached layout from the last render frame instead of
+                    // blocking on the actor, which could cause UI freezes.
+                    for (pane_id, rect) in &state.last_layout {
                         if rect.contains_point(px, py) && *pane_id != state.focused_pane {
                             state.focused_pane = *pane_id;
                             self.app_state.focus_pane(*pane_id);

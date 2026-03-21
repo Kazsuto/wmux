@@ -24,7 +24,7 @@ pub enum SecurityMode {
 }
 
 /// Per-connection authentication context.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectionCtx {
     /// Whether the connection has been authenticated.
     pub authenticated: bool,
@@ -34,6 +34,20 @@ pub struct ConnectionCtx {
     pub session_token: Option<String>,
     /// PID of the connecting client process.
     pub client_pid: Option<u32>,
+}
+
+impl std::fmt::Debug for ConnectionCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionCtx")
+            .field("authenticated", &self.authenticated)
+            .field("mode", &self.mode)
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("client_pid", &self.client_pid)
+            .finish()
+    }
 }
 
 impl ConnectionCtx {
