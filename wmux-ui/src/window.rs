@@ -1112,6 +1112,12 @@ fn handle_shortcut(
         ShortcutAction::ToggleDevTools => {
             tracing::debug!("ToggleDevTools shortcut (placeholder)");
         }
+        ShortcutAction::NotificationPanelToggle => {
+            tracing::debug!("NotificationPanelToggle shortcut (placeholder — L3_09 UI wiring)");
+        }
+        ShortcutAction::JumpLastUnread => {
+            tracing::debug!("JumpLastUnread shortcut (placeholder — L3_09 UI wiring)");
+        }
     }
 }
 

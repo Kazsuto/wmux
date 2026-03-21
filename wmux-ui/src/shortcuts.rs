@@ -50,6 +50,12 @@ pub enum ShortcutAction {
     /// Ctrl+B — toggle sidebar visibility.
     ToggleSidebar,
 
+    // Notifications
+    /// Ctrl+Shift+I — toggle notification panel (Task L3_09).
+    NotificationPanelToggle,
+    /// Ctrl+Shift+U — jump to last unread notification (Task L3_09).
+    JumpLastUnread,
+
     // Future placeholders (detected but not yet implemented)
     /// Ctrl+Shift+P — open command palette (Task L4_01).
     CommandPalette,
@@ -117,6 +123,12 @@ impl ShortcutMap {
                     // Clipboard
                     (true, false, "c" | "C") => return Some(ShortcutAction::Copy),
                     (true, false, "v" | "V") => return Some(ShortcutAction::Paste),
+
+                    // Notifications
+                    (true, false, "i" | "I") => {
+                        return Some(ShortcutAction::NotificationPanelToggle)
+                    }
+                    (true, false, "u" | "U") => return Some(ShortcutAction::JumpLastUnread),
 
                     // Command palette
                     (true, false, "p" | "P") => return Some(ShortcutAction::CommandPalette),
@@ -496,6 +508,30 @@ mod tests {
                 &mods(false, false, false)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_i_notification_panel() {
+        assert_eq!(
+            map().match_shortcut(
+                &char_key("i"),
+                phys(KeyCode::KeyI),
+                &mods(true, true, false)
+            ),
+            Some(ShortcutAction::NotificationPanelToggle)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_u_jump_unread() {
+        assert_eq!(
+            map().match_shortcut(
+                &char_key("u"),
+                phys(KeyCode::KeyU),
+                &mods(true, true, false)
+            ),
+            Some(ShortcutAction::JumpLastUnread)
         );
     }
 }

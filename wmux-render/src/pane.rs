@@ -146,6 +146,44 @@ impl PaneRenderer {
         Ok(())
     }
 
+    /// Render a notification ring around a pane that has unread notifications.
+    ///
+    /// Draws 4 semi-transparent blue quads on the inner edges of the pane,
+    /// with animated alpha pulsing over a 2-second period.
+    pub fn render_notification_ring(
+        quads: &mut QuadPipeline,
+        viewport: &PaneViewport,
+        time_secs: f32,
+    ) {
+        let r = &viewport.rect;
+        let ring_width = 2.0;
+
+        // Animated alpha: pulse between 0.3 and 0.5 over 2 seconds
+        let alpha = 0.3 + 0.2 * (time_secs * std::f32::consts::PI).sin();
+        let color = [0.3, 0.5, 1.0, alpha]; // semi-transparent blue
+
+        // Top edge
+        quads.push_quad(r.x, r.y, r.width, ring_width, color);
+        // Bottom edge
+        quads.push_quad(r.x, r.y + r.height - ring_width, r.width, ring_width, color);
+        // Left edge
+        quads.push_quad(
+            r.x,
+            r.y + ring_width,
+            ring_width,
+            r.height - 2.0 * ring_width,
+            color,
+        );
+        // Right edge
+        quads.push_quad(
+            r.x + r.width - ring_width,
+            r.y + ring_width,
+            ring_width,
+            r.height - 2.0 * ring_width,
+            color,
+        );
+    }
+
     /// Return the usable terminal content area for `viewport`.
     ///
     /// When the pane has multiple tabs, the top `TAB_BAR_HEIGHT` pixels are
@@ -285,5 +323,15 @@ mod tests {
         assert_eq!(vps.len(), 2);
         assert!(vps[0].focused);
         assert!(!vps[1].focused);
+    }
+
+    #[test]
+    fn notification_ring_alpha_range() {
+        // Verify the alpha calculation stays in [0.1, 0.5] range
+        for i in 0..100 {
+            let t = i as f32 * 0.1;
+            let alpha = 0.3 + 0.2 * (t * std::f32::consts::PI).sin();
+            assert!(alpha >= 0.09 && alpha <= 0.51, "alpha {alpha} at t={t}");
+        }
     }
 }

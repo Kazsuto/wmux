@@ -1,8 +1,11 @@
+pub mod command_palette;
 pub mod divider;
+pub mod effects;
 pub mod error;
 pub mod event;
 pub mod input;
 pub mod mouse;
+pub mod notification_panel;
 pub mod search;
 pub mod shortcuts;
 pub mod sidebar;

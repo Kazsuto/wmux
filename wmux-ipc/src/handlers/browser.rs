@@ -118,7 +118,7 @@ mod tests {
 
     fn make_handler() -> BrowserHandler {
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
-        let app_state = wmux_core::AppStateHandle::spawn(event_tx);
+        let (app_state, _actor_handle) = wmux_core::AppStateHandle::spawn(event_tx);
         BrowserHandler::new(app_state)
     }
 

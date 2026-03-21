@@ -1,11 +1,15 @@
+use std::collections::HashMap;
 use std::fmt;
+use std::time::Instant;
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::cell::Row;
 use crate::error::CoreError;
 use crate::event::TerminalEvent;
 use crate::grid::Grid;
+use crate::metadata_store::{LogEntry, LogLevel, MetadataSnapshot, MetadataStore, StatusEntry};
 use crate::mode::TerminalMode;
 use crate::notification::{Notification, NotificationEvent, NotificationSource, NotificationStore};
 use crate::pane_registry::{PaneRegistry, PaneState};
@@ -215,6 +219,65 @@ pub enum AppCommand {
     /// Resize a split by setting the ratio on a pane's parent split node.
     ResizeSplit { pane_id: PaneId, ratio: f32 },
 
+    // ─── Internal commands (sent by actor to itself) ───────────────────────
+    /// Update git info for a workspace (sent by git detection task).
+    UpdateGitInfo {
+        workspace_id: WorkspaceId,
+        branch: Option<String>,
+        dirty: bool,
+    },
+
+    /// Update detected listening ports for a workspace.
+    UpdatePorts {
+        workspace_id: WorkspaceId,
+        ports: Vec<u16>,
+    },
+
+    // ─── Sidebar metadata commands ───────────────────────────────────────────
+    /// Set a sidebar status entry for the active workspace.
+    SidebarSetStatus {
+        key: String,
+        value: String,
+        icon: Option<String>,
+        color: Option<String>,
+        pid: Option<u32>,
+    },
+
+    /// Clear a sidebar status entry by key.
+    SidebarClearStatus { key: String },
+
+    /// List sidebar statuses for the active workspace.
+    SidebarListStatus {
+        reply: oneshot::Sender<Vec<StatusEntry>>,
+    },
+
+    /// Set sidebar progress bar.
+    SidebarSetProgress { value: f32, label: Option<String> },
+
+    /// Clear sidebar progress bar.
+    SidebarClearProgress,
+
+    /// Add a sidebar log entry.
+    SidebarAddLog {
+        level: String,
+        source: String,
+        message: String,
+    },
+
+    /// List sidebar log entries.
+    SidebarListLog {
+        limit: usize,
+        reply: oneshot::Sender<Vec<LogEntry>>,
+    },
+
+    /// Clear sidebar log.
+    SidebarClearLog,
+
+    /// Get full sidebar metadata state.
+    SidebarState {
+        reply: oneshot::Sender<MetadataSnapshot>,
+    },
+
     /// Shut down the actor.
     Shutdown,
 }
@@ -393,6 +456,49 @@ impl fmt::Debug for AppCommand {
                 .field("pane_id", pane_id)
                 .field("ratio", ratio)
                 .finish(),
+            Self::UpdateGitInfo {
+                workspace_id,
+                branch,
+                dirty,
+            } => f
+                .debug_struct("UpdateGitInfo")
+                .field("workspace_id", workspace_id)
+                .field("branch", branch)
+                .field("dirty", dirty)
+                .finish(),
+            Self::UpdatePorts {
+                workspace_id,
+                ports,
+            } => f
+                .debug_struct("UpdatePorts")
+                .field("workspace_id", workspace_id)
+                .field("count", &ports.len())
+                .finish(),
+            Self::SidebarSetStatus { key, .. } => f
+                .debug_struct("SidebarSetStatus")
+                .field("key", key)
+                .finish_non_exhaustive(),
+            Self::SidebarClearStatus { key } => f
+                .debug_struct("SidebarClearStatus")
+                .field("key", key)
+                .finish(),
+            Self::SidebarListStatus { .. } => write!(f, "SidebarListStatus"),
+            Self::SidebarSetProgress { value, .. } => f
+                .debug_struct("SidebarSetProgress")
+                .field("value", value)
+                .finish_non_exhaustive(),
+            Self::SidebarClearProgress => write!(f, "SidebarClearProgress"),
+            Self::SidebarAddLog { level, source, .. } => f
+                .debug_struct("SidebarAddLog")
+                .field("level", level)
+                .field("source", source)
+                .finish_non_exhaustive(),
+            Self::SidebarListLog { limit, .. } => f
+                .debug_struct("SidebarListLog")
+                .field("limit", limit)
+                .finish_non_exhaustive(),
+            Self::SidebarClearLog => write!(f, "SidebarClearLog"),
+            Self::SidebarState { .. } => write!(f, "SidebarState"),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -923,6 +1029,99 @@ impl AppStateHandle {
             .try_send(AppCommand::ResizeSplit { pane_id, ratio });
     }
 
+    // ─── Sidebar metadata handle methods ────────────────────────────────────
+
+    /// Set a sidebar status entry. Fire-and-forget.
+    pub fn sidebar_set_status(
+        &self,
+        key: String,
+        value: String,
+        icon: Option<String>,
+        color: Option<String>,
+        pid: Option<u32>,
+    ) {
+        let _ = self.cmd_tx.try_send(AppCommand::SidebarSetStatus {
+            key,
+            value,
+            icon,
+            color,
+            pid,
+        });
+    }
+
+    /// Clear a sidebar status entry. Fire-and-forget.
+    pub fn sidebar_clear_status(&self, key: String) {
+        let _ = self.cmd_tx.try_send(AppCommand::SidebarClearStatus { key });
+    }
+
+    /// List sidebar statuses for the active workspace.
+    pub async fn sidebar_list_status(&self) -> Vec<StatusEntry> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::SidebarListStatus { reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Set sidebar progress bar. Fire-and-forget.
+    pub fn sidebar_set_progress(&self, value: f32, label: Option<String>) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::SidebarSetProgress { value, label });
+    }
+
+    /// Clear sidebar progress bar. Fire-and-forget.
+    pub fn sidebar_clear_progress(&self) {
+        let _ = self.cmd_tx.try_send(AppCommand::SidebarClearProgress);
+    }
+
+    /// Add a sidebar log entry. Fire-and-forget.
+    pub fn sidebar_add_log(&self, level: String, source: String, message: String) {
+        let _ = self.cmd_tx.try_send(AppCommand::SidebarAddLog {
+            level,
+            source,
+            message,
+        });
+    }
+
+    /// List sidebar log entries.
+    pub async fn sidebar_list_log(&self, limit: usize) -> Vec<LogEntry> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::SidebarListLog { limit, reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Clear sidebar log. Fire-and-forget.
+    pub fn sidebar_clear_log(&self) {
+        let _ = self.cmd_tx.try_send(AppCommand::SidebarClearLog);
+    }
+
+    /// Get full sidebar metadata state.
+    pub async fn sidebar_state(&self) -> MetadataSnapshot {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::SidebarState { reply: tx })
+            .await
+            .is_err()
+        {
+            return MetadataSnapshot::empty();
+        }
+        rx.await.unwrap_or_else(|_| MetadataSnapshot::empty())
+    }
+
     /// Shut down the actor. Fire-and-forget.
     pub fn shutdown(&self) {
         let _ = self.cmd_tx.try_send(AppCommand::Shutdown);
@@ -930,22 +1129,28 @@ impl AppStateHandle {
 
     /// Spawn the AppState actor on the tokio runtime.
     ///
-    /// Returns the handle for sending commands and the event receiver
-    /// for UI notifications.
+    /// Returns the handle for sending commands and a `JoinHandle` for the
+    /// actor task. Callers should `shutdown()` then `await` the join handle
+    /// to ensure the final session save completes before process exit.
     #[must_use]
-    pub fn spawn(event_tx: mpsc::Sender<AppEvent>) -> Self {
+    pub fn spawn(event_tx: mpsc::Sender<AppEvent>) -> (Self, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(CMD_CHANNEL_CAPACITY);
         let actor = AppStateActor {
             registry: PaneRegistry::new(),
             notification_store: NotificationStore::new(),
             workspace_manager: WorkspaceManager::new(),
+            metadata_stores: HashMap::new(),
             zoomed_pane: None,
+            self_tx: cmd_tx.clone(),
+            background_tasks: JoinSet::new(),
+            last_git_detect: HashMap::new(),
+            port_scan_in_flight: false,
             cmd_rx,
             event_tx,
         };
-        tokio::spawn(actor.run());
+        let join_handle = tokio::spawn(actor.run());
         tracing::info!("AppState actor spawned");
-        Self { cmd_tx }
+        (Self { cmd_tx }, join_handle)
     }
 }
 
@@ -957,9 +1162,26 @@ struct AppStateActor {
     registry: PaneRegistry,
     notification_store: NotificationStore,
     workspace_manager: WorkspaceManager,
+    /// Per-workspace sidebar metadata stores.
+    metadata_stores: HashMap<WorkspaceId, MetadataStore>,
     /// Currently zoomed pane. When `Some(id)`, `GetLayout` returns only that
     /// pane at full-viewport rect. `None` means normal split layout.
     zoomed_pane: Option<PaneId>,
+    /// Self-sender for internal commands (git detection results, port scan results).
+    ///
+    /// NOTE: This creates a reference cycle on the command channel — the actor
+    /// holds a sender to its own receiver, preventing automatic shutdown via
+    /// sender-drop detection. The actor MUST be shut down explicitly via
+    /// `AppCommand::Shutdown`. Background tasks cloned from this sender are
+    /// aborted on shutdown via `background_tasks`.
+    self_tx: mpsc::Sender<AppCommand>,
+    /// Background tasks spawned by the actor (git detection, port scanning, auto-save).
+    /// Aborted on shutdown to prevent orphaned tasks.
+    background_tasks: JoinSet<()>,
+    /// Last git detection timestamp per workspace — debounce 500ms.
+    last_git_detect: HashMap<WorkspaceId, Instant>,
+    /// Whether a port scan is currently in flight (prevents overlapping scans).
+    port_scan_in_flight: bool,
     cmd_rx: mpsc::Receiver<AppCommand>,
     event_tx: mpsc::Sender<AppEvent>,
 }
@@ -970,6 +1192,12 @@ impl AppStateActor {
 
         let mut save_interval = tokio::time::interval(std::time::Duration::from_secs(8));
         save_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut pid_sweep_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        pid_sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut port_scan_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        port_scan_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -1331,14 +1559,127 @@ impl AppStateActor {
                     }
                 }
 
+                // ─── Internal commands ─────────────────────────────────────
+                AppCommand::UpdateGitInfo { workspace_id, branch, dirty } => {
+                    if let Some(ws) = self.workspace_manager.by_id_mut(workspace_id) {
+                        ws.metadata.git_branch = branch;
+                        ws.metadata.git_dirty = dirty;
+                    }
+                }
+                AppCommand::UpdatePorts { workspace_id, ports } => {
+                    self.port_scan_in_flight = false;
+                    if let Some(ws) = self.workspace_manager.by_id_mut(workspace_id) {
+                        ws.metadata.ports = ports;
+                    }
+                }
+
+                // ─── Sidebar metadata commands ───────────────────────────
+                AppCommand::SidebarSetStatus { key, value, icon, color, pid } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let store = self.metadata_stores.entry(ws_id).or_default();
+                    store.set_status(StatusEntry { key, value, icon, color, pid });
+                }
+                AppCommand::SidebarClearStatus { key } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    if let Some(store) = self.metadata_stores.get_mut(&ws_id) {
+                        store.clear_status(&key);
+                    }
+                }
+                AppCommand::SidebarListStatus { reply } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let statuses = self
+                        .metadata_stores
+                        .get(&ws_id)
+                        .map(|s| s.list_status().into_iter().cloned().collect())
+                        .unwrap_or_default();
+                    let _ = reply.send(statuses);
+                }
+                AppCommand::SidebarSetProgress { value, label } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let store = self.metadata_stores.entry(ws_id).or_default();
+                    store.set_progress(value, label);
+                }
+                AppCommand::SidebarClearProgress => {
+                    let ws_id = self.workspace_manager.active_id();
+                    if let Some(store) = self.metadata_stores.get_mut(&ws_id) {
+                        store.clear_progress();
+                    }
+                }
+                AppCommand::SidebarAddLog { level, source, message } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let store = self.metadata_stores.entry(ws_id).or_default();
+                    let log_level = match level.as_str() {
+                        "progress" => LogLevel::Progress,
+                        "success" => LogLevel::Success,
+                        "warning" | "warn" => LogLevel::Warning,
+                        "error" => LogLevel::Error,
+                        _ => LogLevel::Info,
+                    };
+                    store.add_log(log_level, source, message);
+                }
+                AppCommand::SidebarListLog { limit, reply } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let logs = self
+                        .metadata_stores
+                        .get(&ws_id)
+                        .map(|s| s.list_log(limit).into_iter().cloned().collect())
+                        .unwrap_or_default();
+                    let _ = reply.send(logs);
+                }
+                AppCommand::SidebarClearLog => {
+                    let ws_id = self.workspace_manager.active_id();
+                    if let Some(store) = self.metadata_stores.get_mut(&ws_id) {
+                        store.clear_log();
+                    }
+                }
+                AppCommand::SidebarState { reply } => {
+                    let ws_id = self.workspace_manager.active_id();
+                    let snapshot = self
+                        .metadata_stores
+                        .get(&ws_id)
+                        .map(|s| s.state())
+                        .unwrap_or_else(MetadataSnapshot::empty);
+                    let _ = reply.send(snapshot);
+                }
+
                         AppCommand::Shutdown => {
                             tracing::info!("AppState actor shutting down");
+                            self.background_tasks.abort_all();
                             break;
                         }
                     }
                 }
                 _ = save_interval.tick() => {
                     self.auto_save();
+                }
+                _ = pid_sweep_interval.tick() => {
+                    for store in self.metadata_stores.values_mut() {
+                        store.sweep_dead_pids();
+                    }
+                }
+                _ = port_scan_interval.tick() => {
+                    // Skip if a previous scan is still in flight.
+                    if !self.port_scan_in_flight {
+                        self.port_scan_in_flight = true;
+                        let ws_id = self.workspace_manager.active_id();
+                        let self_tx = self.self_tx.clone();
+                        self.background_tasks.spawn(async move {
+                            let ports = crate::port_scanner::scan_listening_ports().await;
+                            let _ = self_tx.try_send(AppCommand::UpdatePorts {
+                                workspace_id: ws_id,
+                                ports,
+                            });
+                        });
+                    }
+                }
+                // Drain completed background tasks to avoid unbounded growth.
+                Some(result) = self.background_tasks.join_next(), if !self.background_tasks.is_empty() => {
+                    if let Err(e) = result {
+                        if e.is_panic() {
+                            tracing::error!(error = ?e, "background task panicked");
+                        }
+                        // Cancelled tasks (from abort_all) are expected during shutdown.
+                    }
                 }
             }
         }
@@ -1349,9 +1690,9 @@ impl AppStateActor {
     }
 
     /// Periodic auto-save: fire-and-forget so the actor loop never awaits disk I/O.
-    fn auto_save(&self) {
+    fn auto_save(&mut self) {
         let state = crate::session::build_session_state(&self.workspace_manager, &self.registry);
-        tokio::spawn(async move {
+        self.background_tasks.spawn(async move {
             if let Err(e) = crate::session::save_session(&state).await {
                 tracing::warn!(error = %e, "auto-save failed");
             } else {
@@ -1370,7 +1711,22 @@ impl AppStateActor {
         }
     }
 
+    /// Find which workspace contains a specific pane by searching all workspaces' pane trees.
+    fn find_workspace_for_pane(&self, pane_id: PaneId) -> Option<WorkspaceId> {
+        for ws in self.workspace_manager.iter() {
+            if let Some(tree) = ws.pane_tree() {
+                if tree.find_pane(pane_id) {
+                    return Some(ws.id());
+                }
+            }
+        }
+        None
+    }
+
     fn handle_pty_output(&mut self, pane_id: PaneId, data: &[u8]) {
+        // Look up which workspace contains this pane early, before mutable borrows
+        let ws_id = self.find_workspace_for_pane(pane_id);
+
         let Some(pane) = self.registry.get_mut(pane_id) else {
             return;
         };
@@ -1403,8 +1759,54 @@ impl AppStateActor {
                         }
                     }
                 }
-                // CwdChanged, PromptMark — handled later (L2_14 sidebar metadata)
-                _ => {}
+                TerminalEvent::CwdChanged(cwd) => {
+                    // Use the workspace ID found at the start of this function
+                    let Some(cwd_ws_id) = ws_id else {
+                        tracing::warn!(pane_id = %pane_id, "CwdChanged event but pane not in any workspace tree");
+                        continue;
+                    };
+
+                    // Update workspace metadata with new CWD
+                    if let Some(ws) = self.workspace_manager.by_id_mut(cwd_ws_id) {
+                        ws.metadata.cwd = Some(cwd.clone());
+                    }
+                    tracing::debug!(workspace_id = %cwd_ws_id, cwd = %cwd.display(), "CWD changed");
+
+                    // Debounce git detection: skip if less than 500ms since last detect
+                    // for this workspace. Prevents process storms on rapid CWD changes.
+                    let now = Instant::now();
+                    let debounce = std::time::Duration::from_millis(500);
+                    let should_detect = self
+                        .last_git_detect
+                        .get(&cwd_ws_id)
+                        .is_none_or(|last| now.duration_since(*last) >= debounce);
+
+                    if should_detect {
+                        self.last_git_detect.insert(cwd_ws_id, now);
+                        let cwd_clone = cwd.clone();
+                        let self_tx = self.self_tx.clone();
+                        self.background_tasks.spawn(async move {
+                            if let Some(git_info) =
+                                crate::git_detector::detect_git(&cwd_clone).await
+                            {
+                                let _ = self_tx.try_send(AppCommand::UpdateGitInfo {
+                                    workspace_id: cwd_ws_id,
+                                    branch: Some(git_info.branch),
+                                    dirty: git_info.dirty,
+                                });
+                            } else {
+                                let _ = self_tx.try_send(AppCommand::UpdateGitInfo {
+                                    workspace_id: cwd_ws_id,
+                                    branch: None,
+                                    dirty: false,
+                                });
+                            }
+                        });
+                    }
+                }
+                TerminalEvent::PromptMark(_) => {
+                    // Prompt marks currently informational only
+                }
             }
         }
 
@@ -1819,7 +2221,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_and_register_pane() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let pane_id = PaneId::new();
         handle.register_pane(pane_id, make_pane_state(80, 24));
@@ -1845,7 +2247,7 @@ mod tests {
     #[tokio::test]
     async fn process_pty_output_triggers_redraw() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let pane_id = PaneId::new();
         handle.register_pane(pane_id, make_pane_state(80, 24));
@@ -1869,7 +2271,7 @@ mod tests {
     #[tokio::test]
     async fn get_render_data_nonexistent_pane_returns_none() {
         let (event_tx, _event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let data = handle.get_render_data(PaneId::new()).await;
         assert!(data.is_none());
@@ -1880,7 +2282,7 @@ mod tests {
     #[tokio::test]
     async fn mark_exited_sets_flag() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let pane_id = PaneId::new();
         handle.register_pane(pane_id, make_pane_state(80, 24));
@@ -1908,7 +2310,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_stops_actor() {
         let (event_tx, _event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
         handle.shutdown();
         tokio::task::yield_now().await;
 
@@ -1920,7 +2322,7 @@ mod tests {
     #[tokio::test]
     async fn create_workspace_returns_id() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let id = handle.create_workspace("WS 2".to_string()).await;
         assert!(id.is_some());
@@ -1941,7 +2343,7 @@ mod tests {
     #[tokio::test]
     async fn switch_workspace_emits_event() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         handle.create_workspace("WS 2".to_string()).await;
         tokio::task::yield_now().await;
@@ -1965,7 +2367,7 @@ mod tests {
     #[tokio::test]
     async fn close_workspace_emits_event() {
         let (event_tx, mut event_rx) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let ws_id = handle.create_workspace("WS 2".to_string()).await.unwrap();
         tokio::task::yield_now().await;
@@ -1988,7 +2390,7 @@ mod tests {
     #[tokio::test]
     async fn pane_registered_in_active_workspace() {
         let (event_tx, _) = mpsc::channel(64);
-        let handle = AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
 
         let pane_id = PaneId::new();
         handle.register_pane(pane_id, make_pane_state(80, 24));

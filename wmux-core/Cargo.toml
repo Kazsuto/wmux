@@ -16,5 +16,6 @@ compact_str.workspace = true
 vte.workspace = true
 unicode-width.workspace = true
 tokio.workspace = true
+windows.workspace = true
 
 [dev-dependencies]

@@ -2,6 +2,32 @@
 
 ## 2026-03-21
 
+FIX: Fix shutdown race — spawn() returns JoinHandle, main.rs awaits actor completion before process::exit so final session save completes; move std::env::set_var before tokio runtime creation to eliminate UB from multi-threaded env mutation
+
+FIX: Remove JSON serialization from actor loop — SidebarListStatus/SidebarListLog/SidebarState return typed data via oneshot, serialization moved to IPC handler layer; add git detection 500ms debounce per workspace; port scan dedup (skip if in-flight) and interval 5s→15s
+
+FIX: Add IPC string length validation — sidebar handler validates key/value/icon/color/message/source/label lengths, returns invalid_params on overflow; clamp list_log limit; MetadataStore::set_status returns bool for capacity rejection feedback
+
+FIX: Log dark mode DwmSetWindowAttribute HRESULT instead of silently discarding; add unsafe to extern system block for edition 2024 forward compat; add dead_code justification comment
+
+REFACTOR: SearchResult borrows CommandEntry instead of cloning per keystroke; pre-allocate MetadataStore HashMap/VecDeque; detect_git accepts impl AsRef&lt;Path&gt;; add i18n TODO markers on hardcoded command palette strings
+
+CHORE: Update rustls-webpki 0.103.9→0.103.10 (RUSTSEC-2026-0049)
+
+FIX: Track background tasks with JoinSet to prevent orphaned tokio::spawn on shutdown — abort_all on Shutdown, log panicked tasks, RAII handle for OpenProcess, safe u32 PID cast, stable LogLevel Display for IPC
+
+FEATURE: Add MetadataStore for sidebar status badges, progress bars, and activity logs per workspace (L2_14) — in-memory store with PID sweep, IPC handler with 9 sidebar.* methods, app_state actor integration
+
+FEATURE: Add session restore on launch (L3_02) — load_session() reads session.json with version check, corrupt/missing files start fresh (never crash per ADR-0009)
+
+FEATURE: Add notification visual indicators (L3_09) — NotificationPanel overlay, animated blue notification ring on panes with unread notifications, Ctrl+Shift+I toggle panel, Ctrl+Shift+U jump to last unread
+
+FEATURE: Add git branch and port detection for sidebar (L3_14) — async git detection via tokio::process::Command, port scanning via netstat, CWD change triggers re-detection, 5s port scan interval
+
+FEATURE: Add command palette with fuzzy search (L4_01) — CommandRegistry with 16 default commands, prefix/word-start/substring scoring, CommandPalette overlay with keyboard navigation (Ctrl+Shift+P)
+
+FEATURE: Add Mica/Acrylic window effects (L4_05) — DWM API for Win11 backdrop (Mica Alt on 22H2+, Mica on 22000+), opaque fallback on Win10, dark mode title bar support
+
 FIX: IPC method names violate cmux convention — send_text/send_key/read_text were registered under "input.*" instead of "surface.*"; merge InputHandler into SurfaceHandler, delete input.rs, remove "input" router registration; cmux-compatible clients now correctly reach surface.send_text etc.
 
 FIX: Win32 SetHandleInformation errors silently discarded in ConPTY pipe setup — replace `let _ =` with `if let Err(e)` + tracing::warn to surface handle inheritance failures that could cause PTY pipe leaks

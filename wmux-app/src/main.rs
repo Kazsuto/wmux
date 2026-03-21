@@ -15,6 +15,16 @@ fn main() -> Result<()> {
 
     tracing::info!("wmux starting...");
 
+    // Compute pipe name and set environment variable BEFORE creating the tokio
+    // runtime. std::env::set_var is not thread-safe — it must be called while
+    // the process is still single-threaded.
+    let ipc_pipe = pipe_name();
+    // SAFETY: Single-threaded context — no other threads exist yet.
+    // The tokio runtime (and its worker threads) is created below.
+    unsafe {
+        std::env::set_var("WMUX_SOCKET_PATH", &ipc_pipe);
+    }
+
     // Create tokio runtime for PTY I/O and async tasks.
     // winit owns the main thread — tokio runs on background threads.
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
@@ -22,10 +32,9 @@ fn main() -> Result<()> {
 
     // Spawn AppState actor — owns all terminal/pane state.
     let (app_event_tx, app_event_rx) = tokio::sync::mpsc::channel(64);
-    let app_state = AppStateHandle::spawn(app_event_tx);
+    let (app_state, actor_handle) = AppStateHandle::spawn(app_event_tx);
 
     // Start IPC server for CLI and AI agent access.
-    let ipc_pipe = pipe_name();
     let mut router = Router::new();
     router.register(
         "workspace",
@@ -45,6 +54,12 @@ fn main() -> Result<()> {
             app_state.clone(),
         )),
     );
+    router.register(
+        "sidebar",
+        std::sync::Arc::new(wmux_ipc::handlers::sidebar::SidebarHandler::new(
+            app_state.clone(),
+        )),
+    );
     let router = std::sync::Arc::new(router);
     // WmuxOnly mode: only child processes of wmux can connect (most secure default).
     // Auth secret is not needed for WmuxOnly — PID ancestry check is used instead.
@@ -54,16 +69,37 @@ fn main() -> Result<()> {
             tracing::error!(error = %e, "IPC server failed");
         }
     });
-    // SAFETY: No other thread is reading WMUX_SOCKET_PATH at this point
-    // during startup initialization. This is set before any child processes
-    // are spawned that would inherit the environment.
-    unsafe {
-        std::env::set_var("WMUX_SOCKET_PATH", &ipc_pipe);
-    }
     tracing::info!(pipe = %ipc_pipe, "IPC server started");
 
-    App::run(rt.handle().clone(), app_state, app_event_rx)
+    // Attempt to restore previous session.
+    rt.block_on(async {
+        match wmux_core::load_session().await {
+            Ok(Some(session)) => {
+                tracing::info!(
+                    workspace_count = session.workspaces.len(),
+                    "session loaded, restore will happen on first frame"
+                );
+                // TODO: implement full session restore (recreate workspaces, pane trees, PTYs)
+                // For now, log the loaded session. Full restore requires spawning PTYs
+                // in the right CWDs and rebuilding pane trees, which will be wired
+                // when the UI integration is complete.
+            }
+            Ok(None) => {
+                tracing::debug!("no session to restore, starting fresh");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "session restore failed, starting fresh");
+            }
+        }
+    });
+
+    App::run(rt.handle().clone(), app_state.clone(), app_event_rx)
         .context("application terminated with error")?;
+
+    // Graceful shutdown: signal the actor to stop, then wait for it to
+    // complete its final session save before force-exiting the process.
+    app_state.shutdown();
+    let _ = rt.block_on(actor_handle);
 
     // Force-exit the process. The tokio runtime has spawn_blocking tasks
     // (PTY reader, exit watcher) that block on synchronous I/O (File::read,

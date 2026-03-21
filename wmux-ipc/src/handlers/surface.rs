@@ -324,7 +324,7 @@ mod tests {
 
     fn make_handler() -> SurfaceHandler {
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
-        let handle = wmux_core::AppStateHandle::spawn(event_tx);
+        let (handle, _actor_handle) = wmux_core::AppStateHandle::spawn(event_tx);
         SurfaceHandler::new(handle)
     }
 

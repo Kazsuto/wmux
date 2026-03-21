@@ -199,6 +199,87 @@ pub async fn save_session(state: &SessionState) -> Result<(), io::Error> {
     Ok(())
 }
 
+/// Current session schema version.
+pub const SESSION_VERSION: u32 = 1;
+
+/// Load session state from disk.
+///
+/// Returns `Ok(None)` if:
+/// - The session file does not exist
+/// - The file is corrupted or cannot be parsed
+/// - The schema version does not match
+///
+/// Per ADR-0009: corrupted files NEVER cause a crash — log a warning and start fresh.
+pub async fn load_session() -> Result<Option<SessionState>, io::Error> {
+    let path = match session_file_path() {
+        Some(p) => p,
+        None => {
+            tracing::debug!("config directory not found, skipping session restore");
+            return Ok(None);
+        }
+    };
+
+    let data = match tokio::fs::read(&path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("no session file found, starting fresh");
+            return Ok(None);
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read session file, starting fresh"
+            );
+            return Ok(None);
+        }
+    };
+
+    let mut state: SessionState = match serde_json::from_slice(&data) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "session file corrupted, starting fresh"
+            );
+            return Ok(None);
+        }
+    };
+
+    if state.version != SESSION_VERSION {
+        tracing::warn!(
+            found = state.version,
+            expected = SESSION_VERSION,
+            "session schema version mismatch, starting fresh"
+        );
+        return Ok(None);
+    }
+
+    if state.workspaces.is_empty() {
+        tracing::warn!("session has no workspaces, starting fresh");
+        return Ok(None);
+    }
+
+    // Validate active_workspace_index is in bounds
+    if state.active_workspace_index >= state.workspaces.len() {
+        tracing::warn!(
+            index = state.active_workspace_index,
+            count = state.workspaces.len(),
+            "active_workspace_index out of range, resetting to 0"
+        );
+        state.active_workspace_index = 0;
+    }
+
+    tracing::info!(
+        workspace_count = state.workspaces.len(),
+        active_index = state.active_workspace_index,
+        "session loaded successfully"
+    );
+
+    Ok(Some(state))
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
