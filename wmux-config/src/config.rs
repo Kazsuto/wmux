@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConfigError;
 use crate::parser::{parse_config, ParsedConfig};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub font_family: String,
     pub font_size: f32,
@@ -19,6 +19,7 @@ pub struct Config {
     pub keybindings: HashMap<String, String>,
     pub sidebar_width: u16,
     pub language: String,
+    pub inactive_pane_opacity: f32,
 }
 
 impl Default for Config {
@@ -35,6 +36,7 @@ impl Default for Config {
             keybindings: HashMap::new(),
             sidebar_width: 200,
             language: "en".to_string(),
+            inactive_pane_opacity: 0.7,
         }
     }
 }
@@ -45,7 +47,7 @@ impl std::str::FromStr for Config {
     fn from_str(content: &str) -> Result<Config, ConfigError> {
         let values = parse_config(content)?;
         let mut config = Config::default();
-        apply_values(&mut config, values);
+        apply_values(&mut config, &values);
         Ok(config)
     }
 }
@@ -68,7 +70,7 @@ impl Config {
         if ghostty_path.exists() {
             match std::fs::read_to_string(&ghostty_path) {
                 Ok(content) => match parse_config(&content) {
-                    Ok(values) => apply_values(&mut config, values),
+                    Ok(values) => apply_values(&mut config, &values),
                     Err(e) => tracing::warn!(
                         path = %ghostty_path.display(),
                         error = %e,
@@ -90,7 +92,7 @@ impl Config {
         if wmux_path.exists() {
             match std::fs::read_to_string(&wmux_path) {
                 Ok(content) => match parse_config(&content) {
-                    Ok(values) => apply_values(&mut config, values),
+                    Ok(values) => apply_values(&mut config, &values),
                     Err(e) => tracing::warn!(
                         path = %wmux_path.display(),
                         error = %e,
@@ -111,7 +113,7 @@ impl Config {
     /// Overlay parsed key-value pairs on top of a base config, returning a new `Config`.
     pub fn merge(base: &Config, overlay: &ParsedConfig) -> Config {
         let mut config = base.clone();
-        apply_values(&mut config, overlay.clone());
+        apply_values(&mut config, overlay);
         config
     }
 }
@@ -126,10 +128,10 @@ const MIN_FONT_SIZE: f32 = 4.0;
 const MAX_FONT_SIZE: f32 = 200.0;
 const MIN_SIDEBAR_WIDTH: u16 = 1;
 
-fn apply_values(config: &mut Config, values: ParsedConfig) {
+fn apply_values(config: &mut Config, values: &[(String, String)]) {
     for (key, value) in values {
         match key.as_str() {
-            "font-family" => config.font_family = value,
+            "font-family" => config.font_family = value.clone(),
             "font-size" => match value.parse::<f32>() {
                 Ok(v) if v.is_finite() && (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&v) => {
                     config.font_size = v;
@@ -144,9 +146,9 @@ fn apply_values(config: &mut Config, values: ParsedConfig) {
                     "invalid font-size value, using default"
                 ),
             },
-            "theme" => config.theme = value,
-            "background" => config.background = Some(value),
-            "foreground" => config.foreground = Some(value),
+            "theme" => config.theme = value.clone(),
+            "background" => config.background = Some(value.clone()),
+            "foreground" => config.foreground = Some(value.clone()),
             "scrollback-limit" => match value.parse::<usize>() {
                 Ok(v) if (1..=MAX_SCROLLBACK).contains(&v) => config.scrollback_limit = v,
                 Ok(v) => {
@@ -163,7 +165,7 @@ fn apply_values(config: &mut Config, values: ParsedConfig) {
                     "invalid scrollback-limit value, using default"
                 ),
             },
-            "cursor-style" => config.cursor_style = value,
+            "cursor-style" => config.cursor_style = value.clone(),
             "sidebar-width" => match value.parse::<u16>() {
                 Ok(v) if v >= MIN_SIDEBAR_WIDTH => config.sidebar_width = v,
                 Ok(_) => tracing::warn!(
@@ -176,7 +178,25 @@ fn apply_values(config: &mut Config, values: ParsedConfig) {
                     "invalid sidebar-width value, using default"
                 ),
             },
-            "language" => config.language = value,
+            "language" => config.language = value.clone(),
+            "inactive-pane-opacity" => match value.parse::<f32>() {
+                Ok(v) if v.is_finite() && (0.0..=1.0).contains(&v) => {
+                    config.inactive_pane_opacity = v;
+                }
+                Ok(v) if v.is_finite() => {
+                    config.inactive_pane_opacity = v.clamp(0.0, 1.0);
+                    tracing::warn!(
+                        value = v,
+                        clamped = config.inactive_pane_opacity,
+                        "inactive-pane-opacity clamped to 0.0-1.0"
+                    );
+                }
+                _ => tracing::warn!(
+                    key = %key,
+                    value = %value,
+                    "invalid inactive-pane-opacity value, using default"
+                ),
+            },
             "keybind" => {
                 // Format: keybind = ctrl+n=new_workspace
                 if let Some((kb, action)) = value.split_once('=') {
@@ -191,7 +211,7 @@ fn apply_values(config: &mut Config, values: ParsedConfig) {
                 let suffix = &k["color-".len()..];
                 if let Ok(idx) = suffix.parse::<usize>() {
                     if idx < 16 {
-                        config.palette[idx] = Some(value);
+                        config.palette[idx] = Some(value.clone());
                     } else {
                         tracing::warn!(key = %k, "color index out of range (0-15), skipping");
                     }

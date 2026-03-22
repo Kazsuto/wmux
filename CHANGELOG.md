@@ -2,6 +2,10 @@
 
 ## 2026-03-22
 
+REFACTOR: Apply clean code improvements to wmux-config — add Debug derive to ThemeEngine, add PartialEq derive to Config (C-COMMON-TRAITS)
+
+REFACTOR: Apply clean code improvements to wmux-render — DRY tab width/position calculation in PaneRenderer (render_tab_bar now delegates to tab_metrics instead of duplicating formula)
+
 REFACTOR: Decompose wmux-ui window.rs (2148 lines) into 4 submodules — mod.rs (struct defs), render.rs (render pipeline), handlers.rs (shortcut/input handlers), event_loop.rs (ApplicationHandler impl)
 
 REFACTOR: Apply clean code improvements to wmux-ui — extract spawn_split helper (DRY, eliminates SplitRight/SplitDown duplication), avoid surface_titles.clone() in render loop via std::mem::take (performance)
