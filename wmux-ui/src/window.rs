@@ -17,6 +17,7 @@ use winit::{
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowAttributes, WindowId},
 };
+use wmux_config::{derive_ui_chrome, UiChrome};
 use wmux_core::surface::SplitDirection;
 use wmux_core::surface_manager::{Surface, SurfaceManager};
 use wmux_core::{
@@ -25,6 +26,17 @@ use wmux_core::{
 };
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
 use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline, TerminalMetrics, TerminalRenderer};
+
+/// Font size for tab bar titles (px).
+const TAB_FONT_SIZE: f32 = 12.0;
+/// Line height for tab bar titles (px).
+const TAB_LINE_HEIGHT: f32 = 16.0;
+/// Horizontal padding inside each tab (px per side).
+const TAB_TEXT_PADDING: f32 = 8.0;
+/// Vertical offset to center tab text within the tab bar (px).
+const TAB_TEXT_TOP_OFFSET: f32 = 6.0;
+/// Gap between tab bar start and the first tab (px).
+const TAB_GAP: f32 = 4.0;
 
 /// UI-thread state created during window initialization.
 ///
@@ -87,6 +99,20 @@ struct UiState<'window> {
     last_viewports: Vec<wmux_render::PaneViewport>,
     /// Active tab drag state for drag-and-drop reordering.
     tab_drag: TabDragState,
+
+    // Visual theming
+    /// UI chrome colors derived from the current theme.
+    ui_chrome: UiChrome,
+    /// Result of applying Mica/Acrylic effects (determines clear color alpha).
+    effect_result: crate::effects::EffectResult,
+    /// Theme ANSI palette for terminal renderers.
+    theme_ansi: [(u8, u8, u8); 16],
+    /// Theme cursor color for terminal renderers.
+    theme_cursor: (u8, u8, u8),
+    /// Theme foreground color for terminal text default color.
+    theme_foreground: (u8, u8, u8),
+    /// Opacity for inactive panes (from config). 0.0 = fully dimmed, 1.0 = no dimming.
+    inactive_pane_opacity: f32,
 }
 
 /// Tab drag-and-drop state machine.
@@ -115,13 +141,14 @@ impl UiState<'_> {
         let surface_width = self.gpu.width();
         let surface_height = self.gpu.height();
 
-        // Reserve space on the left for the sidebar.
+        // Reserve space for sidebar (left) and status bar (bottom).
         let sidebar_width = self.sidebar.effective_width();
+        let status_bar_height = crate::status_bar::STATUS_BAR_HEIGHT;
         let surface_viewport = wmux_core::rect::Rect {
             x: sidebar_width,
             y: 0.0,
             width: (surface_width as f32 - sidebar_width).max(1.0),
-            height: surface_height as f32,
+            height: (surface_height as f32 - status_bar_height).max(1.0),
         };
 
         // Refresh workspace list once per frame.
@@ -136,9 +163,11 @@ impl UiState<'_> {
             &self.workspace_cache,
             &mut self.quads,
             surface_height as f32,
+            &self.ui_chrome,
         );
         // Render edit cursor overlay when inline renaming.
-        self.sidebar.render_edit_cursor(&mut self.quads);
+        self.sidebar
+            .render_edit_cursor(&mut self.quads, &self.ui_chrome);
 
         // Get pane layout from the actor (blocks briefly — acceptable once per frame).
         let layout = rt.block_on(app_state.get_layout(surface_viewport));
@@ -161,8 +190,14 @@ impl UiState<'_> {
             .iter()
             .map(|(id, rect)| {
                 let (tab_count, tab_titles, active_tab) = render_data_map
-                    .get(id)
-                    .map(|d| (d.surface_count, d.surface_titles.clone(), d.active_surface))
+                    .get_mut(id)
+                    .map(|d| {
+                        (
+                            d.surface_count,
+                            std::mem::take(&mut d.surface_titles),
+                            d.active_surface,
+                        )
+                    })
                     .unwrap_or((1, vec![], 0));
                 wmux_render::PaneViewport {
                     pane_id: *id,
@@ -172,28 +207,52 @@ impl UiState<'_> {
                     tab_titles,
                     active_tab,
                     zoomed: false,
+                    surface_types: vec![wmux_render::SurfaceType::Terminal; tab_count],
+                    unsaved: vec![false; tab_count],
                 }
             })
             .collect();
 
-        // Draw 1px borders for all panes (focused pane gets accent colour).
+        // Draw Focus Glow behind the active pane (signature "Luminous Void" element).
         let pane_renderer = wmux_render::PaneRenderer::new();
+        for vp in &viewports {
+            if vp.focused {
+                wmux_render::PaneRenderer::render_focus_glow(
+                    &mut self.quads,
+                    &vp.rect,
+                    self.ui_chrome.accent_glow_core,
+                    self.ui_chrome.accent_glow,
+                    1.0, // full glow alpha (no cross-fade yet)
+                );
+            }
+        }
+
+        // Draw focus indicators (accent stripe) for all panes.
         pane_renderer.render_pane_borders(
             &mut self.quads,
             &viewports,
-            [0.3, 0.3, 0.35, 1.0],
-            [0.2, 0.6, 0.9, 1.0],
+            self.ui_chrome.border_default,
+            self.ui_chrome.accent,
         );
 
-        // Draw tab bars for panes with multiple surfaces.
+        // Draw tab bars for panes with multiple surfaces, with shadow underneath.
         for vp in &viewports {
             if vp.tab_count > 1 {
                 let _ = pane_renderer.render_tab_bar(
                     &mut self.quads,
                     vp,
-                    [0.12, 0.12, 0.15, 1.0], // inactive tab bg
-                    [0.22, 0.22, 0.28, 1.0], // active tab bg
-                    [0.2, 0.6, 0.9, 1.0],    // accent color
+                    self.ui_chrome.surface_1,
+                    self.ui_chrome.surface_2,
+                    self.ui_chrome.accent,
+                );
+                // Shadow under tab bar (shadow-sm)
+                let r = &vp.rect;
+                self.quads.push_quad(
+                    r.x,
+                    r.y + wmux_render::pane::TAB_BAR_HEIGHT,
+                    r.width,
+                    3.0,
+                    self.ui_chrome.shadow,
                 );
             }
         }
@@ -204,9 +263,7 @@ impl UiState<'_> {
 
         // Update tab title text buffers for panes with multiple surfaces.
         {
-            let tab_font_size = 12.0_f32;
-            let tab_line_height = 16.0_f32;
-            let metrics = glyphon::Metrics::new(tab_font_size, tab_line_height);
+            let metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
             let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
 
             // Remove buffers for panes that no longer exist.
@@ -220,9 +277,9 @@ impl UiState<'_> {
 
                 let bufs = self.tab_title_buffers.entry(vp.pane_id).or_default();
 
-                // Resize buffer vec to match tab count.
-                let tab_width = vp.rect.width / vp.tab_count as f32;
-                let text_max_width = (tab_width - 16.0).max(1.0); // 8px padding each side
+                // Use actual rendered tab width (respects gaps + MAX_TAB_WIDTH).
+                let (tab_width, _) = wmux_render::PaneRenderer::tab_metrics(vp, 0);
+                let text_max_width = (tab_width - TAB_TEXT_PADDING * 2.0).max(1.0);
 
                 bufs.resize_with(vp.tab_count, || {
                     glyphon::Buffer::new(self.glyphon.font_system(), metrics)
@@ -234,7 +291,7 @@ impl UiState<'_> {
                     buf.set_size(
                         self.glyphon.font_system(),
                         Some(text_max_width),
-                        Some(tab_line_height),
+                        Some(TAB_LINE_HEIGHT),
                     );
                     buf.set_text(
                         self.glyphon.font_system(),
@@ -259,26 +316,33 @@ impl UiState<'_> {
         } = &self.tab_drag
         {
             if let Some(vp) = viewports.iter().find(|v| v.pane_id == *pane_id) {
-                let tab_width = vp.rect.width / vp.tab_count as f32;
-                let to_index = ((*current_x - vp.rect.x) / tab_width) as usize;
+                let (from_tw, from_tx) = wmux_render::PaneRenderer::tab_metrics(vp, *from_index);
+                // Approximate target index from cursor position using tab metrics.
+                let first_tab_x = vp.rect.x + TAB_GAP;
+                let to_index = ((*current_x - first_tab_x) / (from_tw + TAB_GAP)).max(0.0) as usize;
                 let to_index = to_index.min(vp.tab_count - 1);
 
                 // Semi-transparent overlay on the dragged tab.
-                let from_x = vp.rect.x + *from_index as f32 * tab_width;
+                let drag_color = [
+                    self.ui_chrome.accent[0],
+                    self.ui_chrome.accent[1],
+                    self.ui_chrome.accent[2],
+                    0.25,
+                ];
                 self.quads.push_quad(
-                    from_x,
+                    from_tx,
                     vp.rect.y,
-                    tab_width,
+                    from_tw,
                     wmux_render::pane::TAB_BAR_HEIGHT,
-                    [0.2, 0.6, 0.9, 0.25],
+                    drag_color,
                 );
 
                 // Drop indicator: 2px vertical accent bar at the target position.
                 if to_index != *from_index {
-                    let indicator_x = vp.rect.x
-                        + to_index as f32 * tab_width
+                    let (_, to_tx) = wmux_render::PaneRenderer::tab_metrics(vp, to_index);
+                    let indicator_x = to_tx
                         + if to_index > *from_index {
-                            tab_width - 1.0
+                            from_tw - 1.0
                         } else {
                             0.0
                         };
@@ -287,7 +351,7 @@ impl UiState<'_> {
                         vp.rect.y,
                         2.0,
                         wmux_render::pane::TAB_BAR_HEIGHT,
-                        [0.2, 0.7, 1.0, 0.9],
+                        self.ui_chrome.accent,
                     );
                 }
             }
@@ -303,14 +367,28 @@ impl UiState<'_> {
             .map(|vp| vp.rect)
             .unwrap_or(surface_viewport);
 
+        // Deferred cursor quads — pushed after selection for correct z-order.
+        let mut deferred_cursors: Vec<(PaneId, wmux_core::cursor::CursorState, (f32, f32))> =
+            Vec::with_capacity(layout.len());
+
         // Render terminal content for ALL panes.
-        for (pane_id, _rect) in &layout {
+        for (pane_id, pane_rect) in &layout {
             // When the pane has multiple tabs, exclude the tab bar from terminal area.
             let viewport = viewports.iter().find(|vp| vp.pane_id == *pane_id);
             let terminal_rect = viewport
                 .filter(|vp| vp.tab_count > 1)
                 .map(wmux_render::PaneRenderer::terminal_viewport)
-                .unwrap_or(*_rect);
+                .unwrap_or(*pane_rect);
+
+            // Opaque background quad for the terminal area — one level
+            // lighter than the sidebar/chrome for visual hierarchy.
+            self.quads.push_quad(
+                terminal_rect.x,
+                terminal_rect.y,
+                terminal_rect.width,
+                terminal_rect.height,
+                self.ui_chrome.surface_0,
+            );
 
             // Compute per-pane terminal dimensions from the terminal content rect.
             let pane_cols = ((terminal_rect.width / self.metrics.cell_width)
@@ -324,8 +402,14 @@ impl UiState<'_> {
 
             // Ensure a renderer exists for this pane, creating or resizing as needed.
             if !self.renderers.contains_key(pane_id) {
-                let renderer =
+                let mut renderer =
                     TerminalRenderer::new(self.glyphon.font_system(), pane_cols, pane_rows);
+                renderer.set_palette(
+                    self.theme_ansi,
+                    self.theme_cursor,
+                    self.theme_foreground,
+                    self.ui_chrome.cursor_alpha,
+                );
                 self.renderers.insert(*pane_id, renderer);
             }
             let renderer = self.renderers.get_mut(pane_id).expect("just inserted");
@@ -357,6 +441,25 @@ impl UiState<'_> {
                     &mut self.quads,
                     (terminal_rect.x, terminal_rect.y),
                 );
+                // Defer cursor rendering — will be pushed after selection for correct z-order.
+                deferred_cursors.push((
+                    *pane_id,
+                    *data.grid.cursor(),
+                    (terminal_rect.x, terminal_rect.y),
+                ));
+            }
+        }
+
+        // Pane dimming: surface_base overlay on inactive panes (text stays readable).
+        {
+            let dim_alpha = 1.0 - self.inactive_pane_opacity;
+            let sb = self.ui_chrome.surface_base;
+            let dim_color = [sb[0], sb[1], sb[2], dim_alpha];
+            for vp in &viewports {
+                if !vp.focused {
+                    let r = &vp.rect;
+                    self.quads.push_quad(r.x, r.y, r.width, r.height, dim_color);
+                }
             }
         }
 
@@ -377,7 +480,8 @@ impl UiState<'_> {
                 let y = focused_rect.y + row as f32 * self.metrics.cell_height;
                 let w = col_end.saturating_sub(col_start) as f32 * self.metrics.cell_width;
                 let h = self.metrics.cell_height;
-                self.quads.push_quad(x, y, w, h, [0.3, 0.5, 0.8, 0.3]);
+                self.quads
+                    .push_quad(x, y, w, h, self.ui_chrome.selection_bg);
             }
         }
 
@@ -395,6 +499,7 @@ impl UiState<'_> {
             search::render_search_highlights(
                 &self.search,
                 &mut self.quads,
+                &self.ui_chrome,
                 &focused_rect,
                 self.metrics.cell_width,
                 self.metrics.cell_height,
@@ -409,16 +514,26 @@ impl UiState<'_> {
 
                 // Semi-transparent dark background for the search bar.
                 let bg_color = if self.search.has_regex_error() {
-                    [0.5_f32, 0.1, 0.1, 0.9] // red tint on regex error
+                    [
+                        self.ui_chrome.error[0],
+                        self.ui_chrome.error[1],
+                        self.ui_chrome.error[2],
+                        0.9,
+                    ]
                 } else {
-                    [0.1_f32, 0.1, 0.15, 0.9]
+                    [
+                        self.ui_chrome.surface_base[0],
+                        self.ui_chrome.surface_base[1],
+                        self.ui_chrome.surface_base[2],
+                        0.9,
+                    ]
                 };
                 self.quads
                     .push_quad(focused_rect.x, bar_y, bar_w, bar_height, bg_color);
 
                 // Thin accent line at the top of the search bar.
                 self.quads
-                    .push_quad(focused_rect.x, bar_y, bar_w, 1.0, [0.2_f32, 0.6, 0.9, 1.0]);
+                    .push_quad(focused_rect.x, bar_y, bar_w, 1.0, self.ui_chrome.accent);
 
                 // Match count indicator on the right side of the bar.
                 let count_x = focused_rect.x + bar_w - 120.0;
@@ -428,7 +543,7 @@ impl UiState<'_> {
                         bar_y,
                         120.0,
                         bar_height,
-                        [0.15_f32, 0.15, 0.2, 0.9],
+                        self.ui_chrome.surface_0,
                     );
                 }
 
@@ -438,6 +553,17 @@ impl UiState<'_> {
                     current = self.search.current_match,
                     "search bar rendered"
                 );
+            }
+        }
+
+        // Cursor quad — pushed after selection/search for correct z-order.
+        // Only render cursor for the focused pane; inactive pane cursors are
+        // covered by the dimming overlay (drawn earlier), which is correct behavior.
+        for (pane_id, cursor_state, origin) in &deferred_cursors {
+            if *pane_id == self.focused_pane {
+                if let Some(renderer) = self.renderers.get(pane_id) {
+                    renderer.push_cursor(cursor_state, &mut self.quads, *origin);
+                }
             }
         }
 
@@ -454,22 +580,60 @@ impl UiState<'_> {
         };
         if let Some(div) = hovered_div {
             const DIV_HIGHLIGHT_THICKNESS: f32 = 2.0;
+            // Use border_glow (luminous accent separator) for hovered dividers.
+            let div_color = self.ui_chrome.border_glow;
             match div.orientation {
                 DividerOrientation::Vertical => {
                     let x = div.position - DIV_HIGHLIGHT_THICKNESS / 2.0;
                     let y = div.start;
                     let w = DIV_HIGHLIGHT_THICKNESS;
                     let h = div.end - div.start;
-                    self.quads.push_quad(x, y, w, h, [0.2, 0.6, 0.9, 0.7]);
+                    self.quads.push_quad(x, y, w, h, div_color);
                 }
                 DividerOrientation::Horizontal => {
                     let x = div.start;
                     let y = div.position - DIV_HIGHLIGHT_THICKNESS / 2.0;
                     let w = div.end - div.start;
                     let h = DIV_HIGHLIGHT_THICKNESS;
-                    self.quads.push_quad(x, y, w, h, [0.2, 0.6, 0.9, 0.7]);
+                    self.quads.push_quad(x, y, w, h, div_color);
                 }
             }
+        }
+
+        // Permanent pane dividers (1px border_glow between all pane pairs).
+        for div in &self.dividers {
+            match div.orientation {
+                DividerOrientation::Vertical => {
+                    self.quads.push_quad(
+                        div.position - 0.5,
+                        div.start,
+                        1.0,
+                        div.end - div.start,
+                        self.ui_chrome.border_glow,
+                    );
+                }
+                DividerOrientation::Horizontal => {
+                    self.quads.push_quad(
+                        div.start,
+                        div.position - 0.5,
+                        div.end - div.start,
+                        1.0,
+                        self.ui_chrome.border_glow,
+                    );
+                }
+            }
+        }
+
+        // Status bar at the bottom (full window width).
+        {
+            let sb_y = surface_height as f32 - status_bar_height;
+            let sb_w = surface_width as f32;
+            // Shadow above status bar
+            self.quads
+                .push_quad(0.0, sb_y - 1.0, sb_w, 1.0, self.ui_chrome.shadow);
+            // Status bar background
+            self.quads
+                .push_quad(0.0, sb_y, sb_w, status_bar_height, self.ui_chrome.surface_1);
         }
 
         // Upload quad GPU data.
@@ -480,12 +644,12 @@ impl UiState<'_> {
         let surface_h = self.gpu.height();
         let mut all_text_areas: Vec<_> = layout
             .iter()
-            .filter_map(|(pane_id, _rect)| {
+            .filter_map(|(pane_id, pane_rect)| {
                 let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
                 let terminal_rect = vp
                     .filter(|v| v.tab_count > 1)
                     .map(wmux_render::PaneRenderer::terminal_viewport)
-                    .unwrap_or(*_rect);
+                    .unwrap_or(*pane_rect);
                 self.renderers.get(pane_id).map(|r| {
                     r.text_areas(
                         (terminal_rect.x, terminal_rect.y),
@@ -502,23 +666,23 @@ impl UiState<'_> {
         for vp in &viewports {
             if vp.tab_count > 1 {
                 if let Some(bufs) = self.tab_title_buffers.get(&vp.pane_id) {
-                    let tab_width = vp.rect.width / vp.tab_count as f32;
                     for (i, buf) in bufs.iter().enumerate() {
-                        let tab_x = vp.rect.x + i as f32 * tab_width;
-                        let text_color = if i == vp.active_tab {
-                            glyphon::Color::rgb(240, 240, 245)
+                        let (tab_width, tab_x) = wmux_render::PaneRenderer::tab_metrics(vp, i);
+                        let chrome_color = if i == vp.active_tab {
+                            self.ui_chrome.text_primary
                         } else {
-                            glyphon::Color::rgb(150, 150, 165)
+                            self.ui_chrome.text_secondary
                         };
+                        let text_color = rgba_to_glyphon(chrome_color);
                         all_text_areas.push(glyphon::TextArea {
                             buffer: buf,
-                            left: tab_x + 8.0,
-                            top: vp.rect.y + 6.0,
+                            left: tab_x + TAB_TEXT_PADDING,
+                            top: vp.rect.y + TAB_TEXT_TOP_OFFSET,
                             scale: 1.0,
                             bounds: glyphon::TextBounds {
-                                left: (tab_x + 8.0) as i32,
+                                left: (tab_x + TAB_TEXT_PADDING) as i32,
                                 top: vp.rect.y as i32,
-                                right: (tab_x + tab_width - 8.0) as i32,
+                                right: (tab_x + tab_width - TAB_TEXT_PADDING) as i32,
                                 bottom: (vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT) as i32,
                             },
                             default_color: text_color,
@@ -530,7 +694,10 @@ impl UiState<'_> {
         }
 
         // Append sidebar text areas (workspace names + subtitles).
-        all_text_areas.extend(self.sidebar.text_areas(surface_w, surface_h));
+        all_text_areas.extend(
+            self.sidebar
+                .text_areas(surface_w, surface_h, &self.ui_chrome),
+        );
 
         self.glyphon
             .prepare_text_areas(&self.gpu.device, &self.gpu.queue, all_text_areas)?;
@@ -555,11 +722,19 @@ impl UiState<'_> {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.12,
-                            a: 1.0,
+                        load: wgpu::LoadOp::Clear({
+                            let s = self.ui_chrome.surface_base;
+                            let clear_alpha = match self.effect_result {
+                                crate::effects::EffectResult::MicaAlt
+                                | crate::effects::EffectResult::Mica => 0.0,
+                                crate::effects::EffectResult::Opaque => 1.0,
+                            };
+                            wgpu::Color {
+                                r: s[0] as f64,
+                                g: s[1] as f64,
+                                b: s[2] as f64,
+                                a: clear_alpha,
+                            }
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -627,6 +802,17 @@ impl UiState<'_> {
             }
         }
     }
+}
+
+/// Convert a normalized `[f32; 4]` RGBA color to a glyphon `Color`.
+#[inline]
+fn rgba_to_glyphon(c: [f32; 4]) -> glyphon::Color {
+    glyphon::Color::rgba(
+        (c[0] * 255.0) as u8,
+        (c[1] * 255.0) as u8,
+        (c[2] * 255.0) as u8,
+        (c[3] * 255.0) as u8,
+    )
 }
 
 /// Spawn a new terminal + PTY for `pane_id`, register it with the AppState actor,
@@ -887,6 +1073,41 @@ fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
 
 /// Dispatch a matched global shortcut action.
 ///
+/// Spawn a split pane in the given direction (shared by SplitRight / SplitDown).
+fn spawn_split(
+    direction: SplitDirection,
+    state: &mut UiState<'_>,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+    proxy: &EventLoopProxy<WmuxEvent>,
+) {
+    let pane_id = state.focused_pane;
+    let cols = state.cols;
+    let rows = state.rows;
+    let app_state_clone = app_state.clone();
+    let rt_clone = rt_handle.clone();
+    let proxy_clone = proxy.clone();
+    rt_handle.spawn(async move {
+        match app_state_clone.split_pane(pane_id, direction).await {
+            Ok(new_id) => {
+                spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
+                app_state_clone.focus_pane(new_id);
+                let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
+                tracing::info!(
+                    pane_id = %pane_id,
+                    new_pane = %new_id,
+                    ?direction,
+                    "pane split"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, ?direction, "split failed");
+            }
+        }
+    });
+    state.window.request_redraw();
+}
+
 /// Takes the app_state handle and rt_handle by reference to avoid borrow
 /// conflicts with the mutable UiState borrow in the event handler.
 fn handle_shortcut(
@@ -898,63 +1119,17 @@ fn handle_shortcut(
 ) {
     match action {
         ShortcutAction::SplitRight => {
-            let pane_id = state.focused_pane;
-            let cols = state.cols;
-            let rows = state.rows;
-            let app_state_clone = app_state.clone();
-            let rt_clone = rt_handle.clone();
-            let proxy_clone = proxy.clone();
-            rt_handle.spawn(async move {
-                match app_state_clone
-                    .split_pane(pane_id, SplitDirection::Horizontal)
-                    .await
-                {
-                    Ok(new_id) => {
-                        spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
-                        app_state_clone.focus_pane(new_id);
-                        let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
-                        tracing::info!(
-                            pane_id = %pane_id,
-                            new_pane = %new_id,
-                            "pane split right"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "SplitRight failed");
-                    }
-                }
-            });
-            state.window.request_redraw();
+            spawn_split(
+                SplitDirection::Horizontal,
+                state,
+                app_state,
+                rt_handle,
+                proxy,
+            );
         }
 
         ShortcutAction::SplitDown => {
-            let pane_id = state.focused_pane;
-            let cols = state.cols;
-            let rows = state.rows;
-            let app_state_clone = app_state.clone();
-            let rt_clone = rt_handle.clone();
-            let proxy_clone = proxy.clone();
-            rt_handle.spawn(async move {
-                match app_state_clone
-                    .split_pane(pane_id, SplitDirection::Vertical)
-                    .await
-                {
-                    Ok(new_id) => {
-                        spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
-                        app_state_clone.focus_pane(new_id);
-                        let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
-                        tracing::info!(
-                            pane_id = %pane_id,
-                            new_pane = %new_id,
-                            "pane split down"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "SplitDown failed");
-                    }
-                }
-            });
-            state.window.request_redraw();
+            spawn_split(SplitDirection::Vertical, state, app_state, rt_handle, proxy);
         }
 
         ShortcutAction::ClosePane => {
@@ -1204,6 +1379,44 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             });
         }
 
+        // Load theme from config, apply overrides, then derive UI chrome.
+        let config = wmux_config::Config::default();
+        let mut theme_engine = wmux_config::ThemeEngine::new();
+        if let Err(e) = theme_engine.set_theme(&config.theme) {
+            tracing::warn!(theme = %config.theme, error = %e, "failed to load configured theme, using default");
+        }
+        let mut palette = theme_engine.current_theme().palette.clone();
+        // Apply per-color config overrides on top of the loaded theme.
+        if let Some(ref bg) = config.background {
+            if let Ok(c) = wmux_config::parse_hex_color_public(bg) {
+                palette.background = c;
+            }
+        }
+        if let Some(ref fg) = config.foreground {
+            if let Ok(c) = wmux_config::parse_hex_color_public(fg) {
+                palette.foreground = c;
+            }
+        }
+        for (i, slot) in config.palette.iter().enumerate() {
+            if let Some(ref hex) = slot {
+                if let Ok(c) = wmux_config::parse_hex_color_public(hex) {
+                    palette.ansi[i] = c;
+                }
+            }
+        }
+        let ui_chrome = derive_ui_chrome(&palette);
+        let theme_ansi = palette.ansi;
+        let theme_cursor = palette.cursor;
+        let theme_foreground = palette.foreground;
+
+        let dark_mode = wmux_config::ThemeEngine::is_dark_mode();
+        let title_colors = crate::effects::TitleBarColors {
+            background: palette.background,
+            text: palette.foreground,
+            border: palette.background, // seamless border
+        };
+        let effect_result = crate::effects::apply_window_effects(&window, dark_mode, &title_colors);
+
         tracing::info!(
             cols,
             rows,
@@ -1243,6 +1456,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             tab_title_buffers: HashMap::new(),
             last_viewports: Vec::new(),
             tab_drag: TabDragState::None,
+            ui_chrome,
+            effect_result,
+            theme_ansi,
+            theme_cursor,
+            theme_foreground,
+            inactive_pane_opacity: wmux_config::Config::default().inactive_pane_opacity,
         });
     }
 
@@ -1644,9 +1863,14 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     {
                         if let Some(vp) = state.last_viewports.iter().find(|v| v.pane_id == pane_id)
                         {
-                            let tab_width = vp.rect.width / vp.tab_count as f32;
-                            let to_index = ((current_x - vp.rect.x) / tab_width) as usize;
-                            let to_index = to_index.min(vp.tab_count - 1);
+                            let mut to_index = from_index;
+                            for i in 0..vp.tab_count {
+                                let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, i);
+                                if current_x >= tx && current_x < tx + tw {
+                                    to_index = i;
+                                    break;
+                                }
+                            }
                             if from_index != to_index {
                                 self.app_state
                                     .reorder_surface(pane_id, from_index, to_index);
@@ -1685,9 +1909,17 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             && py >= vp.rect.y
                             && py < tab_bar_bottom
                         {
-                            let tab_width = vp.rect.width / vp.tab_count as f32;
-                            let tab_index = ((px - vp.rect.x) / tab_width) as usize;
-                            let tab_index = tab_index.min(vp.tab_count - 1);
+                            let mut tab_index = None;
+                            for i in 0..vp.tab_count {
+                                let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, i);
+                                if px >= tx && px < tx + tw {
+                                    tab_index = Some(i);
+                                    break;
+                                }
+                            }
+                            let Some(tab_index) = tab_index else {
+                                continue;
+                            };
 
                             if vp.pane_id != state.focused_pane {
                                 state.focused_pane = vp.pane_id;
