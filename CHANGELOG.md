@@ -2,6 +2,8 @@
 
 ## 2026-03-22
 
+REFACTOR: Decompose wmux-ui window.rs (2148 lines) into 4 submodules — mod.rs (struct defs), render.rs (render pipeline), handlers.rs (shortcut/input handlers), event_loop.rs (ApplicationHandler impl)
+
 REFACTOR: Apply clean code improvements to wmux-ui — extract spawn_split helper (DRY, eliminates SplitRight/SplitDown duplication), avoid surface_titles.clone() in render loop via std::mem::take (performance)
 
 REFACTOR: Apply clean code improvements to wmux-ui — extract shared f32_to_glyphon_color helper (DRY), single-pass escape_xml (performance), #[allow] → #[expect] (compilation), simplify sidebar subtitle allocation
