@@ -384,7 +384,8 @@ fn is_ancestor_of(ancestor_pid: u32, target_pid: u32) -> Result<bool, IpcError> 
     let _guard = SnapshotGuard(snapshot);
 
     // Build a parent-PID map: pid -> parent_pid.
-    let mut parent_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut parent_map: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::with_capacity(256);
 
     let mut entry = PROCESSENTRY32 {
         dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,

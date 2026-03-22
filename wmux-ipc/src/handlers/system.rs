@@ -49,7 +49,7 @@ impl Handler for SystemHandler {
             "capabilities" => {
                 let methods: Vec<Value> = CAPABILITIES
                     .iter()
-                    .map(|m| Value::String((*m).to_owned()))
+                    .map(|&m| Value::String(m.to_owned()))
                     .collect();
                 Ok(serde_json::json!({
                     "methods": methods,

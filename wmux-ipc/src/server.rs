@@ -64,6 +64,7 @@ impl IpcServerHandle {
     }
 
     /// Returns the Named Pipe path the server is listening on.
+    #[inline]
     pub fn pipe_name(&self) -> &str {
         &self.pipe_name
     }

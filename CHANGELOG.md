@@ -2,6 +2,8 @@
 
 ## 2026-03-22
 
+REFACTOR: Clean code improvements in wmux-ipc — use impl Into<String> in RpcResponse constructors to avoid unnecessary allocations, pre-allocate HashMap in PID ancestry check, add #[inline] on cross-crate accessor, idiomatic iterator destructuring
+
 REFACTOR: Remove redundant PathBuf clone in wmux-core CwdChanged handler — move cwd into async git detection task instead of cloning twice
 
 REFACTOR: Clean code improvements in wmux-config — eliminate unnecessary HashMap clones in locale load_language, take config overlay by slice reference instead of cloning Vec, flatten nested control flow in theme list_themes

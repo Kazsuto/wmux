@@ -98,9 +98,9 @@ impl std::fmt::Debug for AuthLoginResponse {
 
 impl RpcResponse {
     /// Create a success response with the given result payload.
-    pub fn success(id: &str, result: serde_json::Value) -> Self {
+    pub fn success(id: impl Into<String>, result: serde_json::Value) -> Self {
         Self {
-            id: id.to_owned(),
+            id: id.into(),
             ok: true,
             result: Some(result),
             error: None,
@@ -108,14 +108,14 @@ impl RpcResponse {
     }
 
     /// Create an error response with the given error code and message.
-    pub fn error(id: &str, code: RpcErrorCode, message: &str) -> Self {
+    pub fn error(id: impl Into<String>, code: RpcErrorCode, message: impl Into<String>) -> Self {
         Self {
-            id: id.to_owned(),
+            id: id.into(),
             ok: false,
             result: None,
             error: Some(RpcErrorDetail {
                 code: code.code().to_owned(),
-                message: message.to_owned(),
+                message: message.into(),
             }),
         }
     }

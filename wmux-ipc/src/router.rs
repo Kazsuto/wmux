@@ -62,7 +62,7 @@ impl Router {
             None => RpcResponse::error(
                 &request.id,
                 RpcErrorCode::MethodNotFound,
-                &format!("unknown method: {}", request.method),
+                format!("unknown method: {}", request.method),
             ),
         }
     }
@@ -85,7 +85,7 @@ fn rpc_error_to_response(id: &str, err: RpcError) -> RpcResponse {
         -32602 => RpcErrorCode::InvalidParams,
         _ => RpcErrorCode::InternalError,
     };
-    RpcResponse::error(id, code, &err.message)
+    RpcResponse::error(id, code, err.message)
 }
 
 #[cfg(test)]
