@@ -5,7 +5,8 @@ use bytemuck::{Pod, Zeroable};
 /// and notification badges.
 const MAX_QUADS: usize = 8192;
 
-/// Per-instance data for a single colored quad with optional rounded corners.
+/// Per-instance data for a single colored quad with optional rounded corners,
+/// gradient fill, and outer glow.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct QuadInstance {
@@ -15,7 +16,15 @@ pub struct QuadInstance {
     pub h: f32,
     pub color: [f32; 4],
     pub border_radius: f32,
-    pub _pad: [f32; 3],
+    /// Outer glow radius (px). When > 0, the quad is expanded and the shader
+    /// renders a soft SDF glow beyond the inner rect boundary.
+    pub glow_radius: f32,
+    /// Bottom color for vertical gradient. When alpha > 0, `color` is the top
+    /// and `gradient_color` is the bottom.
+    pub gradient_color: [f32; 4],
+    /// Glow color (used when `glow_radius > 0`).
+    pub glow_color: [f32; 4],
+    pub _pad: [f32; 2],
 }
 
 /// Viewport dimensions uniform, padded to 16-byte alignment.
@@ -128,6 +137,24 @@ impl QuadPipeline {
                     offset: 32,
                     shader_location: 3,
                 },
+                // glow_radius: f32
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 36,
+                    shader_location: 4,
+                },
+                // gradient_color: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 40,
+                    shader_location: 5,
+                },
+                // glow_color: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 56,
+                    shader_location: 6,
+                },
             ],
         };
 
@@ -218,7 +245,91 @@ impl QuadPipeline {
             h,
             color,
             border_radius: radius,
-            _pad: [0.0; 3],
+            glow_radius: 0.0,
+            gradient_color: [0.0; 4],
+            glow_color: [0.0; 4],
+            _pad: [0.0; 2],
+        });
+    }
+
+    /// Queue a quad with a vertical gradient (top_color → bottom_color).
+    #[inline]
+    #[expect(clippy::too_many_arguments)]
+    pub fn push_gradient_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top_color: [f32; 4],
+        bottom_color: [f32; 4],
+        border_radius: f32,
+    ) {
+        if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
+        {
+            return;
+        }
+        if self.quads.len() >= self.capacity {
+            return;
+        }
+        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        self.quads.push(QuadInstance {
+            x,
+            y,
+            w,
+            h,
+            color: top_color,
+            border_radius: radius,
+            glow_radius: 0.0,
+            gradient_color: bottom_color,
+            glow_color: [0.0; 4],
+            _pad: [0.0; 2],
+        });
+    }
+
+    /// Queue a quad with an outer glow effect (shader-based SDF glow).
+    ///
+    /// The quad is automatically expanded by `glow_radius` on all sides.
+    /// Inside the logical bounds: renders `color`. Outside: soft glow with `glow_color`.
+    #[inline]
+    #[expect(clippy::too_many_arguments)]
+    pub fn push_glow_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        border_radius: f32,
+        glow_radius: f32,
+        glow_color: [f32; 4],
+    ) {
+        let expanded_x = x - glow_radius;
+        let expanded_y = y - glow_radius;
+        let expanded_w = w + 2.0 * glow_radius;
+        let expanded_h = h + 2.0 * glow_radius;
+        if !(expanded_w > 0.0
+            && expanded_h > 0.0
+            && expanded_x.is_finite()
+            && expanded_y.is_finite())
+        {
+            return;
+        }
+        if self.quads.len() >= self.capacity {
+            return;
+        }
+        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        self.quads.push(QuadInstance {
+            x: expanded_x,
+            y: expanded_y,
+            w: expanded_w,
+            h: expanded_h,
+            color,
+            border_radius: radius,
+            glow_radius,
+            gradient_color: [0.0; 4],
+            glow_color,
+            _pad: [0.0; 2],
         });
     }
 
@@ -306,7 +417,10 @@ mod tests {
                     h,
                     color: [1.0; 4],
                     border_radius: 0.0,
-                    _pad: [0.0; 3],
+                    glow_radius: 0.0,
+                    gradient_color: [0.0; 4],
+                    glow_color: [0.0; 4],
+                    _pad: [0.0; 2],
                 });
             }
         }
@@ -315,8 +429,8 @@ mod tests {
 
     #[test]
     fn quad_instance_size_matches_layout() {
-        assert_eq!(std::mem::size_of::<QuadInstance>(), 48);
-        // 2 floats (pos) + 2 floats (size) + 4 floats (color) + 1 float (border_radius) + 3 floats (pad) = 12 * 4 = 48 bytes
+        assert_eq!(std::mem::size_of::<QuadInstance>(), 80);
+        // pos(2) + size(2) + color(4) + border_radius(1) + glow_radius(1) + gradient_color(4) + glow_color(4) + pad(2) = 20 * 4 = 80 bytes
     }
 
     #[test]
@@ -348,7 +462,10 @@ mod tests {
             h,
             color,
             border_radius: 0.0,
-            _pad: [0.0; 3],
+            glow_radius: 0.0,
+            gradient_color: [0.0; 4],
+            glow_color: [0.0; 4],
+            _pad: [0.0; 2],
         });
     }
 

@@ -7,10 +7,12 @@ pub mod text;
 
 pub use error::RenderError;
 pub use gpu::GpuContext;
-pub use pane::{PaneRenderer, PaneViewport};
+pub use pane::{PaneRenderer, PaneViewport, SurfaceType};
 pub use quad::QuadPipeline;
 pub use terminal::{TerminalMetrics, TerminalRenderer};
 pub use text::GlyphonRenderer;
 
-/// Default foreground text color used by terminal grid and overlays.
-pub const DEFAULT_TEXT_COLOR: glyphon::Color = glyphon::Color::rgb(204, 204, 204);
+/// Fallback foreground text color before theme is loaded.
+/// Matches the wmux-default theme foreground (#e6edf3).
+/// After `set_palette()` is called, TerminalRenderer uses the theme's foreground.
+pub(crate) const DEFAULT_TEXT_COLOR: glyphon::Color = glyphon::Color::rgb(0xe6, 0xed, 0xf3);

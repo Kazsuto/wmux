@@ -2,6 +2,15 @@ use crate::RenderError;
 use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
 use wgpu::{Device, MultisampleState, Queue, TextureFormat};
 
+/// The UI font family name used for non-terminal chrome (sidebar, tabs, status bar).
+///
+/// Resolves to "Segoe UI Variable" on Win11, falls back to "Segoe UI" on Win10,
+/// then to system sans-serif via glyphon's font matching.
+pub const UI_FONT_FAMILY: &str = "Segoe UI Variable";
+
+/// Fallback UI font for Win10 where Segoe UI Variable is unavailable.
+pub const UI_FONT_FAMILY_FALLBACK: &str = "Segoe UI";
+
 pub struct GlyphonRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -10,11 +19,27 @@ pub struct GlyphonRenderer {
     atlas: TextAtlas,
     renderer: TextRenderer,
     viewport: Viewport,
+    /// Whether "Segoe UI Variable" (Win11) is available, else "Segoe UI" (Win10).
+    ui_font_available: bool,
 }
 
 impl GlyphonRenderer {
     pub fn new(device: &Device, queue: &Queue, format: TextureFormat) -> Self {
         let font_system = FontSystem::new();
+
+        // Probe whether Segoe UI Variable (Win11) or Segoe UI (Win10) is available.
+        let ui_font_available = font_system.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name == UI_FONT_FAMILY || name == UI_FONT_FAMILY_FALLBACK)
+        });
+
+        if ui_font_available {
+            tracing::info!("UI sans-serif font loaded for chrome rendering");
+        } else {
+            tracing::warn!("Segoe UI not found — UI chrome will use system sans-serif fallback");
+        }
+
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
@@ -28,7 +53,14 @@ impl GlyphonRenderer {
             atlas,
             renderer,
             viewport,
+            ui_font_available,
         }
+    }
+
+    /// Whether Segoe UI Variable or Segoe UI is available for UI chrome.
+    #[inline]
+    pub fn has_ui_font(&self) -> bool {
+        self.ui_font_available
     }
 
     /// Update the viewport resolution after a surface resize.

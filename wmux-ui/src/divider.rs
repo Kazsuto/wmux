@@ -171,7 +171,7 @@ mod tests {
         let id_b = PaneId::new();
         // a is on the left, b is on the right with a 4px gap
         let rect_a = Rect::new(0.0, 0.0, 100.0, 200.0);
-        let rect_b = Rect::new(104.0, 0.0, 100.0, 200.0);
+        let _rect_b = Rect::new(104.0, 0.0, 100.0, 200.0);
         // a_right = 100, b.x = 104 — gap of 4px, not adjacent by <2px threshold
         // Let's use adjacent rects (gap=0 or within 2px tolerance)
         let rect_b_adj = Rect::new(100.0, 0.0, 100.0, 200.0);

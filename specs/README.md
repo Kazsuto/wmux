@@ -6,7 +6,7 @@
 ## Project Summary
 - **Product**: wmux — Native Windows terminal multiplexer with GPU rendering, split panes, integrated browser, and IPC for AI agents
 - **Stack**: Rust (wgpu 28, glyphon 0.10, winit 0.30, vte 0.13, portable-pty 0.9, tokio, webview2-com 0.39, windows 0.62, clap 4), Go (SSH daemon)
-- **Current state**: wmux-core (IMPLEMENTED: terminal, grid, scrollback, VTE, OSC, events, focus routing, surface manager, workspace manager), wmux-pty (IMPLEMENTED: manager, actor, shell detection), wmux-render (IMPLEMENTED: GPU context, QuadPipeline, GlyphonRenderer, multi-pane rendering), wmux-ui (IMPLEMENTED: winit event loop, keyboard shortcuts, input dispatch), wmux-ipc (IMPLEMENTED: Named Pipes server, JSON-RPC v2, auth, handler router), wmux-cli (IMPLEMENTED: Named Pipe client, CLI commands), wmux-browser (IMPLEMENTED: WebView2 panel, COM lifecycle, automation), wmux-app (entry point), wmux-config (stub).
+- **Current state**: wmux-core (IMPLEMENTED: terminal, grid, scrollback, VTE, OSC, events, focus routing, surface manager, workspace manager, session auto-save, command registry, git detector, metadata store, port scanner), wmux-pty (IMPLEMENTED: manager, actor, shell detection), wmux-render (IMPLEMENTED: GPU context, QuadPipeline, GlyphonRenderer, multi-pane rendering), wmux-ui (IMPLEMENTED: winit event loop, keyboard shortcuts, input dispatch, sidebar UI, command palette, effects, notification panel), wmux-ipc (IMPLEMENTED: Named Pipes server, JSON-RPC v2, auth, handler router, workspace/surface/browser/input/sidebar handlers), wmux-cli (IMPLEMENTED: Named Pipe client, CLI commands), wmux-browser (IMPLEMENTED: WebView2 panel, COM lifecycle, automation), wmux-app (entry point — wires all crates, starts IPC, runs event loop), wmux-config (stub).
 
 ## How to Use These Specs
 
@@ -33,7 +33,7 @@ Run `/create-tasks status` to see current wave and next actions.
 ## Execution Waves
 
 > All tasks within a wave can run in parallel. Waves execute sequentially.
-> **Current progress**: 36 done, 0 in progress, 14 pending (72% complete)
+> **Current progress**: 48 done, 0 in progress, 2 pending (96% complete)
 
 ### Wave 0 — Scaffold Foundation (no dependencies) — COMPLETE
 | Task | Title | Priority | Effort | Status |
@@ -52,7 +52,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | [L3_11](L3_11-ghostty-config-parser.md) | Ghostty Config Parser | P1 | 2.5h | L0_01 | ✅ |
 | [L4_04](L4_04-auto-update.md) | Auto-Update | P2 | 2.5h | L0_01 | ✅ |
 
-> `/apex implement wave 1 in teams mode`
+> 6/6 done
 
 ### Wave 2 — Grid, PTY I/O, Browser Nav & Theme (needs Wave 1) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -99,7 +99,7 @@ Run `/create-tasks status` to see current wave and next actions.
 | [L2_01](L2_01-appstate-actor-multi-pane-architecture.md) | AppState Actor + Multi-Pane Architecture | P0 | 2.5h | L1_10 | ✅ |
 | [L3_10](L3_10-windows-toast-notifications.md) | Windows Toast Notifications | P1 | 2h | L3_08 | ✅ |
 
-> `/apex implement wave 6 in teams mode`
+> 2/2 done
 
 ### Wave 7 — PaneTree Layout & IPC Server (needs Wave 6) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -137,17 +137,17 @@ Run `/create-tasks status` to see current wave and next actions.
 
 > 8/8 done
 
-### Wave 10 — Metadata IPC, Session Restore & Polish (needs Wave 9)
+### Wave 10 — Metadata IPC, Session Restore & Polish (needs Wave 9) — COMPLETE
 | Task | Title | Priority | Effort | Depends On | Status |
 |------|-------|----------|--------|------------|--------|
-| [L2_14](L2_14-sidebar-metadata-ipc-handlers.md) | Sidebar Metadata Store + IPC | P0 | 2.5h | L2_11, L2_08 | ⬜ |
-| [L3_02](L3_02-session-restore.md) | Session Restore | P1 | 2h | L3_01 | ⬜ |
-| [L3_09](L3_09-notification-visual-indicators.md) | Notification Visual Indicators | P1 | 2.5h | L3_08, L2_08 | ⬜ |
-| [L3_14](L3_14-git-branch-detection.md) | Git Branch + Port Detection | P2 | 2h | L2_08, L1_04 | ⬜ |
-| [L4_01](L4_01-command-palette.md) | Command Palette | P2 | 2.5h | L2_08 | ⬜ |
-| [L4_05](L4_05-mica-acrylic-effects.md) | Mica/Acrylic Effects | P2 | 2h | L2_08 | ⬜ |
+| [L2_14](L2_14-sidebar-metadata-ipc-handlers.md) | Sidebar Metadata Store + IPC | P0 | 2.5h | L2_11, L2_08 | ✅ |
+| [L3_02](L3_02-session-restore.md) | Session Restore | P1 | 2h | L3_01 | ✅ |
+| [L3_09](L3_09-notification-visual-indicators.md) | Notification Visual Indicators | P1 | 2.5h | L3_08, L2_08 | ✅ |
+| [L3_14](L3_14-git-branch-detection.md) | Git Branch + Port Detection | P2 | 2h | L2_08, L1_04 | ✅ |
+| [L4_01](L4_01-command-palette.md) | Command Palette | P2 | 2.5h | L2_08 | ✅ |
+| [L4_05](L4_05-mica-acrylic-effects.md) | Mica/Acrylic Effects | P2 | 2h | L2_08 | ✅ |
 
-> `/apex implement wave 10 in teams mode`
+> 6/6 done
 
 ### Wave 11 — CLI Domain Commands (needs Wave 10)
 | Task | Title | Priority | Effort | Depends On | Status |
@@ -193,47 +193,47 @@ Run `/create-tasks status` to see current wave and next actions.
 |---|------|----------|--------|------|--------|------------|
 | L2_01 | [AppState Actor](L2_01-appstate-actor-multi-pane-architecture.md) | P0 | 2.5h | 6 | ✅ | L1_10 |
 | L2_02 | [PaneTree Layout](L2_02-pane-tree-layout-engine.md) | P0 | 2.5h | 7 | ✅ | L2_01, L0_02 |
-| L2_03 | [Focus Routing](L2_03-focus-routing-keyboard-shortcuts.md) | P0 | 2h | 8 | ⬜ | L2_02 |
-| L2_04 | [Multi-Pane Rendering](L2_04-multi-pane-gpu-rendering.md) | P0 | 2.5h | 8 | ⬜ | L2_02, L0_03 |
-| L2_05 | [Draggable Dividers](L2_05-draggable-dividers-pane-resize.md) | P1 | 2h | 9 | ⬜ | L2_04 |
-| L2_06 | [Surface Tabs](L2_06-surface-tab-system.md) | P1 | 2h | 8 | ⬜ | L2_02 |
-| L2_07 | [Workspace Lifecycle](L2_07-workspace-lifecycle.md) | P0 | 2h | 8 | ⬜ | L2_02 |
-| L2_08 | [Sidebar UI](L2_08-sidebar-ui-rendering.md) | P0 | 2.5h | 9 | ⬜ | L2_07, L0_03 |
+| L2_03 | [Focus Routing](L2_03-focus-routing-keyboard-shortcuts.md) | P0 | 2h | 8 | ✅ | L2_02 |
+| L2_04 | [Multi-Pane Rendering](L2_04-multi-pane-gpu-rendering.md) | P0 | 2.5h | 8 | ✅ | L2_02, L0_03 |
+| L2_05 | [Draggable Dividers](L2_05-draggable-dividers-pane-resize.md) | P1 | 2h | 9 | ✅ | L2_04 |
+| L2_06 | [Surface Tabs](L2_06-surface-tab-system.md) | P1 | 2h | 8 | ✅ | L2_02 |
+| L2_07 | [Workspace Lifecycle](L2_07-workspace-lifecycle.md) | P0 | 2h | 8 | ✅ | L2_02 |
+| L2_08 | [Sidebar UI](L2_08-sidebar-ui-rendering.md) | P0 | 2.5h | 9 | ✅ | L2_07, L0_03 |
 | L2_09 | [Named Pipes Server](L2_09-named-pipes-server-jsonrpc.md) | P0 | 3h | 7 | ✅ | L2_01 |
-| L2_10 | [IPC Authentication](L2_10-ipc-authentication.md) | P1 | 2h | 8 | ⬜ | L2_09 |
-| L2_11 | [IPC Handler/Router](L2_11-ipc-handler-trait-router.md) | P0 | 2h | 8 | ⬜ | L2_09 |
-| L2_12 | [Workspace/Surface IPC](L2_12-workspace-surface-ipc-handlers.md) | P0 | 2.5h | 9 | ⬜ | L2_11, L2_07 |
-| L2_13 | [Input/Read IPC](L2_13-input-read-ipc-handlers.md) | P0 | 2h | 9 | ⬜ | L2_11 |
-| L2_14 | [Sidebar Metadata IPC](L2_14-sidebar-metadata-ipc-handlers.md) | P0 | 2.5h | 10 | ⬜ | L2_11, L2_08 |
-| L2_15 | [CLI Foundation](L2_15-cli-client-foundation.md) | P0 | 2h | 8 | ⬜ | L2_09 |
+| L2_10 | [IPC Authentication](L2_10-ipc-authentication.md) | P1 | 2h | 8 | ✅ | L2_09 |
+| L2_11 | [IPC Handler/Router](L2_11-ipc-handler-trait-router.md) | P0 | 2h | 8 | ✅ | L2_09 |
+| L2_12 | [Workspace/Surface IPC](L2_12-workspace-surface-ipc-handlers.md) | P0 | 2.5h | 9 | ✅ | L2_11, L2_07 |
+| L2_13 | [Input/Read IPC](L2_13-input-read-ipc-handlers.md) | P0 | 2h | 9 | ✅ | L2_11 |
+| L2_14 | [Sidebar Metadata IPC](L2_14-sidebar-metadata-ipc-handlers.md) | P0 | 2.5h | 10 | ✅ | L2_11, L2_08 |
+| L2_15 | [CLI Foundation](L2_15-cli-client-foundation.md) | P0 | 2h | 8 | ✅ | L2_09 |
 | L2_16 | [CLI Commands](L2_16-cli-domain-commands.md) | P0 | 2.5h | 11 | ⬜ | L2_15, L2_12–L2_14 |
 
 ### Layer 3 — Integration
 | # | Task | Priority | Effort | Wave | Status | Depends On |
 |---|------|----------|--------|------|--------|------------|
-| L3_01 | [Session Auto-Save](L3_01-session-auto-save.md) | P1 | 2.5h | 9 | ⬜ | L2_07 |
-| L3_02 | [Session Restore](L3_02-session-restore.md) | P1 | 2h | 10 | ⬜ | L3_01 |
+| L3_01 | [Session Auto-Save](L3_01-session-auto-save.md) | P1 | 2.5h | 9 | ✅ | L2_07 |
+| L3_02 | [Session Restore](L3_02-session-restore.md) | P1 | 2h | 10 | ✅ | L3_01 |
 | L3_03 | [WebView2 COM Init](L3_03-webview2-com-initialization.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
-| L3_04 | [WebView2 Browser Panel](L3_04-webview2-browser-panel.md) | P1 | 2.5h | 8 | ⬜ | L3_03, L2_02 |
+| L3_04 | [WebView2 Browser Panel](L3_04-webview2-browser-panel.md) | P1 | 2.5h | 8 | ✅ | L3_03, L2_02 |
 | L3_05 | [Browser Nav + JS Eval](L3_05-browser-navigation-eval-api.md) | P1 | 2h | 2 | ✅ | L3_03 |
 | L3_06 | [Browser DOM Automation](L3_06-browser-dom-automation.md) | P1 | 3h | 3 | ✅ | L3_05 |
-| L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ⬜ | L2_11, L3_05, L3_06 |
+| L3_07 | [Browser IPC Handlers](L3_07-browser-ipc-handlers.md) | P1 | 2h | 9 | ✅ | L2_11, L3_05, L3_06 |
 | L3_08 | [Notification Store](L3_08-notification-store-osc-detection.md) | P1 | 2h | 5 | ✅ | L1_04 |
-| L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ⬜ | L3_08, L2_08 |
+| L3_09 | [Notification Visuals](L3_09-notification-visual-indicators.md) | P1 | 2.5h | 10 | ✅ | L3_08, L2_08 |
 | L3_10 | [Toast Notifications](L3_10-windows-toast-notifications.md) | P1 | 2h | 6 | ✅ | L3_08 |
 | L3_11 | [Ghostty Config Parser](L3_11-ghostty-config-parser.md) | P1 | 2.5h | 1 | ✅ | L0_01 |
 | L3_12 | [Theme Engine](L3_12-theme-engine-dark-light.md) | P1 | 2h | 2 | ✅ | L3_11 |
 | L3_13 | [Shell Integration](L3_13-shell-integration-hooks.md) | P1 | 2h | 3 | ✅ | L1_06 |
-| L3_14 | [Git/Port Detection](L3_14-git-branch-detection.md) | P2 | 2h | 10 | ⬜ | L2_08, L1_04 |
+| L3_14 | [Git/Port Detection](L3_14-git-branch-detection.md) | P2 | 2h | 10 | ✅ | L2_08, L1_04 |
 
 ### Layer 4 — Polish
 | # | Task | Priority | Effort | Wave | Status | Depends On |
 |---|------|----------|--------|------|--------|------------|
-| L4_01 | [Command Palette](L4_01-command-palette.md) | P2 | 2.5h | 10 | ⬜ | L2_08 |
-| L4_02 | [Terminal Search](L4_02-terminal-search.md) | P2 | 2h | 9 | ⬜ | L1_03, L2_04 |
-| L4_03 | [SSH Remote](L4_03-ssh-remote.md) | P2 | 3h | 9 | ⬜ | L2_09, L2_07 |
+| L4_01 | [Command Palette](L4_01-command-palette.md) | P2 | 2.5h | 10 | ✅ | L2_08 |
+| L4_02 | [Terminal Search](L4_02-terminal-search.md) | P2 | 2h | 9 | ✅ | L1_03, L2_04 |
+| L4_03 | [SSH Remote](L4_03-ssh-remote.md) | P2 | 3h | 9 | ✅ | L2_09, L2_07 |
 | L4_04 | [Auto-Update](L4_04-auto-update.md) | P2 | 2.5h | 1 | ✅ | L0_01 |
-| L4_05 | [Mica/Acrylic Effects](L4_05-mica-acrylic-effects.md) | P2 | 2h | 10 | ⬜ | L2_08 |
+| L4_05 | [Mica/Acrylic Effects](L4_05-mica-acrylic-effects.md) | P2 | 2h | 10 | ✅ | L2_08 |
 | L4_06 | [Localization FR/EN](L4_06-localization-fr-en.md) | P2 | 2h | 2 | ✅ | L3_11 |
 | L4_07 | [Packaging + Distribution](L4_07-packaging-distribution.md) | P2 | 2.5h | 12 | ⬜ | all prior |
 
@@ -270,55 +270,55 @@ graph TD
     L1_08 --> L1_10
     L1_09 --> L1_10
 
-    L1_10 --> L2_01["⬜ L2_01: AppState Actor"]
-    L2_01 --> L2_02["⬜ L2_02: PaneTree Layout"]
+    L1_10 --> L2_01["✅ L2_01: AppState Actor"]
+    L2_01 --> L2_02["✅ L2_02: PaneTree Layout"]
     L0_02 --> L2_02
-    L2_02 --> L2_03["⬜ L2_03: Focus Routing"]
-    L2_02 --> L2_04["⬜ L2_04: Multi-Pane Render"]
+    L2_02 --> L2_03["✅ L2_03: Focus Routing"]
+    L2_02 --> L2_04["✅ L2_04: Multi-Pane Render"]
     L0_03 --> L2_04
-    L2_04 --> L2_05["⬜ L2_05: Draggable Dividers"]
-    L2_02 --> L2_06["⬜ L2_06: Surface Tabs"]
-    L2_02 --> L2_07["⬜ L2_07: Workspace Lifecycle"]
-    L2_07 --> L2_08["⬜ L2_08: Sidebar UI"]
+    L2_04 --> L2_05["✅ L2_05: Draggable Dividers"]
+    L2_02 --> L2_06["✅ L2_06: Surface Tabs"]
+    L2_02 --> L2_07["✅ L2_07: Workspace Lifecycle"]
+    L2_07 --> L2_08["✅ L2_08: Sidebar UI"]
     L0_03 --> L2_08
 
-    L2_01 --> L2_09["⬜ L2_09: Named Pipes Server"]
-    L2_09 --> L2_10["⬜ L2_10: IPC Auth"]
-    L2_09 --> L2_11["⬜ L2_11: Handler/Router"]
-    L2_09 --> L2_15["⬜ L2_15: CLI Foundation"]
-    L2_11 --> L2_12["⬜ L2_12: Workspace/Surface IPC"]
+    L2_01 --> L2_09["✅ L2_09: Named Pipes Server"]
+    L2_09 --> L2_10["✅ L2_10: IPC Auth"]
+    L2_09 --> L2_11["✅ L2_11: Handler/Router"]
+    L2_09 --> L2_15["✅ L2_15: CLI Foundation"]
+    L2_11 --> L2_12["✅ L2_12: Workspace/Surface IPC"]
     L2_07 --> L2_12
-    L2_11 --> L2_13["⬜ L2_13: Input/Read IPC"]
-    L2_11 --> L2_14["⬜ L2_14: Sidebar Metadata IPC"]
+    L2_11 --> L2_13["✅ L2_13: Input/Read IPC"]
+    L2_11 --> L2_14["✅ L2_14: Sidebar Metadata IPC"]
     L2_08 --> L2_14
     L2_15 --> L2_16["⬜ L2_16: CLI Commands"]
     L2_12 --> L2_16
     L2_13 --> L2_16
     L2_14 --> L2_16
 
-    L2_07 --> L3_01["⬜ L3_01: Session Save"]
-    L3_01 --> L3_02["⬜ L3_02: Session Restore"]
-    L3_03 --> L3_04["⬜ L3_04: Browser Panel"]
+    L2_07 --> L3_01["✅ L3_01: Session Save"]
+    L3_01 --> L3_02["✅ L3_02: Session Restore"]
+    L3_03 --> L3_04["✅ L3_04: Browser Panel"]
     L2_02 --> L3_04
     L3_03 --> L3_05["✅ L3_05: Browser Nav/Eval"]
     L3_05 --> L3_06["✅ L3_06: Browser DOM"]
-    L2_11 --> L3_07["⬜ L3_07: Browser IPC"]
+    L2_11 --> L3_07["✅ L3_07: Browser IPC"]
     L3_05 --> L3_07
     L3_06 --> L3_07
     L1_04 --> L3_08["✅ L3_08: Notification Store"]
-    L3_08 --> L3_09["⬜ L3_09: Notification Visuals"]
+    L3_08 --> L3_09["✅ L3_09: Notification Visuals"]
     L2_08 --> L3_09
-    L3_08 --> L3_10["⬜ L3_10: Toast Notifications"]
+    L3_08 --> L3_10["✅ L3_10: Toast Notifications"]
     L3_11 --> L3_12["✅ L3_12: Theme Engine"]
-    L2_08 --> L3_14["⬜ L3_14: Git/Port Detection"]
+    L2_08 --> L3_14["✅ L3_14: Git/Port Detection"]
     L1_04 --> L3_14
 
-    L2_08 --> L4_01["⬜ L4_01: Command Palette"]
-    L1_03 --> L4_02["⬜ L4_02: Terminal Search"]
+    L2_08 --> L4_01["✅ L4_01: Command Palette"]
+    L1_03 --> L4_02["✅ L4_02: Terminal Search"]
     L2_04 --> L4_02
-    L2_09 --> L4_03["⬜ L4_03: SSH Remote"]
+    L2_09 --> L4_03["✅ L4_03: SSH Remote"]
     L2_07 --> L4_03
-    L2_08 --> L4_05["⬜ L4_05: Mica/Acrylic"]
+    L2_08 --> L4_05["✅ L4_05: Mica/Acrylic"]
     L3_11 --> L4_06["✅ L4_06: Localization"]
 ```
 
@@ -334,40 +334,40 @@ graph TD
 | 3 | VTE, Scrollback, Rendering | 7 | 7 | 0 | 0 | Complete |
 | 4 | OSC Handlers | 1 | 1 | 0 | 0 | Complete |
 | 5 | Terminal Integration | 2 | 2 | 0 | 0 | Complete |
-| 6 | AppState Actor & Toast | 2 | 0 | 0 | 2 | Waiting |
-| 7 | PaneTree & IPC Server | 2 | 0 | 0 | 2 | Waiting |
-| 8 | UI Layout, Handlers, CLI | 8 | 0 | 0 | 8 | Waiting |
-| 9 | Sidebar, Domain Handlers | 8 | 0 | 0 | 8 | Waiting |
-| 10 | Metadata IPC, Polish | 6 | 0 | 0 | 6 | Waiting |
+| 6 | AppState Actor & Toast | 2 | 2 | 0 | 0 | Complete |
+| 7 | PaneTree & IPC Server | 2 | 2 | 0 | 0 | Complete |
+| 8 | UI Layout, Handlers, CLI | 8 | 8 | 0 | 0 | Complete |
+| 9 | Sidebar, Domain Handlers | 8 | 8 | 0 | 0 | Complete |
+| 10 | Metadata IPC, Polish | 6 | 6 | 0 | 0 | Complete |
 | 11 | CLI Commands | 1 | 0 | 0 | 1 | Waiting |
 | 12 | Packaging | 1 | 0 | 0 | 1 | Waiting |
-| **Total** | | **50** | **24** | **0** | **26** | **48%** |
+| **Total** | | **50** | **48** | **0** | **2** | **96%** |
 
 **Estimated total effort**: 111 hours (range: 100–125 hours)
-**Estimated remaining**: ~66 hours
-**Critical path**: L0_01 → L0_02 → L1_01 → L1_02 → L1_04 → L1_10 → L2_01 → L2_02 → L2_07 → L2_08 → L2_14 → L2_16 (~30h sequential)
+**Estimated remaining**: ~5 hours
+**Critical path**: L2_16 → L4_07 (~5h sequential)
 
 ---
 
 ## PRD Feature Coverage
 | PRD Feature | Tasks | Wave(s) | Status |
 |-------------|-------|---------|--------|
-| F-01: Terminal GPU-Accelerated | L0_01–L0_03, L1_01–L1_10 | 0–5 | Partial (8/13 done) |
-| F-02: Multiplexer (Panes + Workspaces) | L2_01–L2_08 | 6–9 | Not started |
-| F-03: CLI & API IPC | L2_09–L2_16 | 7–11 | Not started |
-| F-04: Integrated Browser (WebView2) | L3_03–L3_07 | 1–9 | Not started |
-| F-05: Sidebar Metadata System | L2_08, L2_14 | 9–10 | Not started |
-| F-06: Terminal Read (capture-pane) | L2_13 | 9 | Not started |
-| F-07: Notifications | L3_08–L3_10 | 5–6 | Not started |
-| F-08: Session Persistence | L3_01, L3_02 | 9–10 | Not started |
-| F-09: SSH Remote | L4_03 | 9 | Not started |
-| F-10: Themes & Configuration | L3_11, L3_12 | 1–2 | Not started |
-| F-11: Command Palette | L4_01 | 10 | Not started |
-| F-12: Terminal Search | L4_02 | 9 | Not started |
-| F-13: Shell Integration & Git | L3_13, L3_14 | 3, 10 | Not started |
-| F-14: Auto-Update | L4_04, L4_07 | 1, 12 | Not started |
-| F-15: Windows 11 Visual Effects | L4_05 | 10 | Not started |
-| F-16: Localization FR/EN | L4_06 | 2 | Not started |
+| F-01: Terminal GPU-Accelerated | L0_01–L0_03, L1_01–L1_10 | 0–5 | Complete (13/13) |
+| F-02: Multiplexer (Panes + Workspaces) | L2_01–L2_08 | 6–9 | Complete (8/8) |
+| F-03: CLI & API IPC | L2_09–L2_16 | 7–11 | Partial (7/8 done) |
+| F-04: Integrated Browser (WebView2) | L3_03–L3_07 | 1–9 | Complete (5/5) |
+| F-05: Sidebar Metadata System | L2_08, L2_14 | 9–10 | Complete (2/2) |
+| F-06: Terminal Read (capture-pane) | L2_13 | 9 | Complete (1/1) |
+| F-07: Notifications | L3_08–L3_10 | 5–6, 10 | Complete (3/3) |
+| F-08: Session Persistence | L3_01, L3_02 | 9–10 | Complete (2/2) |
+| F-09: SSH Remote | L4_03 | 9 | Complete (1/1) |
+| F-10: Themes & Configuration | L3_11, L3_12 | 1–2 | Complete (2/2) |
+| F-11: Command Palette | L4_01 | 10 | Complete (1/1) |
+| F-12: Terminal Search | L4_02 | 9 | Complete (1/1) |
+| F-13: Shell Integration & Git | L3_13, L3_14 | 3, 10 | Complete (2/2) |
+| F-14: Auto-Update | L4_04, L4_07 | 1, 12 | Partial (1/2 done) |
+| F-15: Windows 11 Visual Effects | L4_05 | 10 | Complete (1/1) |
+| F-16: Localization FR/EN | L4_06 | 2 | Complete (1/1) |
 
 ## Architecture Coverage
 | Architecture Decision | Tasks | ADR |
@@ -390,7 +390,7 @@ graph TD
 - **Execution waves**: 13 (waves 0–12)
 - **Max parallelism**: 8 tasks (waves 8 and 9)
 - **Estimated total effort**: 111 hours
-- **Estimated remaining**: ~66 hours
+- **Estimated remaining**: ~5 hours
 
 ### Effort by Wave
 | Wave | Tasks | Hours | Cumulative |
@@ -410,14 +410,14 @@ graph TD
 | 12 | 1 | 2.5h | 113.5h |
 
 ### Milestones
-- **After Wave 5 (L1_10)**: Working single-pane terminal (like Alacritty)
-- **After Wave 11 (L2_16)**: Full multiplexer with IPC + CLI (like tmux + cmux API)
-- **After Wave 10**: Browser, notifications, config, session persistence (~80% cmux parity)
+- **After Wave 5 (L1_10)**: Working single-pane terminal (like Alacritty) ✅
+- **After Wave 9 (L2_13)**: Full multiplexer with IPC + CLI (like tmux + cmux API) ✅
+- **After Wave 10**: Browser, notifications, config, session persistence (~80% cmux parity) ✅
 - **After Wave 12 (L4_07)**: Production-ready MVP release
 
-### Next Actions (Current Wave 6)
-Wave 5 complete. Execute Wave 6 (2 pending tasks):
-1. `/apex implement wave 6 in teams mode` — L2_01, L3_10
+### Next Actions (Current Wave 11)
+Waves 0–10 complete. Execute Wave 11 (1 pending task):
+1. `/apex implement wave 11` — L2_16 (CLI Domain Commands)
 
 ---
 

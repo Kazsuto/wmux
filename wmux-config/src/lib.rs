@@ -8,4 +8,4 @@ pub use config::Config;
 pub use error::ConfigError;
 pub use locale::Locale;
 pub use parser::ParsedConfig;
-pub use theme::ThemeEngine;
+pub use theme::{derive_ui_chrome, parse_hex_color_public, ThemeEngine, UiChrome};

@@ -29,7 +29,7 @@ With the CLI foundation and all IPC handlers in place, this task implements the 
 
 ## Scope
 ### Deliverables
-- Workspace commands: `wmux workspace list|create|select|close|rename`
+- Workspace commands: `wmux workspace list|create|current|select|close|rename`
 - Surface commands: `wmux surface split|list|focus|close|read-text|send-text|send-key`
 - Sidebar commands: `wmux sidebar set-status|clear-status|list-status|set-progress|clear-progress|log|clear-log|list-log|state`
 - Notify commands: `wmux notify create|list|clear` (stub for Task L3_08)
@@ -106,7 +106,7 @@ cargo fmt --all -- --check
 - Very long read-text output (should handle large responses)
 
 ## Dependencies
-**Blocks**: None — this is the final IPC/CLI task. All later features add handlers.
+**Blocks**: L4_07 (Packaging + Distribution)
 
 ## References
 - **PRD**: §3 CLI & API IPC (complete command reference)

@@ -201,6 +201,7 @@ pub fn extract_rows(scrollback: &[Row], grid: &Grid) -> Vec<(usize, String)> {
 pub fn render_search_highlights(
     search: &SearchState,
     quad_pipeline: &mut QuadPipeline,
+    ui_chrome: &wmux_config::UiChrome,
     pane_rect: &wmux_core::rect::Rect,
     cell_width: f32,
     cell_height: f32,
@@ -220,9 +221,9 @@ pub fn render_search_highlights(
         let w = (m.col_end.saturating_sub(m.col_start)) as f32 * cell_width;
 
         let color = if i == search.current_match {
-            [1.0_f32, 0.6, 0.0, 0.5] // bright orange for current match
+            ui_chrome.search_match_active
         } else {
-            [1.0_f32, 0.8, 0.0, 0.3] // yellow for other matches
+            ui_chrome.search_match
         };
 
         quad_pipeline.push_quad(x, y, w, cell_height, color);

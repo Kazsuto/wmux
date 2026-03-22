@@ -44,17 +44,24 @@ impl<'window> GpuContext<'window> {
             .await?;
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // Prefer non-sRGB format so that our sRGB hex colors (#0d1117 etc.)
+        // are passed directly to the display without double-gamma correction.
+        // With an sRGB format, the GPU applies linear→sRGB on output, but our
+        // colors are already in sRGB space — making everything appear ~2x lighter.
         let format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .or(surface_caps.formats.first())
             .copied()
             .ok_or(RenderError::NoSupportedFormats)?;
 
-        let alpha_mode = *surface_caps
+        let alpha_mode = surface_caps
             .alpha_modes
-            .first()
+            .iter()
+            .find(|m| **m == wgpu::CompositeAlphaMode::PreMultiplied)
+            .or(surface_caps.alpha_modes.first())
+            .copied()
             .ok_or(RenderError::NoSupportedAlphaModes)?;
 
         let config = SurfaceConfiguration {
@@ -64,7 +71,7 @@ impl<'window> GpuContext<'window> {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode,
-            view_formats: vec![format.add_srgb_suffix()],
+            view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);

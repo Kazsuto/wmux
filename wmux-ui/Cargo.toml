@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wmux-config.workspace = true
 wmux-core.workspace = true
 wmux-pty.workspace = true
 wmux-render.workspace = true

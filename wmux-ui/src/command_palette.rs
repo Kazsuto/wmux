@@ -1,3 +1,4 @@
+use wmux_config::UiChrome;
 use wmux_render::quad::QuadPipeline;
 
 /// Maximum number of visible results in the palette.
@@ -5,15 +6,13 @@ const MAX_VISIBLE_RESULTS: usize = 20;
 
 /// Palette overlay dimensions.
 const PALETTE_WIDTH: f32 = 600.0;
-const INPUT_HEIGHT: f32 = 40.0;
+const INPUT_HEIGHT: f32 = 44.0;
 const RESULT_HEIGHT: f32 = 36.0;
-const PADDING: f32 = 8.0;
-
-/// Background colors.
-const BG_COLOR: [f32; 4] = [0.1, 0.1, 0.15, 0.97];
-const INPUT_BG: [f32; 4] = [0.15, 0.15, 0.2, 1.0];
-const SELECTED_BG: [f32; 4] = [0.2, 0.3, 0.5, 0.8];
-const BORDER_COLOR: [f32; 4] = [0.3, 0.5, 1.0, 0.5];
+const PADDING: f32 = 12.0;
+const PALETTE_RADIUS: f32 = 12.0;
+const TAB_RADIUS: f32 = 6.0;
+const BORDER_WIDTH: f32 = 1.0;
+const SHADOW_OFFSET: f32 = 8.0;
 
 /// State for the command palette overlay.
 #[derive(Debug)]
@@ -105,59 +104,123 @@ impl CommandPalette {
     /// Render the command palette background and selection highlight.
     ///
     /// Text is rendered separately by the caller using glyphon text areas.
-    pub fn render_quads(&self, quads: &mut QuadPipeline, surface_width: f32, surface_height: f32) {
+    pub fn render_quads(
+        &self,
+        quads: &mut QuadPipeline,
+        surface_width: f32,
+        surface_height: f32,
+        ui_chrome: &UiChrome,
+    ) {
         if !self.open {
             return;
         }
 
         let visible_results = self.result_count.min(MAX_VISIBLE_RESULTS);
         let total_height = INPUT_HEIGHT + visible_results as f32 * RESULT_HEIGHT + 2.0 * PADDING;
-        let palette_x = (surface_width - PALETTE_WIDTH) / 2.0;
-        let palette_y = (surface_height * 0.2).max(50.0); // 20% from top
+        let effective_width = PALETTE_WIDTH.min(surface_width);
+        let palette_x = ((surface_width - effective_width) / 2.0).max(0.0);
+        let palette_y = (surface_height * 0.2).max(50.0);
 
-        // Drop shadow (subtle)
+        // Fullscreen dimming overlay — two layered quads
+        // First: overlay_dim (black at 0.5 alpha)
         quads.push_quad(
-            palette_x - 2.0,
-            palette_y - 2.0,
-            PALETTE_WIDTH + 4.0,
-            total_height + 4.0,
-            [0.0, 0.0, 0.0, 0.3],
+            0.0,
+            0.0,
+            surface_width,
+            surface_height,
+            ui_chrome.overlay_dim,
+        );
+        // Second: overlay_tint (accent at 8% alpha)
+        quads.push_quad(
+            0.0,
+            0.0,
+            surface_width,
+            surface_height,
+            ui_chrome.overlay_tint,
         );
 
-        // Main background
-        quads.push_quad(palette_x, palette_y, PALETTE_WIDTH, total_height, BG_COLOR);
+        // Drop shadow (rounded) — increased offset to 8px
+        quads.push_rounded_quad(
+            palette_x - SHADOW_OFFSET,
+            palette_y - SHADOW_OFFSET,
+            effective_width + 2.0 * SHADOW_OFFSET,
+            total_height + 2.0 * SHADOW_OFFSET,
+            ui_chrome.shadow,
+            PALETTE_RADIUS + 2.0,
+        );
 
-        // Border
-        let bw = 1.0;
-        quads.push_quad(palette_x, palette_y, PALETTE_WIDTH, bw, BORDER_COLOR); // top
+        // Main background — surface_overlay already has 95% alpha baked in.
+        let bg = ui_chrome.surface_overlay;
+        quads.push_rounded_quad(
+            palette_x,
+            palette_y,
+            effective_width,
+            total_height,
+            bg,
+            PALETTE_RADIUS,
+        );
+
+        // Border (1px) — four thin quads
+        let border_color = ui_chrome.border_subtle;
+        // Top border
         quads.push_quad(
             palette_x,
-            palette_y + total_height - bw,
-            PALETTE_WIDTH,
-            bw,
-            BORDER_COLOR,
-        ); // bottom
-        quads.push_quad(palette_x, palette_y, bw, total_height, BORDER_COLOR); // left
-        quads.push_quad(
-            palette_x + PALETTE_WIDTH - bw,
             palette_y,
-            bw,
+            effective_width,
+            BORDER_WIDTH,
+            border_color,
+        );
+        // Bottom border
+        quads.push_quad(
+            palette_x,
+            palette_y + total_height - BORDER_WIDTH,
+            effective_width,
+            BORDER_WIDTH,
+            border_color,
+        );
+        // Left border
+        quads.push_quad(
+            palette_x,
+            palette_y,
+            BORDER_WIDTH,
             total_height,
-            BORDER_COLOR,
-        ); // right
+            border_color,
+        );
+        // Right border
+        quads.push_quad(
+            palette_x + effective_width - BORDER_WIDTH,
+            palette_y,
+            BORDER_WIDTH,
+            total_height,
+            border_color,
+        );
 
-        // Input field background
+        // Input field (rounded)
         let input_x = palette_x + PADDING;
         let input_y = palette_y + PADDING;
-        let input_w = PALETTE_WIDTH - 2.0 * PADDING;
-        quads.push_quad(input_x, input_y, input_w, INPUT_HEIGHT, INPUT_BG);
+        let input_w = effective_width - 2.0 * PADDING;
+        quads.push_rounded_quad(
+            input_x,
+            input_y,
+            input_w,
+            INPUT_HEIGHT,
+            ui_chrome.surface_0,
+            8.0,
+        );
 
-        // Selected result highlight
+        // Selected result highlight (rounded) — use surface_2 with TAB_RADIUS
         if visible_results > 0 {
             let selected_visible = self.selected.min(visible_results - 1);
             let result_y =
                 input_y + INPUT_HEIGHT + PADDING + selected_visible as f32 * RESULT_HEIGHT;
-            quads.push_quad(input_x, result_y, input_w, RESULT_HEIGHT, SELECTED_BG);
+            quads.push_rounded_quad(
+                input_x,
+                result_y,
+                input_w,
+                RESULT_HEIGHT,
+                ui_chrome.surface_2,
+                TAB_RADIUS,
+            );
         }
     }
 
@@ -166,9 +229,10 @@ impl CommandPalette {
     pub fn layout_rect(&self, surface_width: f32, surface_height: f32) -> (f32, f32, f32, f32) {
         let visible_results = self.result_count.min(MAX_VISIBLE_RESULTS);
         let total_height = INPUT_HEIGHT + visible_results as f32 * RESULT_HEIGHT + 2.0 * PADDING;
-        let x = (surface_width - PALETTE_WIDTH) / 2.0;
+        let effective_width = PALETTE_WIDTH.min(surface_width);
+        let x = ((surface_width - effective_width) / 2.0).max(0.0);
         let y = (surface_height * 0.2).max(50.0);
-        (x, y, PALETTE_WIDTH, total_height)
+        (x, y, effective_width, total_height)
     }
 
     /// Check if a screen position is inside the palette.

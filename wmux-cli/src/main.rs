@@ -17,6 +17,14 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// Target workspace UUID
+    #[arg(long, global = true)]
+    workspace: Option<String>,
+
+    /// Target surface UUID
+    #[arg(long, global = true)]
+    surface: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -26,29 +34,35 @@ enum Commands {
     /// System commands
     System {
         #[command(subcommand)]
-        command: SystemCommands,
+        command: commands::system::SystemCommands,
     },
     /// Workspace management
-    Workspace,
-    /// Surface (tab) management
-    Surface,
+    Workspace {
+        #[command(subcommand)]
+        command: commands::workspace::WorkspaceCommands,
+    },
+    /// Surface (pane) management
+    Surface {
+        #[command(subcommand)]
+        command: commands::surface::SurfaceCommands,
+    },
     /// Sidebar operations
-    Sidebar,
+    Sidebar {
+        #[command(subcommand)]
+        command: commands::sidebar::SidebarCommands,
+    },
     /// Notification operations
-    Notify,
+    Notify {
+        #[command(subcommand)]
+        command: commands::notify::NotifyCommands,
+    },
     /// Browser panel operations
     Browser,
     /// SSH remote workspace management
     Ssh {
         #[command(subcommand)]
-        cmd: commands::ssh::SshCommands,
+        command: commands::ssh::SshCommands,
     },
-}
-
-#[derive(Subcommand)]
-enum SystemCommands {
-    /// Ping the wmux server
-    Ping,
 }
 
 #[tokio::main]
@@ -65,47 +79,46 @@ async fn main() -> Result<()> {
     let client = client::IpcClient::new(pipe_name);
 
     let exit_code = match cli.command {
-        Commands::System { command } => match command {
-            SystemCommands::Ping => {
-                let ok = commands::system::ping(&client, cli.json)
+        Commands::System { command } => {
+            let ok = commands::system::handle(&client, cli.json, command)
+                .await
+                .context("system command failed")?;
+            i32::from(!ok)
+        }
+        Commands::Workspace { command } => {
+            let ok = commands::workspace::handle(&client, cli.json, command)
+                .await
+                .context("workspace command failed")?;
+            i32::from(!ok)
+        }
+        Commands::Surface { command } => {
+            let ok =
+                commands::surface::handle(&client, cli.json, command, cli.workspace, cli.surface)
                     .await
-                    .context("ping failed")?;
-                if ok {
-                    0
-                } else {
-                    1
-                }
-            }
-        },
-        Commands::Workspace => {
-            eprintln!("workspace commands not yet implemented");
-            1
+                    .context("surface command failed")?;
+            i32::from(!ok)
         }
-        Commands::Surface => {
-            eprintln!("surface commands not yet implemented");
-            1
+        Commands::Sidebar { command } => {
+            let ok = commands::sidebar::handle(&client, cli.json, command)
+                .await
+                .context("sidebar command failed")?;
+            i32::from(!ok)
         }
-        Commands::Sidebar => {
-            eprintln!("sidebar commands not yet implemented");
-            1
-        }
-        Commands::Notify => {
-            eprintln!("notify commands not yet implemented");
-            1
+        Commands::Notify { command } => {
+            let ok = commands::notify::handle(&client, cli.json, command)
+                .await
+                .context("notify command failed")?;
+            i32::from(!ok)
         }
         Commands::Browser => {
             eprintln!("browser commands not yet implemented");
             1
         }
-        Commands::Ssh { cmd } => {
-            let ok = commands::ssh::handle(&client, cli.json, cmd)
+        Commands::Ssh { command } => {
+            let ok = commands::ssh::handle(&client, cli.json, command)
                 .await
                 .context("ssh command failed")?;
-            if ok {
-                0
-            } else {
-                1
-            }
+            i32::from(!ok)
         }
     };
 

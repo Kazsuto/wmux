@@ -67,7 +67,7 @@ impl Locale {
     /// Unknown language codes fall back to English.
     pub fn new(language: &str) -> Self {
         let en_strings = parse_locale(EN_TOML, "en");
-        let (lang_code, strings) = Self::load_language(language, &en_strings);
+        let (lang_code, strings) = Self::load_language(language);
         Self {
             language: lang_code,
             strings,
@@ -109,7 +109,7 @@ impl Locale {
     ///
     /// Unknown language codes fall back to English.
     pub fn set_language(&mut self, lang: &str) {
-        let (code, strings) = Self::load_language(lang, &self.en_strings);
+        let (code, strings) = Self::load_language(lang);
         self.language = code;
         self.strings = strings;
     }
@@ -121,16 +121,14 @@ impl Locale {
     }
 
     // Internal: resolve a language code to its strings, falling back to English.
-    fn load_language(
-        lang: &str,
-        en_strings: &HashMap<String, String>,
-    ) -> (String, HashMap<String, String>) {
+    // Returns an empty map for English — `t()` naturally falls back to `en_strings`.
+    fn load_language(lang: &str) -> (String, HashMap<String, String>) {
         match lang {
-            "en" => ("en".to_string(), en_strings.clone()),
+            "en" => ("en".to_string(), HashMap::new()),
             "fr" => ("fr".to_string(), parse_locale(FR_TOML, "fr")),
             other => {
                 tracing::warn!(language = %other, "unsupported language, falling back to English");
-                ("en".to_string(), en_strings.clone())
+                ("en".to_string(), HashMap::new())
             }
         }
     }
