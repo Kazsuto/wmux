@@ -1,6 +1,40 @@
 # Changelog
 
+## 2026-03-22
+
+REFACTOR: Remove redundant PathBuf clone in wmux-core CwdChanged handler — move cwd into async git detection task instead of cloning twice
+
+REFACTOR: Clean code improvements in wmux-config — eliminate unnecessary HashMap clones in locale load_language, take config overlay by slice reference instead of cloning Vec, flatten nested control flow in theme list_themes
+
 ## 2026-03-21
+
+FIX: Fix transparent window (white background) — clear color always opaque, add per-pane background quad before terminal content; connect theme ANSI palette to terminal renderer (named_color_rgb now uses theme colors instead of hardcoded xterm defaults); cursor color from theme; notification ring uses accent color
+
+REFACTOR: Redesign wmux-default theme from VS Code Dark+ (#1e1e1e neutral gray) to GitHub Dark-inspired anthracite (#0d1117 blue-black) with full 16-color ANSI palette; reduce UiChrome surface elevation step from 8% to 5% for subtler nuances across all themes
+
+FEATURE: Add UiChrome color system — derive surface elevation, accent, text hierarchy, and semantic colors from terminal theme palette; all UI components themed consistently across 6 bundled themes
+
+FEATURE: Add SDF rounded rect shader — QuadInstance extended to 48 bytes with border_radius field; fragment shader uses SDF with smoothstep anti-aliasing; zero-cost branch for sharp quads
+
+FEATURE: Modernize sidebar — theme-driven colors via UiChrome, rounded accent bar, notification badges with unread count, row height 44→52px for better spacing
+
+FEATURE: Add pill-style tab bar — rounded tab pills with 6px radius, 4px gap spacing, height 28→36px, accent indicator on active tab
+
+FEATURE: Add pane dimming — inactive panes receive 30% black overlay for clear focus differentiation
+
+FEATURE: Upgrade command palette — rounded corners (12px), drop shadow, fullscreen dimming overlay, theme-driven colors
+
+FEATURE: Upgrade notification panel — rounded items, theme-driven colors from UiChrome
+
+FEATURE: Fix Mica visibility — clear color alpha set to 0.0 when Mica/MicaAlt active, prefer PreMultiplied composite alpha mode
+
+FEATURE: Add animation engine — AnimationEngine with CubicOut/Linear easing, start/update/get/cancel API for UI micro-animations
+
+FEATURE: Enrich WorkspaceSnapshot — add unread_count, cwd, git_branch fields from workspace metadata and notification store
+
+REFACTOR: Remove 25+ hardcoded color constants from sidebar, command palette, notification panel, and window.rs — replaced with UiChrome theme-derived colors
+
+CHORE: Increase MAX_QUADS 4096→8192 for rounded UI elements; add wmux-config dependency to wmux-ui; add inactive_pane_opacity config key
 
 FIX: Fix shutdown race — spawn() returns JoinHandle, main.rs awaits actor completion before process::exit so final session save completes; move std::env::set_var before tokio runtime creation to eliminate UB from multi-threaded env mutation
 

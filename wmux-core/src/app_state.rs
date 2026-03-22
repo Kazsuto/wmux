@@ -593,6 +593,9 @@ pub struct WorkspaceSnapshot {
     pub name: String,
     pub active: bool,
     pub pane_count: usize,
+    pub unread_count: usize,
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
 }
 
 /// Snapshot of a surface for IPC queries.
@@ -1479,11 +1482,19 @@ impl AppStateActor {
                                 .pane_tree
                                 .as_ref()
                                 .map_or(0, |t| t.pane_count());
+                            let meta = ws.metadata();
                             WorkspaceSnapshot {
                                 id: ws.id(),
                                 name: ws.name().to_owned(),
                                 active: ws.id() == active_id,
                                 pane_count,
+                                unread_count: self
+                                    .notification_store
+                                    .unread_count(ws.id()),
+                                cwd: meta.cwd.as_ref().map(|p| {
+                                    p.to_string_lossy().into_owned()
+                                }),
+                                git_branch: meta.git_branch.clone(),
                             }
                         })
                         .collect();
@@ -1495,11 +1506,17 @@ impl AppStateActor {
                         .pane_tree
                         .as_ref()
                         .map_or(0, |t| t.pane_count());
+                    let meta = ws.metadata();
                     let _ = reply.send(WorkspaceSnapshot {
                         id: ws.id(),
                         name: ws.name().to_owned(),
                         active: true,
                         pane_count,
+                        unread_count: self.notification_store.unread_count(ws.id()),
+                        cwd: meta.cwd.as_ref().map(|p| {
+                            p.to_string_lossy().into_owned()
+                        }),
+                        git_branch: meta.git_branch.clone(),
                     });
                 }
                 AppCommand::SelectWorkspaceById { id, reply } => {
@@ -1783,12 +1800,9 @@ impl AppStateActor {
 
                     if should_detect {
                         self.last_git_detect.insert(cwd_ws_id, now);
-                        let cwd_clone = cwd.clone();
                         let self_tx = self.self_tx.clone();
                         self.background_tasks.spawn(async move {
-                            if let Some(git_info) =
-                                crate::git_detector::detect_git(&cwd_clone).await
-                            {
+                            if let Some(git_info) = crate::git_detector::detect_git(&cwd).await {
                                 let _ = self_tx.try_send(AppCommand::UpdateGitInfo {
                                     workspace_id: cwd_ws_id,
                                     branch: Some(git_info.branch),
