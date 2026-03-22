@@ -1,10 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 
 /// Maximum number of quads per frame. Enough for full-screen terminal
-/// backgrounds, cursor, selection, dividers, sidebar, and notification badges.
-const MAX_QUADS: usize = 4096;
+/// backgrounds, cursor, selection, dividers, sidebar, rounded UI elements,
+/// and notification badges.
+const MAX_QUADS: usize = 8192;
 
-/// Per-instance data for a single colored quad.
+/// Per-instance data for a single colored quad with optional rounded corners.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct QuadInstance {
@@ -13,6 +14,8 @@ pub struct QuadInstance {
     pub w: f32,
     pub h: f32,
     pub color: [f32; 4],
+    pub border_radius: f32,
+    pub _pad: [f32; 3],
 }
 
 /// Viewport dimensions uniform, padded to 16-byte alignment.
@@ -119,6 +122,12 @@ impl QuadPipeline {
                     offset: 16,
                     shader_location: 2,
                 },
+                // border_radius: f32
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 32,
+                    shader_location: 3,
+                },
             ],
         };
 
@@ -136,7 +145,7 @@ impl QuadPipeline {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -178,6 +187,21 @@ impl QuadPipeline {
     /// Silently skips zero/negative-size quads, non-finite values, and quads beyond capacity.
     #[inline]
     pub fn push_quad(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        self.push_rounded_quad(x, y, w, h, color, 0.0);
+    }
+
+    /// Queue a colored rectangle with rounded corners for rendering.
+    /// Silently skips zero/negative-size quads, non-finite values, and quads beyond capacity.
+    #[inline]
+    pub fn push_rounded_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        border_radius: f32,
+    ) {
         if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
         {
             return;
@@ -185,7 +209,17 @@ impl QuadPipeline {
         if self.quads.len() >= self.capacity {
             return;
         }
-        self.quads.push(QuadInstance { x, y, w, h, color });
+        // Clamp radius to valid range: non-negative and at most half the smaller dimension.
+        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        self.quads.push(QuadInstance {
+            x,
+            y,
+            w,
+            h,
+            color,
+            border_radius: radius,
+            _pad: [0.0; 3],
+        });
     }
 
     /// Upload queued quad data to the GPU. Must be called before the render pass.
@@ -271,6 +305,8 @@ mod tests {
                     w,
                     h,
                     color: [1.0; 4],
+                    border_radius: 0.0,
+                    _pad: [0.0; 3],
                 });
             }
         }
@@ -279,8 +315,8 @@ mod tests {
 
     #[test]
     fn quad_instance_size_matches_layout() {
-        assert_eq!(std::mem::size_of::<QuadInstance>(), 32);
-        // 2 floats (pos) + 2 floats (size) + 4 floats (color) = 8 * 4 = 32 bytes
+        assert_eq!(std::mem::size_of::<QuadInstance>(), 48);
+        // 2 floats (pos) + 2 floats (size) + 4 floats (color) + 1 float (border_radius) + 3 floats (pad) = 12 * 4 = 48 bytes
     }
 
     #[test]
@@ -305,7 +341,15 @@ mod tests {
         if quads.len() >= capacity {
             return;
         }
-        quads.push(QuadInstance { x, y, w, h, color });
+        quads.push(QuadInstance {
+            x,
+            y,
+            w,
+            h,
+            color,
+            border_radius: 0.0,
+            _pad: [0.0; 3],
+        });
     }
 
     #[test]

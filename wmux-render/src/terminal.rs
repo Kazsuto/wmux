@@ -76,6 +76,10 @@ pub struct TerminalRenderer {
     cell_buf: Vec<wmux_core::cell::Cell>,
     /// Reusable dirty row indices buffer (avoids per-frame allocation).
     dirty_buf: Vec<u16>,
+    /// Theme ANSI palette (16 colors) for terminal color rendering.
+    ansi_palette: [(u8, u8, u8); 16],
+    /// Theme cursor color.
+    cursor_color: [f32; 4],
 }
 
 impl TerminalRenderer {
@@ -92,7 +96,20 @@ impl TerminalRenderer {
             last_viewport_offset: 0,
             cell_buf: Vec::with_capacity(cols as usize),
             dirty_buf: Vec::with_capacity(rows as usize),
+            ansi_palette: DEFAULT_ANSI_PALETTE,
+            cursor_color: [1.0, 1.0, 1.0, 0.85],
         }
+    }
+
+    /// Set the theme palette for ANSI color rendering.
+    pub fn set_palette(&mut self, ansi: [(u8, u8, u8); 16], cursor: (u8, u8, u8)) {
+        self.ansi_palette = ansi;
+        self.cursor_color = [
+            cursor.0 as f32 / 255.0,
+            cursor.1 as f32 / 255.0,
+            cursor.2 as f32 / 255.0,
+            0.85,
+        ];
     }
 
     /// Update dirty rows, background quads, and cursor. Call once per frame before `prepare`.
@@ -144,7 +161,15 @@ impl TerminalRenderer {
             }
 
             // Push non-default background quads.
-            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, 0.0, y);
+            push_background_quads(
+                &self.cell_buf,
+                quad_pipeline,
+                cw,
+                ch,
+                0.0,
+                y,
+                &self.ansi_palette,
+            );
 
             // Re-shape the row's glyphon buffer.
             if r < self.row_buffers.len() {
@@ -154,6 +179,7 @@ impl TerminalRenderer {
                     &self.cell_buf,
                     cols as f32 * cw,
                     ch,
+                    &self.ansi_palette,
                 );
             }
         }
@@ -162,7 +188,7 @@ impl TerminalRenderer {
         // Render cursor quad on top of everything.
         let cursor = grid.cursor();
         if cursor.visible && self.cursor_visible {
-            push_cursor_quad(cursor, cw, ch, 0.0, 0.0, quad_pipeline);
+            push_cursor_quad(cursor, cw, ch, 0.0, 0.0, quad_pipeline, self.cursor_color);
         }
     }
 
@@ -174,7 +200,10 @@ impl TerminalRenderer {
     /// - `pane_rect`: the usable terminal content rect (after subtracting any
     ///   tab bar). Used to set tight `TextBounds` so glyphs are clipped to the
     ///   pane and do not bleed into adjacent panes.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wgpu prepare needs device, queue, glyphon, surface dims, pane origin, and pane rect"
+    )]
     pub fn prepare(
         &self,
         device: &wgpu::Device,
@@ -216,7 +245,10 @@ impl TerminalRenderer {
     /// - `pane_origin`: `(x, y)` pixel offset of the pane's top-left corner
     ///   within the surface. Used to position quads and text areas correctly
     ///   when rendering multiple panes into a shared render pass.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "snapshot update needs grid, dirty rows, viewport offset, scrollback, font system, quads, and pane origin"
+    )]
     pub fn update_from_snapshot(
         &mut self,
         grid: &Grid,
@@ -283,7 +315,15 @@ impl TerminalRenderer {
 
             self.cell_buf.truncate(cols);
 
-            push_background_quads(&self.cell_buf, quad_pipeline, cw, ch, x_off, y);
+            push_background_quads(
+                &self.cell_buf,
+                quad_pipeline,
+                cw,
+                ch,
+                x_off,
+                y,
+                &self.ansi_palette,
+            );
 
             if r < self.row_buffers.len() {
                 update_row_buffer(
@@ -292,6 +332,7 @@ impl TerminalRenderer {
                     &self.cell_buf,
                     cols as f32 * cw,
                     ch,
+                    &self.ansi_palette,
                 );
             }
         }
@@ -299,7 +340,15 @@ impl TerminalRenderer {
 
         let cursor = grid.cursor();
         if cursor.visible && self.cursor_visible {
-            push_cursor_quad(cursor, cw, ch, x_off, y_off, quad_pipeline);
+            push_cursor_quad(
+                cursor,
+                cw,
+                ch,
+                x_off,
+                y_off,
+                quad_pipeline,
+                self.cursor_color,
+            );
         }
     }
 
@@ -373,7 +422,10 @@ impl TerminalRenderer {
     /// Returns `true` if cells were resolved, `false` if the row is out of bounds.
     /// Clears `cell_buf` before populating and truncates to `cols` to prevent
     /// stale wider scrollback rows from painting outside the visible area.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "row resolution needs grid, scrollback, viewport offset, scrollback length, and grid dimensions"
+    )]
     fn resolve_row_cells(
         &mut self,
         r: usize,
@@ -439,6 +491,7 @@ fn push_background_quads(
     ch: f32,
     x_off: f32,
     y: f32,
+    palette: &[(u8, u8, u8); 16],
 ) {
     for (col, cell) in cells.iter().enumerate() {
         let bg = if cell.flags.contains(CellFlags::INVERSE) {
@@ -447,7 +500,13 @@ fn push_background_quads(
             cell.bg
         };
         if bg != Color::Named(0) {
-            quad_pipeline.push_quad(x_off + col as f32 * cw, y, cw, ch, color_to_rgba(bg));
+            quad_pipeline.push_quad(
+                x_off + col as f32 * cw,
+                y,
+                cw,
+                ch,
+                color_to_rgba(bg, palette),
+            );
         }
     }
 }
@@ -476,13 +535,12 @@ fn update_row_buffer(
     cells: &[wmux_core::cell::Cell],
     buf_width: f32,
     buf_height: f32,
+    palette: &[(u8, u8, u8); 16],
 ) {
     buf.set_size(font_system, Some(buf_width), Some(buf_height));
 
     let default_attrs = Attrs::new().family(Family::Monospace);
 
-    // Build one span per cell so each character gets its own color/weight.
-    // Pass the iterator directly to set_rich_text to avoid per-row Vec allocation.
     buf.set_rich_text(
         font_system,
         cells.iter().map(|cell| {
@@ -498,7 +556,7 @@ fn update_row_buffer(
             } else {
                 cell.fg
             };
-            let [r, g, b, _] = color_to_rgba(fg);
+            let [r, g, b, _] = color_to_rgba(fg, palette);
             let mut attrs = Attrs::new().family(Family::Monospace);
             attrs = attrs.color(GlyphonColor::rgba(
                 (r * 255.0) as u8,
@@ -533,59 +591,60 @@ fn push_cursor_quad(
     x_off: f32,
     y_off: f32,
     quad_pipeline: &mut QuadPipeline,
+    cursor_color: [f32; 4],
 ) {
     let x = x_off + cursor.col as f32 * cw;
     let y = y_off + cursor.row as f32 * ch;
-    // White cursor with slight transparency so underlying text shows through on Block.
-    let color = [1.0_f32, 1.0, 1.0, 0.85];
     match cursor.shape {
-        CursorShape::Block => quad_pipeline.push_quad(x, y, cw, ch, color),
-        CursorShape::Underline => quad_pipeline.push_quad(x, y + ch - 2.0, cw, 2.0, color),
-        CursorShape::Bar => quad_pipeline.push_quad(x, y, 2.0, ch, color),
+        CursorShape::Block => quad_pipeline.push_quad(x, y, cw, ch, cursor_color),
+        CursorShape::Underline => quad_pipeline.push_quad(x, y + ch - 2.0, cw, 2.0, cursor_color),
+        CursorShape::Bar => quad_pipeline.push_quad(x, y, 2.0, ch, cursor_color),
     }
 }
 
 /// Convert a terminal `Color` to a normalized RGBA `[f32; 4]`.
-fn color_to_rgba(color: Color) -> [f32; 4] {
+fn color_to_rgba(color: Color, palette: &[(u8, u8, u8); 16]) -> [f32; 4] {
     let (r, g, b) = match color {
-        Color::Named(n) => named_color_rgb(n),
-        Color::Indexed(n) => indexed_color_rgb(n),
+        Color::Named(n) => named_color_rgb(n, palette),
+        Color::Indexed(n) => indexed_color_rgb(n, palette),
         Color::Rgb(r, g, b) => (r, g, b),
     };
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
 }
 
-/// Standard 16 ANSI colors (indices 0–15).
-fn named_color_rgb(n: u8) -> (u8, u8, u8) {
-    const TABLE: [(u8, u8, u8); 16] = [
-        (0, 0, 0),       // 0  black
-        (128, 0, 0),     // 1  red
-        (0, 128, 0),     // 2  green
-        (128, 128, 0),   // 3  yellow
-        (0, 0, 128),     // 4  blue
-        (128, 0, 128),   // 5  magenta
-        (0, 128, 128),   // 6  cyan
-        (192, 192, 192), // 7  white
-        (128, 128, 128), // 8  bright black
-        (255, 0, 0),     // 9  bright red
-        (0, 255, 0),     // 10 bright green
-        (255, 255, 0),   // 11 bright yellow
-        (0, 0, 255),     // 12 bright blue
-        (255, 0, 255),   // 13 bright magenta
-        (0, 255, 255),   // 14 bright cyan
-        (255, 255, 255), // 15 bright white
-    ];
-    if (n as usize) < TABLE.len() {
-        TABLE[n as usize]
+/// Fallback ANSI palette used when no theme is loaded.
+const DEFAULT_ANSI_PALETTE: [(u8, u8, u8); 16] = [
+    (0x48, 0x4f, 0x58), // 0  black
+    (0xff, 0x7b, 0x72), // 1  red
+    (0x3f, 0xb9, 0x50), // 2  green
+    (0xd2, 0x99, 0x22), // 3  yellow
+    (0x58, 0xa6, 0xff), // 4  blue
+    (0xbc, 0x8c, 0xff), // 5  magenta
+    (0x56, 0xd4, 0xdd), // 6  cyan
+    (0xb1, 0xba, 0xc4), // 7  white
+    (0x6e, 0x76, 0x81), // 8  bright black
+    (0xff, 0xa1, 0x98), // 9  bright red
+    (0x56, 0xd3, 0x64), // 10 bright green
+    (0xe3, 0xb3, 0x41), // 11 bright yellow
+    (0x79, 0xc0, 0xff), // 12 bright blue
+    (0xd2, 0xa8, 0xff), // 13 bright magenta
+    (0xa5, 0xd6, 0xff), // 14 bright cyan
+    (0xf0, 0xf6, 0xfc), // 15 bright white
+];
+
+/// 16 ANSI colors from the theme palette (indices 0–15).
+fn named_color_rgb(n: u8, palette: &[(u8, u8, u8); 16]) -> (u8, u8, u8) {
+    if (n as usize) < palette.len() {
+        palette[n as usize]
     } else {
-        indexed_color_rgb(n)
+        indexed_color_rgb(n, palette)
     }
 }
 
 /// xterm-256 palette lookup (covers 0–255; indices 0–15 redirect to named table).
-fn indexed_color_rgb(n: u8) -> (u8, u8, u8) {
+fn indexed_color_rgb(n: u8, palette: &[(u8, u8, u8); 16]) -> (u8, u8, u8) {
     if n < 16 {
-        named_color_rgb(n)
+        named_color_rgb(n, palette)
     } else if n < 232 {
         // 6×6×6 color cube: indices 16–231.
         let i = n - 16;
@@ -612,7 +671,7 @@ mod tests {
 
     #[test]
     fn color_to_rgba_rgb_passthrough() {
-        let [r, g, b, a] = color_to_rgba(Color::Rgb(255, 128, 0));
+        let [r, g, b, a] = color_to_rgba(Color::Rgb(255, 128, 0), &DEFAULT_ANSI_PALETTE);
         assert!((r - 1.0).abs() < f32::EPSILON);
         assert!((g - 128.0 / 255.0).abs() < 0.001);
         assert!((b - 0.0).abs() < f32::EPSILON);
@@ -621,32 +680,34 @@ mod tests {
 
     #[test]
     fn color_to_rgba_named_black() {
-        let [r, g, b, a] = color_to_rgba(Color::Named(0));
-        assert_eq!(r, 0.0);
-        assert_eq!(g, 0.0);
-        assert_eq!(b, 0.0);
+        // Named(0) uses DEFAULT_ANSI_PALETTE[0] = (0x48, 0x4f, 0x58)
+        let [r, g, b, a] = color_to_rgba(Color::Named(0), &DEFAULT_ANSI_PALETTE);
+        assert!((r - 0x48 as f32 / 255.0).abs() < 0.001);
+        assert!((g - 0x4f as f32 / 255.0).abs() < 0.001);
+        assert!((b - 0x58 as f32 / 255.0).abs() < 0.001);
         assert_eq!(a, 1.0);
     }
 
     #[test]
     fn color_to_rgba_named_white() {
-        let [r, g, b, a] = color_to_rgba(Color::Named(15));
-        assert!((r - 1.0).abs() < f32::EPSILON);
-        assert!((g - 1.0).abs() < f32::EPSILON);
-        assert!((b - 1.0).abs() < f32::EPSILON);
+        // Named(15) uses DEFAULT_ANSI_PALETTE[15] = (0xf0, 0xf6, 0xfc)
+        let [r, g, b, a] = color_to_rgba(Color::Named(15), &DEFAULT_ANSI_PALETTE);
+        assert!((r - 0xf0 as f32 / 255.0).abs() < 0.001);
+        assert!((g - 0xf6 as f32 / 255.0).abs() < 0.001);
+        assert!((b - 0xfc as f32 / 255.0).abs() < 0.001);
         assert!((a - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn color_to_rgba_indexed_cube() {
         // Index 16 = first cube entry = (0,0,0) black.
-        let [r, g, b, _] = color_to_rgba(Color::Indexed(16));
+        let [r, g, b, _] = color_to_rgba(Color::Indexed(16), &DEFAULT_ANSI_PALETTE);
         assert_eq!(r, 0.0);
         assert_eq!(g, 0.0);
         assert_eq!(b, 0.0);
 
         // Index 231 = last cube entry = (255,255,255) white.
-        let [r2, g2, b2, _] = color_to_rgba(Color::Indexed(231));
+        let [r2, g2, b2, _] = color_to_rgba(Color::Indexed(231), &DEFAULT_ANSI_PALETTE);
         assert!((r2 - 1.0).abs() < f32::EPSILON);
         assert!((g2 - 1.0).abs() < f32::EPSILON);
         assert!((b2 - 1.0).abs() < f32::EPSILON);
@@ -655,13 +716,13 @@ mod tests {
     #[test]
     fn color_to_rgba_indexed_grayscale() {
         // Index 232 = darkest gray = rgb(8,8,8).
-        let [r, g, b, _] = color_to_rgba(Color::Indexed(232));
+        let [r, g, b, _] = color_to_rgba(Color::Indexed(232), &DEFAULT_ANSI_PALETTE);
         assert!((r - 8.0 / 255.0).abs() < 0.001);
         assert_eq!(r, g);
         assert_eq!(g, b);
 
         // Index 255 = lightest gray = rgb(238,238,238).
-        let [r2, g2, b2, _] = color_to_rgba(Color::Indexed(255));
+        let [r2, g2, b2, _] = color_to_rgba(Color::Indexed(255), &DEFAULT_ANSI_PALETTE);
         assert!((r2 - 238.0 / 255.0).abs() < 0.001);
         assert_eq!(r2, g2);
         assert_eq!(g2, b2);
@@ -670,7 +731,7 @@ mod tests {
     #[test]
     fn color_to_rgba_all_named_are_opaque() {
         for n in 0u8..=15 {
-            let [_, _, _, a] = color_to_rgba(Color::Named(n));
+            let [_, _, _, a] = color_to_rgba(Color::Named(n), &DEFAULT_ANSI_PALETTE);
             assert!((a - 1.0).abs() < f32::EPSILON, "Named({n}) alpha != 1.0");
         }
     }
@@ -679,7 +740,7 @@ mod tests {
     fn xterm_cube_index_47_is_green() {
         // Index 47 = 16 + 36*0 + 6*2 + 5 = 16 + 17 = no...
         // Actually: 16 + 36*r + 6*g + b. For pure green: r=0, g=5, b=0 → 16+30=46.
-        let [r, g, b, _] = color_to_rgba(Color::Indexed(46));
+        let [r, g, b, _] = color_to_rgba(Color::Indexed(46), &DEFAULT_ANSI_PALETTE);
         assert_eq!(r, 0.0);
         assert!(
             (g - 1.0).abs() < f32::EPSILON,
