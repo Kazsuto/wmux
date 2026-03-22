@@ -75,14 +75,7 @@ impl ConPtyHandle {
                 "resize after shutdown".to_string(),
             ));
         };
-        let cols = cols.clamp(2, i16::MAX as u16);
-        let rows = rows.clamp(1, i16::MAX as u16);
-        let size = COORD {
-            X: cols as i16,
-            Y: rows as i16,
-        };
-        // SAFETY: HPCON is valid (checked above). COORD is a plain value type.
-        unsafe { ResizePseudoConsole(hpc, size) }.map_err(|e| PtyError::ResizeFailed(e.into()))
+        do_resize(hpc, cols, rows)
     }
 
     /// Shut down the pseudo-console cleanly.
@@ -267,13 +260,21 @@ fn try_release_pseudo_console(hpc: HPCON) -> bool {
 /// Must only be called from a single task (the resize handler). See
 /// [`ConPtyHandle::hpcon`] for details.
 pub(crate) fn resize_by_hpcon(hpc: HPCON, cols: u16, rows: u16) -> Result<(), PtyError> {
+    do_resize(hpc, cols, rows)
+}
+
+/// Shared resize implementation: clamp dimensions and call `ResizePseudoConsole`.
+///
+/// `cols` is clamped to `[2, i16::MAX]` to prevent ConPTY bug #19922.
+/// `rows` is clamped to `[1, i16::MAX]`.
+fn do_resize(hpc: HPCON, cols: u16, rows: u16) -> Result<(), PtyError> {
     let cols = cols.clamp(2, i16::MAX as u16);
     let rows = rows.clamp(1, i16::MAX as u16);
     let size = COORD {
         X: cols as i16,
         Y: rows as i16,
     };
-    // SAFETY: Caller guarantees HPCON is still valid (ConPtyHandle not yet shut down).
+    // SAFETY: Caller guarantees HPCON is valid. COORD is a plain value type.
     unsafe { ResizePseudoConsole(hpc, size) }.map_err(|e| PtyError::ResizeFailed(e.into()))
 }
 

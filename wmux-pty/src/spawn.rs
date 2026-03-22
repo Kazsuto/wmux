@@ -105,7 +105,7 @@ pub fn spawn_command(
         cmdline.push(' ');
         cmdline.push_str(&quote_arg(arg));
     }
-    let mut cmdline_wide = to_wide(&cmdline);
+    let mut cmdline_wide = to_wide_null(&cmdline);
 
     // Build environment block (UTF-16, double-null terminated).
     let env_block = build_env_block(env);
@@ -309,14 +309,6 @@ fn quote_arg(s: &str) -> String {
 
 /// Convert a string to a null-terminated UTF-16 wide string.
 fn to_wide_null(s: &str) -> Vec<u16> {
-    OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-/// Convert a string to a mutable UTF-16 wide string (for `PWSTR`).
-fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s)
         .encode_wide()
         .chain(std::iter::once(0))

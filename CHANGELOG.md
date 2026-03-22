@@ -2,6 +2,8 @@
 
 ## 2026-03-22
 
+REFACTOR: Clean code improvements in wmux-pty — extract shared do_resize() helper to deduplicate ConPTY resize logic, remove duplicate to_wide() function (identical to to_wide_null()), use Cow::into_owned() instead of .to_string() on to_string_lossy() result
+
 REFACTOR: Clean code improvements in wmux-render — replace #[allow] with #[expect] on clippy::too_many_arguments (3 occurrences), use .clamp() instead of .max().min() in quad border radius clamping
 
 REFACTOR: Clean code improvements in wmux-ipc — use impl Into<String> in RpcResponse constructors to avoid unnecessary allocations, pre-allocate HashMap in PID ancestry check, add #[inline] on cross-crate accessor, idiomatic iterator destructuring

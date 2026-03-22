@@ -146,7 +146,7 @@ fn build_shell_args(
             }
             tracing::debug!(hook = %hook_path.display(), "injected Bash shell integration hook");
             args.push("--rcfile".to_string());
-            args.push(wrapper.to_string_lossy().to_string());
+            args.push(wrapper.to_string_lossy().into_owned());
         }
         ShellType::Cmd => {
             tracing::debug!("cmd.exe does not support shell integration hooks, skipping");
