@@ -913,12 +913,11 @@ impl vte::Perform for VteHandler<'_> {
         }
 
         // First param is the OSC number as ASCII digits.
-        let osc_num = match std::str::from_utf8(params[0])
+        let Some(osc_num) = std::str::from_utf8(params[0])
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
-        {
-            Some(n) => n,
-            None => return,
+        else {
+            return;
         };
 
         match osc_num {

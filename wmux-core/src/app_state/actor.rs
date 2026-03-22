@@ -1069,7 +1069,7 @@ impl AppStateActor {
             .as_ref()
             .map_or_else(Vec::new, |t| t.pane_ids());
 
-        let mut infos = Vec::new();
+        let mut infos = Vec::with_capacity(pane_ids.len());
         for pane_id in pane_ids {
             if let Some(pane) = self.registry.get(pane_id) {
                 let active_id = pane.surfaces.active_id();

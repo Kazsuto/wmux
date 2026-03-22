@@ -211,12 +211,9 @@ pub const SESSION_VERSION: u32 = 1;
 ///
 /// Per ADR-0009: corrupted files NEVER cause a crash — log a warning and start fresh.
 pub async fn load_session() -> Result<Option<SessionState>, io::Error> {
-    let path = match session_file_path() {
-        Some(p) => p,
-        None => {
-            tracing::debug!("config directory not found, skipping session restore");
-            return Ok(None);
-        }
+    let Some(path) = session_file_path() else {
+        tracing::debug!("config directory not found, skipping session restore");
+        return Ok(None);
     };
 
     let data = match tokio::fs::read(&path).await {

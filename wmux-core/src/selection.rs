@@ -126,7 +126,10 @@ impl Selection {
                 if col >= cols {
                     break;
                 }
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "grid col/row fit in u16 by Grid::MAX invariant"
+                )]
                 let cell = grid.cell(col as u16, row as u16);
                 if cell.flags.contains(CellFlags::WIDE_SPACER) {
                     continue;
@@ -146,7 +149,10 @@ impl Selection {
     fn word_start(&self, grid: &Grid, col: usize, row: usize) -> usize {
         let mut c = col;
         while c > 0 {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "grid col/row fit in u16 by Grid::MAX invariant"
+            )]
             let cell = grid.cell((c - 1) as u16, row as u16);
             if !is_word_char(&cell.grapheme) {
                 break;
@@ -161,7 +167,10 @@ impl Selection {
         let cols = grid.cols() as usize;
         let mut c = col;
         while c + 1 < cols {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "grid col/row fit in u16 by Grid::MAX invariant"
+            )]
             let cell = grid.cell((c + 1) as u16, row as u16);
             if !is_word_char(&cell.grapheme) {
                 break;
