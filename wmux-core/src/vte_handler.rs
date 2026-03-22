@@ -317,7 +317,7 @@ impl<'a> VteHandler<'a> {
         let saved = AltScreenState {
             grid: std::mem::replace(&mut self.state.grid, Grid::new(cols, rows)),
             cursor,
-            attrs: self.state.attrs.clone(),
+            attrs: self.state.attrs,
             saved_cursor: self.state.saved_cursor,
             viewport_offset: self.state.scrollback.viewport_offset(),
             scroll_top: self.state.scroll_top,

@@ -10,7 +10,7 @@ use crate::scrollback::Scrollback;
 use crate::vte_handler::VteHandler;
 
 /// Current SGR (Select Graphic Rendition) attributes applied to new cells.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Attrs {
     pub fg: Color,
     pub bg: Color,

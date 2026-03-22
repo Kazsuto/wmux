@@ -2079,13 +2079,9 @@ impl AppStateActor {
             let rows = pane.terminal.rows() as usize;
             let sb_rows_shown = viewport_offset.min(rows);
             let start_idx = scrollback_len.saturating_sub(viewport_offset);
-            let mut visible = Vec::with_capacity(sb_rows_shown);
-            for i in 0..sb_rows_shown {
-                if let Some(row) = scrollback.get_row(start_idx + i) {
-                    visible.push(row.clone());
-                }
-            }
-            visible
+            (0..sb_rows_shown)
+                .filter_map(|i| scrollback.get_row(start_idx + i).cloned())
+                .collect()
         } else {
             Vec::new()
         };

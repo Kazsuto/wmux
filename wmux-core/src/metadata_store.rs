@@ -177,13 +177,10 @@ impl MetadataStore {
             .statuses
             .iter()
             .filter_map(|(key, entry)| {
-                entry.pid.and_then(|pid| {
-                    if !is_process_alive(pid) {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
-                })
+                entry
+                    .pid
+                    .filter(|&pid| !is_process_alive(pid))
+                    .map(|_| key.clone())
             })
             .collect();
 
