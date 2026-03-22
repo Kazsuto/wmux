@@ -1,23 +1,18 @@
+use glyphon::{TextArea, TextBounds};
+use wmux_config::UiChrome;
 use wmux_core::Notification;
 use wmux_render::quad::QuadPipeline;
 
+use crate::f32_to_glyphon_color;
+
 /// Width of the notification panel overlay in pixels.
-const PANEL_WIDTH: f32 = 350.0;
+const PANEL_WIDTH: f32 = 360.0;
 
 /// Height of each notification item in the panel.
 const ITEM_HEIGHT: f32 = 72.0;
 
 /// Padding inside each notification item.
 const ITEM_PADDING: f32 = 8.0;
-
-/// Background color for the notification panel.
-const PANEL_BG: [f32; 4] = [0.08, 0.08, 0.12, 0.95];
-
-/// Background color for individual notification items on hover.
-const ITEM_HOVER_BG: [f32; 4] = [0.15, 0.15, 0.2, 0.9];
-
-/// Border color for the panel left edge.
-const PANEL_BORDER: [f32; 4] = [0.3, 0.5, 1.0, 0.4];
 
 /// State for the notification panel overlay.
 #[derive(Debug)]
@@ -99,18 +94,32 @@ impl NotificationPanel {
         notifications: &[&Notification],
         surface_width: f32,
         surface_height: f32,
+        ui_chrome: &UiChrome,
     ) {
         if !self.open {
             return;
         }
 
-        let panel_x = surface_width - PANEL_WIDTH;
+        let panel_x = (surface_width - PANEL_WIDTH).max(0.0);
+        let effective_panel_w = PANEL_WIDTH.min(surface_width);
+        // surface_overlay already has 95% alpha baked in.
+        let panel_bg = ui_chrome.surface_overlay;
 
-        // Panel background
-        quads.push_quad(panel_x, 0.0, PANEL_WIDTH, surface_height, PANEL_BG);
+        // Panel background (rounded left corners)
+        quads.push_rounded_quad(
+            panel_x,
+            0.0,
+            effective_panel_w,
+            surface_height,
+            panel_bg,
+            8.0,
+        );
 
-        // Left border accent
-        quads.push_quad(panel_x, 0.0, 2.0, surface_height, PANEL_BORDER);
+        // Empty state: show "All caught up" when no notifications
+        if notifications.is_empty() {
+            // Centered text will be rendered separately via text_areas()
+            return;
+        }
 
         // Render each visible notification item
         for (i, _notif) in notifications.iter().enumerate() {
@@ -121,14 +130,32 @@ impl NotificationPanel {
                 continue;
             }
 
-            // Hover highlight
+            // TODO: Notification struct lacks severity field. Using accent (info) color for all stripes.
+            // Once severity is added to Notification, implement severity-specific colors:
+            // error, warning, success, info based on notification level.
+
+            // Left severity stripe (2px)
+            quads.push_quad(panel_x, item_y, 2.0, ITEM_HEIGHT, ui_chrome.accent);
+
+            // Severity background tint (subtle muted background)
+            quads.push_rounded_quad(
+                panel_x + ITEM_PADDING,
+                item_y + 2.0,
+                PANEL_WIDTH - 2.0 * ITEM_PADDING,
+                ITEM_HEIGHT - 4.0,
+                ui_chrome.info_muted,
+                6.0,
+            );
+
+            // Hover highlight (rounded)
             if self.hovered_item == Some(i) {
-                quads.push_quad(
-                    panel_x + 2.0,
-                    item_y,
-                    PANEL_WIDTH - 2.0,
-                    ITEM_HEIGHT,
-                    ITEM_HOVER_BG,
+                quads.push_rounded_quad(
+                    panel_x + ITEM_PADDING,
+                    item_y + 2.0,
+                    PANEL_WIDTH - 2.0 * ITEM_PADDING,
+                    ITEM_HEIGHT - 4.0,
+                    ui_chrome.surface_1,
+                    6.0,
                 );
             }
 
@@ -138,7 +165,7 @@ impl NotificationPanel {
                 item_y + ITEM_HEIGHT - 1.0,
                 PANEL_WIDTH - 2.0 * ITEM_PADDING,
                 1.0,
-                [1.0, 1.0, 1.0, 0.05],
+                ui_chrome.border_default,
             );
         }
     }
@@ -156,7 +183,43 @@ impl NotificationPanel {
     /// Check if a screen X coordinate falls within the panel area.
     #[must_use]
     pub fn contains_x(&self, x: f32, surface_width: f32) -> bool {
-        self.open && x >= (surface_width - PANEL_WIDTH)
+        self.open && x >= (surface_width - PANEL_WIDTH).max(0.0)
+    }
+
+    /// Produce TextArea descriptors for the notification panel.
+    ///
+    /// When no notifications exist, returns a centered "All caught up" message.
+    /// Otherwise returns empty (notification text rendered elsewhere).
+    #[must_use]
+    pub fn text_areas<'a>(
+        &'a self,
+        notifications: &[&Notification],
+        surface_width: f32,
+        surface_height: f32,
+        ui_chrome: &UiChrome,
+        buffer: &'a glyphon::Buffer,
+    ) -> Vec<TextArea<'a>> {
+        if !self.open || !notifications.is_empty() {
+            return Vec::new();
+        }
+
+        let panel_x = surface_width - PANEL_WIDTH;
+        let text_color = f32_to_glyphon_color(ui_chrome.text_muted);
+
+        vec![TextArea {
+            buffer,
+            left: panel_x + PANEL_WIDTH / 2.0,
+            top: surface_height / 2.0,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: panel_x as i32,
+                top: 0,
+                right: surface_width as i32,
+                bottom: surface_height as i32,
+            },
+            default_color: text_color,
+            custom_glyphs: &[],
+        }]
     }
 }
 

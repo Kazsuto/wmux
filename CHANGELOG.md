@@ -2,6 +2,62 @@
 
 ## 2026-03-22
 
+REFACTOR: Apply clean code improvements to wmux-ui — extract shared f32_to_glyphon_color helper (DRY), single-pass escape_xml (performance), #[allow] → #[expect] (compilation), simplify sidebar subtitle allocation
+
+FIX: Fix tab click hitbox misaligned with visual tab position — hit-testing now uses tab_metrics() (gaps + MAX_TAB_WIDTH clamp) instead of naive equal-width division, fixing both click-to-switch and drag-drop reorder
+
+REFACTOR: Clean code improvements in wmux-render/terminal.rs and wmux-ui/window.rs — extract CURSOR_LINE_THICKNESS constant, TAB_FONT_SIZE/TAB_LINE_HEIGHT/TAB_TEXT_PADDING/TAB_GAP/TAB_TEXT_TOP_OFFSET constants, deduplicate blink advance into advance_blink(), extract rgba_to_glyphon() helper, fix misleading _rect variable name
+
+FIX: Fix terminal content not rendering after workspace switch — new TerminalRenderer forces full re-render on first frame via usize::MAX sentinel for last_viewport_offset
+
+FEATURE: Implement all CLI domain commands (L2_16) — workspace (list, create, current, select, close, rename), surface (split, list, focus, close, read-text, send-text, send-key), sidebar (set-status, clear-status, list-status, set-progress, clear-progress, log, clear-log, list-log, state), system (ping, capabilities, identify), notify stubs, global --workspace/--surface flags
+
+FIX: Use palette.selection for selection highlight instead of accent_muted — user theme selection-background color now respected
+
+FIX: Correct cursor z-order — cursor now renders after selection highlights (cursor visible inside selected text, inactive pane cursors correctly hidden by dim overlay)
+
+FIX: Wire EffectResult to clear_color alpha — Mica backdrop now visible on Win11 (transparent clear color when Mica/MicaAlt active, opaque fallback on Win10)
+
+FIX: Replace hardcoded search highlight colors (orange/yellow) with theme-derived UiChrome fields (search_match, search_match_active)
+
+FIX: Replace hardcoded sidebar dot colors (purple/cyan) with theme-derived UiChrome fields (dot_purple, dot_cyan from ANSI palette)
+
+FIX: Replace hardcoded drop shadow colors with theme-adaptive UiChrome.shadow field
+
+FIX: Wire Config.theme to ThemeEngine.set_theme() — user theme choice now applied at startup
+
+FIX: Apply Config.background/foreground/palette overrides on top of loaded theme before derive_ui_chrome()
+
+REFACTOR: Add 7 UiChrome fields (selection_bg, search_match, search_match_active, shadow, dot_purple, dot_cyan, cursor_alpha) to complete theme pipeline
+
+REFACTOR: Extract cursor rendering from TerminalRenderer into public push_cursor() method for z-order control
+
+REFACTOR: Add foreground_color to TerminalRenderer — glyphon default text color now follows loaded theme instead of hardcoded constant
+
+REFACTOR: Remove duplicate DEFAULT_ANSI_PALETTE — single source of truth for palette defaults
+
+FEATURE: Extend shader with gradient + SDF outer glow — QuadInstance 48→80 bytes, vertical gradient (top→bottom color interpolation), shader-based Focus Glow (smoothstep SDF falloff, replaces 4 concentric quads), push_glow_quad/push_gradient_quad API
+
+FEATURE: Implement "Luminous Void" UI design system — extend UiChrome from 13 to 31 tokens (5L surface elevation, accent system with hover/glow/tint, WCAG text alphas 65%/53%/40%, border variants, overlays, semantic muted colors), Focus Glow signature element (shader-based SDF glow on active pane), dual font system (Segoe UI Variable for chrome), status bar component (28px, workspace/pane count/connection/branch/shell), enhanced animation engine (CubicIn/EaseInOut/reduced motion), border-glow luminous separators, surface_base pane dimming
+
+FEATURE: Visual polish pass — permanent pane dividers (border_glow between all pane pairs), tab bar shadows (shadow-sm under tab bar), workspace color dots (8px circles, ANSI palette cycling), sidebar SemiBold titles + Unicode ▸ indicators, status bar integrated in window layout (28px bottom), increased glow visibility (accent_glow 25%, accent_glow_core 60%, border_glow 45%)
+
+REFACTOR: Update sidebar to match "Luminous Void" — row height 52→48px, surface_1 bg, border_glow right edge, section headers, glow-subtle on active row
+
+REFACTOR: Update command palette — overlay_dim+overlay_tint backdrop, surface_overlay bg, border_subtle, INPUT_HEIGHT 44px, narrow window clamp
+
+REFACTOR: Update notification panel — 360px width, surface_overlay bg, severity stripe/tint, empty state
+
+REFACTOR: Update tab bar — MAX_TAB_WIDTH 160px, SurfaceType enum, surface_1/surface_2 colors, inactive pill affordances
+
+FIX: Sanitize theme name in load_theme() to prevent path traversal (reject `/`, `\`, `..`, null bytes)
+
+FIX: Clamp notification panel and command palette dimensions on narrow windows (< 360px / < 600px) to prevent click-through and rendering overflow
+
+FIX: Wire inactive_pane_opacity config field to UiState (was hardcoded 0.7, now uses Config default ready for config loading)
+
+FIX: Zero-duration animations (reduced motion) now return final value immediately from get() instead of None
+
 REFACTOR: Clean code improvements in wmux-pty — extract shared do_resize() helper to deduplicate ConPTY resize logic, remove duplicate to_wide() function (identical to to_wide_null()), use Cow::into_owned() instead of .to_string() on to_string_lossy() result
 
 REFACTOR: Clean code improvements in wmux-render — replace #[allow] with #[expect] on clippy::too_many_arguments (3 occurrences), use .clamp() instead of .max().min() in quad border radius clamping
