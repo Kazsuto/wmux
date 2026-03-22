@@ -2,6 +2,8 @@
 
 ## 2026-03-22
 
+REFACTOR: Decompose wmux-core app_state.rs (2418 lines) into module directory — mod.rs (types), handle.rs (client API), actor.rs (actor loop + handlers)
+
 REFACTOR: Apply clean code improvements to wmux-core — derive Copy on Attrs (all fields are Copy), replace clone_on_copy in vte_handler, convert manual scrollback loop to iterator chain, simplify filter_map in metadata sweep
 
 REFACTOR: Apply clean code improvements to wmux-config — add Debug derive to ThemeEngine, add PartialEq derive to Config (C-COMMON-TRAITS)
