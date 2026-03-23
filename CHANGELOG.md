@@ -2,6 +2,8 @@
 
 ## 2026-03-23
 
+REFACTOR: Persist window geometry (position, size, maximized state) and sidebar width in session — restore on startup, update when window resizes or sidebar width changes
+REFACTOR: Add session restore safety — validate pane tree depth (max 16) to prevent pathological recursion from malformed session files; extract first_leaf helper for simplified restore logic
 REFACTOR: Extract DRY helpers in app_state actor (build_workspace_snapshot, mark_active_backing_dirty) and UI handlers (apply_text_edit_key) — eliminate 3 code duplications
 FEATURE: Complete session persistence — save per-pane CWD (via OSC 7), window geometry (position/size/maximized), sidebar width; restore full recursive pane tree at arbitrary depth (was depth-1 only); inject saved scrollback text into terminals on restore
 FIX: Sanitize scrollback text on session restore — strip VTE escape sequences, normalize \n to \r\n for correct line alignment
