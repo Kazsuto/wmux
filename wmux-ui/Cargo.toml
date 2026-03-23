@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wmux-browser.workspace = true
 wmux-config.workspace = true
 wmux-core.workspace = true
 wmux-pty.workspace = true
@@ -19,3 +20,4 @@ arboard.workspace = true
 windows.workspace = true
 regex.workspace = true
 glyphon.workspace = true
+serde_json.workspace = true

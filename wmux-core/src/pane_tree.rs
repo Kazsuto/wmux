@@ -312,10 +312,10 @@ mod tests {
         assert_eq!(*id1, p1);
         assert_eq!(*id2, p2);
 
-        assert!((r1.width - 498.0).abs() < f32::EPSILON);
+        assert!((r1.width - 499.5).abs() < f32::EPSILON);
         assert_eq!(r1.x, 0.0);
-        assert!((r2.x - 502.0).abs() < f32::EPSILON);
-        assert!((r2.width - 498.0).abs() < f32::EPSILON);
+        assert!((r2.x - 500.5).abs() < f32::EPSILON);
+        assert!((r2.width - 499.5).abs() < f32::EPSILON);
         assert!((r2.x - (r1.x + r1.width) - DIVIDER_WIDTH).abs() < f32::EPSILON);
     }
 
@@ -331,8 +331,8 @@ mod tests {
         let (_, r1) = &layout[0];
         let (_, r2) = &layout[1];
 
-        assert!((r1.height - 398.0).abs() < f32::EPSILON);
-        assert!((r2.y - 402.0).abs() < f32::EPSILON);
+        assert!((r1.height - 399.5).abs() < f32::EPSILON);
+        assert!((r2.y - 400.5).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
 
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 698.0).abs() < f32::EPSILON);
+        assert!((r1.width - 699.5).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -556,12 +556,12 @@ mod tests {
         tree.resize_split(p1, 0.0).unwrap();
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 98.0).abs() < f32::EPSILON);
+        assert!((r1.width - 99.5).abs() < f32::EPSILON);
 
         tree.resize_split(p1, 1.0).unwrap();
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 898.0).abs() < f32::EPSILON);
+        assert!((r1.width - 899.5).abs() < f32::EPSILON);
     }
 
     #[test]

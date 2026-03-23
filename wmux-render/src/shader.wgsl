@@ -11,10 +11,11 @@ struct QuadInput {
     @location(0) pos: vec2<f32>,
     @location(1) size: vec2<f32>,
     @location(2) color: vec4<f32>,
-    @location(3) border_radius: f32,
+    @location(3) border_radius: vec4<f32>,
     @location(4) glow_radius: f32,
     @location(5) gradient_color: vec4<f32>,
     @location(6) glow_color: vec4<f32>,
+    @location(7) gradient_mode: f32,
 }
 
 struct VertexOutput {
@@ -22,10 +23,48 @@ struct VertexOutput {
     @location(0) color: vec4<f32>,
     @location(1) local_pos: vec2<f32>,
     @location(2) size: vec2<f32>,
-    @location(3) border_radius: f32,
+    @location(3) border_radius: vec4<f32>,
     @location(4) glow_radius: f32,
     @location(5) gradient_color: vec4<f32>,
     @location(6) glow_color: vec4<f32>,
+    @location(7) gradient_mode: f32,
+}
+
+// sRGB <-> linear conversion for correct gradient interpolation.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        return c * 12.92;
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+fn srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
+    return vec3(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
+}
+
+fn linear_to_srgb3(c: vec3<f32>) -> vec3<f32> {
+    return vec3(linear_to_srgb(c.r), linear_to_srgb(c.g), linear_to_srgb(c.b));
+}
+
+// Per-corner signed distance for a rounded box (Inigo Quilez).
+// p: point relative to center of box (NOT abs)
+// b: half-size of box
+// r: corner radii (TL, TR, BR, BL)
+fn sd_rounded_box(p: vec2<f32>, b: vec2<f32>, r: vec4<f32>) -> f32 {
+    // Select radius based on quadrant:
+    // p.x > 0 → right (TR,BR), else left (TL,BL)
+    // p.y > 0 → bottom, else top
+    var rs = select(r.xw, r.yz, p.x > 0.0);
+    let radius = select(rs.x, rs.y, p.y > 0.0);
+    let q = abs(p) - b + vec2(radius);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - radius;
 }
 
 @vertex
@@ -58,6 +97,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: QuadInput) -> Ver
     out.glow_radius = instance.glow_radius;
     out.gradient_color = instance.gradient_color;
     out.glow_color = instance.glow_color;
+    out.gradient_mode = instance.gradient_mode;
     return out;
 }
 
@@ -66,11 +106,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Output premultiplied alpha for correct compositing with PreMultiplied mode.
     let half = in.size * 0.5;
 
-    // Base color: apply vertical gradient when gradient_color.a > 0
+    // Base color: apply gradient with linear-space interpolation.
+    // gradient_mode: 0=none, 1=vertical, 2=horizontal, 3=radial.
     var base_color = in.color;
-    if in.gradient_color.a > 0.001 {
-        let t = in.local_pos.y / max(in.size.y, 0.001);
-        base_color = mix(in.color, in.gradient_color, t);
+    let gm = u32(in.gradient_mode);
+    if gm > 0u && in.gradient_color.a > 0.001 {
+        var t: f32;
+        if gm == 2u {
+            // Horizontal: left → right
+            t = in.local_pos.x / max(in.size.x, 0.001);
+        } else if gm == 3u {
+            // Radial: center → edges
+            let center = in.size * 0.5;
+            let d = length((in.local_pos - center) / max(center, vec2(0.001)));
+            t = clamp(d, 0.0, 1.0);
+        } else {
+            // Vertical (default): top → bottom
+            t = in.local_pos.y / max(in.size.y, 0.001);
+        }
+        let from_linear = srgb_to_linear3(in.color.rgb);
+        let to_linear = srgb_to_linear3(in.gradient_color.rgb);
+        let mixed = mix(from_linear, to_linear, t);
+        base_color = vec4(linear_to_srgb3(mixed), mix(in.color.a, in.gradient_color.a, t));
     }
 
     // Glow mode: quad is expanded by glow_radius, inner rect is the logical quad
@@ -79,14 +136,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let inner_size = in.size - vec2(2.0 * gr);
         let inner_half = max(inner_size * 0.5, vec2(0.0));
         let center = half;
-        let p = abs(in.local_pos - center) - inner_half;
-        let radius = min(in.border_radius, min(inner_half.x, inner_half.y));
-        let p_rounded = p + vec2(radius);
-        let d = length(max(p_rounded, vec2(0.0))) - radius;
+        let p = in.local_pos - center;
+        let inner_max_r = min(inner_half.x, inner_half.y);
+        let inner_r = min(in.border_radius, vec4(inner_max_r));
+        let d = sd_rounded_box(p, inner_half, inner_r);
 
         if d <= 0.0 {
-            // Inside the inner rect — render base color with SDF anti-aliasing
-            let edge_alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+            // Inside the inner rect — render base color with adaptive SDF anti-aliasing
+            let fw = max(fwidth(d), 0.001);
+            let edge_alpha = 1.0 - smoothstep(-fw, fw, d);
             let a = base_color.a * edge_alpha;
             return vec4<f32>(base_color.rgb * a, a);
         } else {
@@ -100,11 +158,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Standard rounded rect (SDF)
-    if in.border_radius > 0.0 {
-        let p = abs(in.local_pos - half) - half + vec2(in.border_radius);
-        let d = length(max(p, vec2(0.0))) - in.border_radius;
-        let edge_alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+    // Standard rounded rect with per-corner radii (SDF)
+    let any_radius = max(max(in.border_radius.x, in.border_radius.y), max(in.border_radius.z, in.border_radius.w));
+    if any_radius > 0.0 {
+        let max_r = min(half.x, half.y);
+        let r = min(in.border_radius, vec4(max_r));
+        let p = in.local_pos - half;
+        let d = sd_rounded_box(p, half, r);
+        let fw = max(fwidth(d), 0.001);
+        let edge_alpha = 1.0 - smoothstep(-fw, fw, d);
         if edge_alpha < 0.01 {
             discard;
         }

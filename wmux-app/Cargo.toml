@@ -10,9 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 wmux-core.workspace = true
-wmux-pty.workspace = true
 wmux-ui.workspace = true
-wmux-render.workspace = true
 wmux-ipc.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

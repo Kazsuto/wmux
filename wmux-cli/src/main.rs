@@ -57,7 +57,10 @@ enum Commands {
         command: commands::notify::NotifyCommands,
     },
     /// Browser panel operations
-    Browser,
+    Browser {
+        #[command(subcommand)]
+        command: commands::browser::BrowserCommands,
+    },
     /// SSH remote workspace management
     Ssh {
         #[command(subcommand)]
@@ -110,9 +113,11 @@ async fn main() -> Result<()> {
                 .context("notify command failed")?;
             i32::from(!ok)
         }
-        Commands::Browser => {
-            eprintln!("browser commands not yet implemented");
-            1
+        Commands::Browser { command } => {
+            let ok = commands::browser::handle(&client, cli.json, command)
+                .await
+                .context("browser command failed")?;
+            i32::from(!ok)
         }
         Commands::Ssh { command } => {
             let ok = commands::ssh::handle(&client, cli.json, command)

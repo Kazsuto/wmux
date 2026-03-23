@@ -380,8 +380,8 @@ mod tests {
         let engine = ThemeEngine::new();
         let theme = engine.load_theme("wmux-default").unwrap();
         assert_eq!(theme.name, "wmux-default");
-        assert_eq!(theme.palette.background, (0x0d, 0x11, 0x17));
-        assert_eq!(theme.palette.foreground, (0xe6, 0xed, 0xf3));
+        assert_eq!(theme.palette.background, (0x1e, 0x1e, 0x1e));
+        assert_eq!(theme.palette.foreground, (0xd4, 0xd4, 0xd4));
     }
 
     #[test]

@@ -5,7 +5,7 @@ pub const MIN_PANE_WIDTH: f32 = 80.0;
 /// Minimum pane height in pixels.
 pub const MIN_PANE_HEIGHT: f32 = 40.0;
 /// Width of the divider between split panes in pixels.
-pub const DIVIDER_WIDTH: f32 = 4.0;
+pub const DIVIDER_WIDTH: f32 = 1.0;
 
 /// Axis-aligned rectangle used for pane layout calculations.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

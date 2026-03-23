@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod notify;
 pub mod sidebar;
 pub mod ssh;

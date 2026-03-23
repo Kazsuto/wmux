@@ -144,10 +144,24 @@ pub enum AppCommand {
         reply: tokio::sync::oneshot::Sender<Result<SurfaceId, crate::error::CoreError>>,
     },
 
+    /// Create a new browser surface in a pane. Like CreateSurface but with PanelKind::Browser.
+    CreateBrowserSurface {
+        pane_id: PaneId,
+        backing_pane_id: PaneId,
+        reply: tokio::sync::oneshot::Sender<Result<SurfaceId, crate::error::CoreError>>,
+    },
+
     /// Close a surface in a pane. If the pane has no surfaces left, closes the pane.
     CloseSurface {
         pane_id: PaneId,
         surface_id: SurfaceId,
+    },
+
+    /// Rename a surface (tab) in a pane.
+    RenameSurface {
+        pane_id: PaneId,
+        surface_id: SurfaceId,
+        name: String,
     },
 
     /// Cycle the active surface in a pane (forward or backward).
@@ -388,6 +402,15 @@ impl fmt::Debug for AppCommand {
                 .field("pane_id", pane_id)
                 .field("backing_pane_id", backing_pane_id)
                 .finish_non_exhaustive(),
+            Self::CreateBrowserSurface {
+                pane_id,
+                backing_pane_id,
+                ..
+            } => f
+                .debug_struct("CreateBrowserSurface")
+                .field("pane_id", pane_id)
+                .field("backing_pane_id", backing_pane_id)
+                .finish_non_exhaustive(),
             Self::CloseSurface {
                 pane_id,
                 surface_id,
@@ -395,6 +418,16 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("CloseSurface")
                 .field("pane_id", pane_id)
                 .field("surface_id", surface_id)
+                .finish(),
+            Self::RenameSurface {
+                pane_id,
+                surface_id,
+                name,
+            } => f
+                .debug_struct("RenameSurface")
+                .field("pane_id", pane_id)
+                .field("surface_id", surface_id)
+                .field("name", name)
                 .finish(),
             Self::CycleSurface { pane_id, forward } => f
                 .debug_struct("CycleSurface")
@@ -556,6 +589,10 @@ pub struct PaneRenderData {
     pub surface_count: usize,
     /// Display titles for each surface.
     pub surface_titles: Vec<String>,
+    /// IDs of each surface (parallel to `surface_titles`).
+    pub surface_ids: Vec<SurfaceId>,
+    /// Panel kind for each surface (Terminal or Browser, parallel to `surface_titles`).
+    pub surface_kinds: Vec<PanelKind>,
     /// Index of the currently active surface.
     pub active_surface: usize,
 }
@@ -591,6 +628,9 @@ pub struct WorkspaceSnapshot {
     pub unread_count: usize,
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// Status entry icons set via IPC (`sidebar.status.set --icon <name>`).
+    /// Each tuple is `(key, icon_name)` for entries that have an icon.
+    pub status_icons: Vec<(String, String)>,
 }
 
 /// Snapshot of a surface for IPC queries.
@@ -601,4 +641,30 @@ pub struct PaneSurfaceInfo {
     pub title: String,
     pub kind: PanelKind,
     pub active: bool,
+}
+
+// ─── Browser Command Channel ────────────────────────────────────────────
+
+/// A browser command sent from the IPC handler to the UI thread.
+///
+/// The IPC handler creates a oneshot reply channel and sends the command
+/// through a tokio mpsc channel. A forwarding task reads from this channel
+/// and sends `WmuxEvent::BrowserCommand` via the winit `EventLoopProxy`.
+/// The UI thread processes the command on the STA thread (required for
+/// WebView2 COM operations) and sends the result back via the oneshot.
+pub struct BrowserCommand {
+    /// The JSON-RPC method name (e.g., "open", "navigate", "eval").
+    pub method: String,
+    /// The JSON-RPC params object.
+    pub params: serde_json::Value,
+    /// Reply channel for the result.
+    pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+impl fmt::Debug for BrowserCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserCommand")
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
 }

@@ -13,8 +13,8 @@ use wmux_core::{
 
 use crate::{quad::QuadPipeline, text::GlyphonRenderer, RenderError};
 
-const FONT_SIZE: f32 = 14.0;
-const LINE_HEIGHT: f32 = 18.0;
+const FONT_SIZE: f32 = 20.0;
+const LINE_HEIGHT: f32 = 26.0;
 const BLINK_INTERVAL_MS: u128 = 500;
 
 /// Thickness (in pixels) for the cursor bar (vertical beam) and underline shapes.
@@ -32,14 +32,26 @@ pub struct TerminalMetrics {
 
 impl TerminalMetrics {
     /// Compute cell dimensions from the current font system.
-    pub fn new(font_system: &mut glyphon::FontSystem) -> Self {
-        let mut buf = Buffer::new(font_system, Metrics::new(FONT_SIZE, LINE_HEIGHT));
-        buf.set_size(font_system, Some(1000.0), Some(LINE_HEIGHT));
+    ///
+    /// When `font_family` is provided, uses that font; otherwise falls back to
+    /// the system monospace font. When `font_size` is provided, overrides the
+    /// default `FONT_SIZE` / `LINE_HEIGHT`.
+    pub fn new(
+        font_system: &mut glyphon::FontSystem,
+        font_family: Option<&str>,
+        font_size: Option<f32>,
+    ) -> Self {
+        let size = font_size.unwrap_or(FONT_SIZE);
+        let line_h = font_size.map_or(LINE_HEIGHT, |s| (s * 1.3).ceil());
+        let family = font_family.map_or(Family::Monospace, Family::Name);
+
+        let mut buf = Buffer::new(font_system, Metrics::new(size, line_h));
+        buf.set_size(font_system, Some(1000.0), Some(line_h));
         buf.set_text(
             font_system,
             "M",
-            &Attrs::new().family(Family::Monospace),
-            Shaping::Advanced,
+            &Attrs::new().family(family),
+            Shaping::Basic,
             None,
         );
         buf.shape_until_scroll(font_system, false);
@@ -47,11 +59,11 @@ impl TerminalMetrics {
         let cell_width = buf
             .layout_runs()
             .next()
-            .map_or(FONT_SIZE * 0.6, |run| run.line_w);
+            .map_or(size * 0.6, |run| run.line_w);
 
         Self {
             cell_width,
-            cell_height: LINE_HEIGHT,
+            cell_height: line_h,
         }
     }
 }
@@ -87,11 +99,20 @@ pub struct TerminalRenderer {
     foreground_color: glyphon::Color,
     /// Cursor transparency from theme (0.0 = invisible, 1.0 = opaque).
     cursor_alpha: f32,
+    /// User-configured font family for terminal text (e.g., "JetBrainsMono Nerd Font").
+    /// When set, used instead of the system monospace default.
+    terminal_font_family: Option<String>,
 }
 
 impl TerminalRenderer {
-    pub fn new(font_system: &mut glyphon::FontSystem, cols: u16, rows: u16) -> Self {
-        let metrics = TerminalMetrics::new(font_system);
+    pub fn new(
+        font_system: &mut glyphon::FontSystem,
+        cols: u16,
+        rows: u16,
+        font_family: Option<&str>,
+        font_size: Option<f32>,
+    ) -> Self {
+        let metrics = TerminalMetrics::new(font_system, font_family, font_size);
         let row_buffers = build_row_buffers(font_system, &metrics, cols, rows);
         Self {
             row_buffers,
@@ -107,6 +128,7 @@ impl TerminalRenderer {
             cursor_color: [1.0, 1.0, 1.0, 0.85],
             foreground_color: crate::DEFAULT_TEXT_COLOR,
             cursor_alpha: 0.85,
+            terminal_font_family: font_family.map(String::from),
         }
     }
 
@@ -202,6 +224,7 @@ impl TerminalRenderer {
                     cols as f32 * cw,
                     ch,
                     &self.ansi_palette,
+                    self.terminal_font_family.as_deref(),
                 );
             }
         }
@@ -345,6 +368,7 @@ impl TerminalRenderer {
                     cols as f32 * cw,
                     ch,
                     &self.ansi_palette,
+                    self.terminal_font_family.as_deref(),
                 );
             }
         }
@@ -555,10 +579,12 @@ fn update_row_buffer(
     buf_width: f32,
     buf_height: f32,
     palette: &[(u8, u8, u8); 16],
+    font_family: Option<&str>,
 ) {
     buf.set_size(font_system, Some(buf_width), Some(buf_height));
 
-    let default_attrs = Attrs::new().family(Family::Monospace);
+    let family = font_family.map_or(Family::Monospace, Family::Name);
+    let default_attrs = Attrs::new().family(family);
 
     buf.set_rich_text(
         font_system,
@@ -576,14 +602,12 @@ fn update_row_buffer(
                 cell.fg
             };
             let [r, g, b, _] = color_to_rgba(fg, palette);
-            let mut attrs = Attrs::new()
-                .family(Family::Monospace)
-                .color(GlyphonColor::rgba(
-                    (r * 255.0) as u8,
-                    (g * 255.0) as u8,
-                    (b * 255.0) as u8,
-                    255,
-                ));
+            let mut attrs = Attrs::new().family(family).color(GlyphonColor::rgba(
+                (r * 255.0) as u8,
+                (g * 255.0) as u8,
+                (b * 255.0) as u8,
+                255,
+            ));
             if cell.flags.contains(CellFlags::BOLD) {
                 attrs = attrs.weight(glyphon::Weight::BOLD);
             }
@@ -594,7 +618,7 @@ fn update_row_buffer(
             (text, attrs)
         }),
         &default_attrs,
-        Shaping::Advanced,
+        Shaping::Basic,
         None,
     );
     buf.shape_until_scroll(font_system, false);
@@ -781,7 +805,7 @@ mod tests {
     #[test]
     fn terminal_metrics_dimensions_positive() {
         let mut font_system = glyphon::FontSystem::new();
-        let metrics = TerminalMetrics::new(&mut font_system);
+        let metrics = TerminalMetrics::new(&mut font_system, None, None);
         assert!(
             metrics.cell_width > 0.0,
             "cell_width must be positive, got {}",
@@ -800,7 +824,7 @@ mod tests {
     #[test]
     fn terminal_metrics_cell_height_equals_line_height() {
         let mut font_system = glyphon::FontSystem::new();
-        let metrics = TerminalMetrics::new(&mut font_system);
+        let metrics = TerminalMetrics::new(&mut font_system, None, None);
         assert!(
             (metrics.cell_height - LINE_HEIGHT).abs() < f32::EPSILON,
             "cell_height should equal LINE_HEIGHT={LINE_HEIGHT}, got {}",
@@ -812,7 +836,7 @@ mod tests {
     #[test]
     fn terminal_renderer_builds_correct_row_count() {
         let mut font_system = glyphon::FontSystem::new();
-        let renderer = TerminalRenderer::new(&mut font_system, 80, 24);
+        let renderer = TerminalRenderer::new(&mut font_system, 80, 24, None, None);
         assert_eq!(renderer.row_buffers.len(), 24);
         assert_eq!(renderer.cols, 80);
         assert_eq!(renderer.rows, 24);
@@ -821,7 +845,7 @@ mod tests {
     #[test]
     fn resize_rebuilds_row_buffers() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut renderer = TerminalRenderer::new(&mut font_system, 80, 24);
+        let mut renderer = TerminalRenderer::new(&mut font_system, 80, 24, None, None);
         renderer.resize(120, 40, &mut font_system);
         assert_eq!(renderer.row_buffers.len(), 40);
         assert_eq!(renderer.cols, 120);

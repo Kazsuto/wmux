@@ -21,6 +21,12 @@ Native Windows terminal multiplexer in Rust — GPU-accelerated, split panes, wo
 - `cargo test -p wmux-core` — Test one crate
 - `cargo clippy -p wmux-render` — Lint one crate
 
+### Dead Code Detection
+- `cargo machete` — Detect unused dependencies in Cargo.toml (fast, stable)
+- `cargo machete --with-metadata` — Same with compilation-based precision
+- `cargo clippy --workspace -- -W dead_code` — Detect dead code intra-crate
+- `cargo +nightly udeps --workspace --all-targets` — Unused deps via compilation (nightly required)
+
 ## Key Documents
 
 | Document | When to read |

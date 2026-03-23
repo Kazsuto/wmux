@@ -18,6 +18,18 @@ pub(super) fn spawn_pane_pty(
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
+    spawn_pane_pty_with_cwd(pane_id, cols, rows, None, app_state, rt_handle);
+}
+
+/// Spawn a PTY for a pane with an optional working directory (used by session restore).
+pub(super) fn spawn_pane_pty_with_cwd(
+    pane_id: PaneId,
+    cols: u16,
+    rows: u16,
+    cwd: Option<&str>,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+) {
     // Create terminal with event channel (owned by actor via PaneState).
     let (terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
 
@@ -42,6 +54,7 @@ pub(super) fn spawn_pane_pty(
     let config = SpawnConfig {
         cols,
         rows,
+        working_directory: cwd.map(std::path::PathBuf::from),
         ..Default::default()
     };
     let handle = match manager.spawn(config) {
@@ -196,6 +209,104 @@ pub(super) fn handle_sidebar_edit_key(
     }
 }
 
+const MAX_TAB_TITLE_LEN: usize = 256;
+
+pub(super) fn handle_tab_edit_key(
+    state: &mut UiState<'_>,
+    event: &KeyEvent,
+    app_state: &AppStateHandle,
+) {
+    let (pane_id, surface_id, text, cursor) = match &mut state.tab_edit {
+        super::TabEditState::Editing {
+            pane_id,
+            surface_id,
+            text,
+            cursor,
+            ..
+        } => (*pane_id, *surface_id, text, cursor),
+        super::TabEditState::None => return,
+    };
+
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            state.tab_edit = super::TabEditState::None;
+            tracing::debug!("tab: editing cancelled");
+        }
+        Key::Named(NamedKey::Enter) => {
+            let new_name = text.clone();
+            if !new_name.is_empty() {
+                app_state.rename_surface(pane_id, surface_id, new_name);
+                tracing::debug!("tab: surface renamed");
+            }
+            state.tab_edit = super::TabEditState::None;
+        }
+        Key::Named(NamedKey::Backspace) => {
+            if *cursor > 0 {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor - 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(0);
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+                *cursor -= 1;
+            }
+        }
+        Key::Named(NamedKey::Delete) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor + 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+            }
+        }
+        Key::Named(NamedKey::ArrowLeft) => {
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
+        }
+        Key::Named(NamedKey::ArrowRight) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                *cursor += 1;
+            }
+        }
+        Key::Named(NamedKey::Home) => {
+            *cursor = 0;
+        }
+        Key::Named(NamedKey::End) => {
+            *cursor = text.chars().count();
+        }
+        Key::Character(ch) => {
+            let s = ch.as_str();
+            if s.chars().all(|c| !c.is_control())
+                && text.chars().count() + s.chars().count() <= MAX_TAB_TITLE_LEN
+            {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.insert_str(byte_pos, s);
+                *cursor += s.chars().count();
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
@@ -210,7 +321,14 @@ pub(super) fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
             }
         }
         Key::Named(NamedKey::Enter) => {
-            state.search.next_match();
+            if state.modifiers.shift_key() {
+                state.search.prev_match();
+            } else {
+                state.search.next_match();
+            }
+        }
+        Key::Named(NamedKey::Space) => {
+            state.search.query.push(' ');
         }
         Key::Character(ch) => {
             let s = ch.as_str();
@@ -226,8 +344,12 @@ pub(super) fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
     }
 }
 
+/// Spawn a new split pane. When `before` is true, the new pane is placed
+/// before the original (left for horizontal, above for vertical) by swapping
+/// the two panes after the split.
 pub(super) fn spawn_split(
     direction: SplitDirection,
+    before: bool,
     state: &mut UiState<'_>,
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
@@ -242,6 +364,10 @@ pub(super) fn spawn_split(
     rt_handle.spawn(async move {
         match app_state_clone.split_pane(pane_id, direction).await {
             Ok(new_id) => {
+                // For "before" splits (left/up), swap so new pane occupies the first position.
+                if before {
+                    app_state_clone.swap_panes(pane_id, new_id);
+                }
                 spawn_pane_pty(new_id, cols, rows, &app_state_clone, &rt_clone);
                 app_state_clone.focus_pane(new_id);
                 let _ = proxy_clone.send_event(WmuxEvent::FocusPane(new_id));
@@ -249,6 +375,7 @@ pub(super) fn spawn_split(
                     pane_id = %pane_id,
                     new_pane = %new_id,
                     ?direction,
+                    before,
                     "pane split"
                 );
             }
@@ -273,6 +400,18 @@ pub(super) fn handle_shortcut(
         ShortcutAction::SplitRight => {
             spawn_split(
                 SplitDirection::Horizontal,
+                false,
+                state,
+                app_state,
+                rt_handle,
+                proxy,
+            );
+        }
+
+        ShortcutAction::SplitLeft => {
+            spawn_split(
+                SplitDirection::Horizontal,
+                true,
                 state,
                 app_state,
                 rt_handle,
@@ -281,7 +420,30 @@ pub(super) fn handle_shortcut(
         }
 
         ShortcutAction::SplitDown => {
-            spawn_split(SplitDirection::Vertical, state, app_state, rt_handle, proxy);
+            spawn_split(
+                SplitDirection::Vertical,
+                false,
+                state,
+                app_state,
+                rt_handle,
+                proxy,
+            );
+        }
+
+        ShortcutAction::SplitUp => {
+            spawn_split(
+                SplitDirection::Vertical,
+                true,
+                state,
+                app_state,
+                rt_handle,
+                proxy,
+            );
+        }
+
+        ShortcutAction::ChordPrefix => {
+            // Handled by the chord state machine in event_loop — should not reach here.
+            tracing::debug!("ChordPrefix action reached handler (no-op)");
         }
 
         ShortcutAction::ClosePane => {
@@ -297,7 +459,7 @@ pub(super) fn handle_shortcut(
             );
             let layout = rt_handle.block_on(app_state.get_layout(viewport));
             if let Some((next_id, _)) = layout.first() {
-                state.focused_pane = *next_id;
+                state.set_focused_pane(*next_id);
                 app_state.focus_pane(*next_id);
             } else {
                 // Last pane closed — exit the application.
@@ -385,6 +547,50 @@ pub(super) fn handle_shortcut(
                     Err(e) => tracing::warn!(error = %e, "create surface failed"),
                 }
             });
+            state.window.request_redraw();
+        }
+        ShortcutAction::NewBrowserSurface => {
+            if state.browser_manager.is_none() {
+                tracing::warn!(
+                    "browser integration not available (WebView2 runtime not installed)"
+                );
+                state.window.request_redraw();
+                return;
+            }
+
+            // Create a browser tab: backing pane + browser surface.
+            // The actual WebView2 panel creation is DEFERRED — it happens in
+            // user_event(WmuxEvent::CreateBrowserPanel) to avoid deadlocking
+            // the Win32 message pump (COM callbacks need the message loop).
+            let layout_pane_id = state.focused_pane;
+            let backing_pane_id = PaneId::new();
+            let cols = state.cols;
+            let rows = state.rows;
+
+            // Spawn backing PTY (needed by the surface system).
+            spawn_pane_pty(backing_pane_id, cols, rows, app_state, rt_handle);
+
+            // Create browser surface in the actor, then trigger panel creation.
+            let app_clone = app_state.clone();
+            let proxy_clone = proxy.clone();
+            rt_handle.spawn(async move {
+                match app_clone
+                    .create_browser_surface(layout_pane_id, backing_pane_id)
+                    .await
+                {
+                    Ok(surface_id) => {
+                        tracing::info!(surface_id = %surface_id, "browser surface registered, requesting panel creation");
+                        let _ = proxy_clone.send_event(crate::event::WmuxEvent::CreateBrowserPanel {
+                            surface_id,
+                            url: "about:blank".to_owned(),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to create browser surface");
+                    }
+                }
+            });
+
             state.window.request_redraw();
         }
         ShortcutAction::CycleSurfaceForward => {

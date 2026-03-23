@@ -16,12 +16,12 @@ pub struct ColorPalette {
 
 impl Default for ColorPalette {
     fn default() -> Self {
-        // Safe fallback: dark anthracite (matches wmux-default.conf)
+        // Safe fallback: VS Code Dark+ inspired (matches wmux-default.conf)
         Self {
             ansi: [(0, 0, 0); 16],
-            background: (0x0d, 0x11, 0x17),
-            foreground: (0xe6, 0xed, 0xf3),
-            cursor: (0xe6, 0xed, 0xf3),
+            background: (0x1e, 0x1e, 0x1e),
+            foreground: (0xd4, 0xd4, 0xd4),
+            cursor: (0xae, 0xaf, 0xad),
             selection: (0x26, 0x4f, 0x78),
         }
     }
@@ -32,6 +32,15 @@ impl Default for ColorPalette {
 pub struct Theme {
     pub name: String,
     pub palette: ColorPalette,
+}
+
+/// Shadow depth token — Gaussian sigma and vertical offset for analytical shadows.
+#[derive(Debug, Clone, Copy)]
+pub struct ShadowDepth {
+    /// Gaussian blur standard deviation in pixels.
+    pub sigma: f32,
+    /// Vertical offset in pixels (positive = downward).
+    pub offset_y: f32,
 }
 
 /// UI chrome colors derived from the terminal color palette.
@@ -70,6 +79,8 @@ pub struct UiChrome {
     pub accent_glow_core: [f32; 4],
     /// Tint — accent at 8% alpha (overlay ambient coloring).
     pub accent_tint: [f32; 4],
+    /// Pressed accent — accent darkened by 10% lightness.
+    pub accent_pressed: [f32; 4],
 
     // ── Text Hierarchy ────────────────────────────────────────────────
     /// Primary text — matches theme foreground (100% alpha).
@@ -126,6 +137,12 @@ pub struct UiChrome {
     pub search_match_active: [f32; 4],
     /// Drop shadow color — black at 25% alpha (dark themes).
     pub shadow: [f32; 4],
+    /// Shadow small — sigma=2, offset_y=1 (tab bar, status bar).
+    pub shadow_sm: ShadowDepth,
+    /// Shadow medium — sigma=4, offset_y=2 (sidebar, panels).
+    pub shadow_md: ShadowDepth,
+    /// Shadow large — sigma=8, offset_y=4 (overlays, command palette).
+    pub shadow_lg: ShadowDepth,
     /// Workspace dot: purple — from ANSI magenta (palette index 5).
     pub dot_purple: [f32; 4],
     /// Workspace dot: cyan — from ANSI cyan (palette index 6).

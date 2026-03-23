@@ -1,4 +1,4 @@
-use super::types::{ColorPalette, UiChrome};
+use super::types::{ColorPalette, ShadowDepth, UiChrome};
 
 /// Derive UI chrome colors from a terminal color palette.
 ///
@@ -45,8 +45,14 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let (rh, gh, bh) = hsl_to_rgb(ah, boosted_s, hover_l);
     let accent_hover = [rh, gh, bh, 1.0];
 
+    // Accent pressed: shift lightness toward background (opposite of hover)
+    let pressed_delta = if al > 0.5 { 0.10 } else { -0.10 };
+    let pressed_l = (al + pressed_delta).clamp(0.05, 0.95);
+    let (rp, gp, bp) = hsl_to_rgb(ah, boosted_s, pressed_l);
+    let accent_pressed = [rp, gp, bp, 1.0];
+
     let accent_muted = [r, g, b, 0.30];
-    let accent_glow = [r, g, b, 0.25];
+    let accent_glow = [r, g, b, 0.20];
     let accent_glow_core = [r, g, b, 0.60];
     let accent_tint = [r, g, b, 0.08];
 
@@ -88,9 +94,23 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let search_match = [warning[0], warning[1], warning[2], 0.30];
     let search_match_active = [warning[0], warning[1], warning[2], 0.50];
 
-    // Drop shadow — black with theme-adaptive alpha
-    let shadow_alpha = if l > 0.5 { 0.15 } else { 0.25 };
+    // Drop shadow — black with moderate alpha
+    let shadow_alpha = if l > 0.5 { 0.20 } else { 0.30 };
     let shadow = [0.0, 0.0, 0.0, shadow_alpha];
+
+    // Shadow depth tokens (sigma, offset_y)
+    let shadow_sm = ShadowDepth {
+        sigma: 3.0,
+        offset_y: 1.0,
+    };
+    let shadow_md = ShadowDepth {
+        sigma: 5.0,
+        offset_y: 2.0,
+    };
+    let shadow_lg = ShadowDepth {
+        sigma: 8.0,
+        offset_y: 4.0,
+    };
 
     // Workspace dots from ANSI palette
     let dot_purple = u8_to_f32_color(palette.ansi[5].0, palette.ansi[5].1, palette.ansi[5].2);
@@ -112,6 +132,7 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         accent_glow,
         accent_glow_core,
         accent_tint,
+        accent_pressed,
         text_primary,
         text_secondary,
         text_muted,
@@ -135,6 +156,9 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         search_match,
         search_match_active,
         shadow,
+        shadow_sm,
+        shadow_md,
+        shadow_lg,
         dot_purple,
         dot_cyan,
         cursor_alpha,
@@ -232,6 +256,7 @@ mod tests {
             chrome.accent_glow,
             chrome.accent_glow_core,
             chrome.accent_tint,
+            chrome.accent_pressed,
             chrome.text_primary,
             chrome.text_secondary,
             chrome.text_muted,
@@ -309,7 +334,7 @@ mod tests {
         assert!((chrome.accent[3] - 1.0).abs() < f32::EPSILON);
         assert!((chrome.accent_hover[3] - 1.0).abs() < f32::EPSILON);
         assert!((chrome.accent_muted[3] - 0.30).abs() < f32::EPSILON);
-        assert!((chrome.accent_glow[3] - 0.25).abs() < f32::EPSILON);
+        assert!((chrome.accent_glow[3] - 0.20).abs() < f32::EPSILON);
         assert!((chrome.accent_glow_core[3] - 0.60).abs() < f32::EPSILON);
         assert!((chrome.accent_tint[3] - 0.08).abs() < f32::EPSILON);
         // RGB channels must match for alpha variants
@@ -418,7 +443,7 @@ mod tests {
         assert!((chrome.shadow[0]).abs() < f32::EPSILON);
         assert!((chrome.shadow[1]).abs() < f32::EPSILON);
         assert!((chrome.shadow[2]).abs() < f32::EPSILON);
-        assert!(chrome.shadow[3] > 0.0 && chrome.shadow[3] <= 0.30);
+        assert!(chrome.shadow[3] > 0.0 && chrome.shadow[3] <= 0.50);
 
         // cursor_alpha default
         assert!((chrome.cursor_alpha - 0.85).abs() < f32::EPSILON);

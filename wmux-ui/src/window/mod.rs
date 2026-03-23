@@ -20,8 +20,10 @@ use winit::{
     window::Window,
 };
 use wmux_config::UiChrome;
-use wmux_core::{AppEvent, AppStateHandle, PaneId, TerminalMode};
-use wmux_render::{GlyphonRenderer, GpuContext, QuadPipeline, TerminalMetrics, TerminalRenderer};
+use wmux_core::{AppEvent, AppStateHandle, PaneId, SurfaceId, TerminalMode};
+use wmux_render::{
+    GlyphonRenderer, GpuContext, QuadPipeline, ShadowPipeline, TerminalMetrics, TerminalRenderer,
+};
 
 use crate::event::WmuxEvent;
 
@@ -34,6 +36,7 @@ pub(crate) struct UiState<'window> {
     pub(crate) window: Arc<Window>,
     pub(crate) gpu: GpuContext<'window>,
     pub(crate) quads: QuadPipeline,
+    pub(crate) shadows: ShadowPipeline,
     pub(crate) glyphon: GlyphonRenderer,
     /// Per-pane terminal renderers. Created/removed as panes are split/closed.
     pub(crate) renderers: HashMap<PaneId, TerminalRenderer>,
@@ -78,6 +81,10 @@ pub(crate) struct UiState<'window> {
     pub(crate) last_search_rows: Vec<(usize, String)>,
     /// Total visible row count last frame (scrollback_visible + grid_rows).
     pub(crate) last_total_visible_rows: usize,
+    /// Glyphon text buffer for the search query display.
+    pub(crate) search_query_buffer: glyphon::Buffer,
+    /// Glyphon text buffer for the search match count display.
+    pub(crate) search_count_buffer: glyphon::Buffer,
 
     // Tab bar text
     /// Cached glyphon text buffers for tab titles, keyed by layout pane ID.
@@ -86,6 +93,63 @@ pub(crate) struct UiState<'window> {
     pub(crate) last_viewports: Vec<wmux_render::PaneViewport>,
     /// Active tab drag state for drag-and-drop reordering.
     pub(crate) tab_drag: TabDragState,
+    /// Which tab close button is currently hovered: (pane_id, tab_index).
+    pub(crate) tab_close_hover: Option<(PaneId, usize)>,
+    /// Inline editing state for renaming a surface tab.
+    pub(crate) tab_edit: TabEditState,
+    /// Glyphon buffer for the tab inline edit text.
+    pub(crate) tab_edit_buffer: Option<glyphon::Buffer>,
+    // SVG icon rendering — empty buffer + pre-built CustomGlyph arrays.
+    /// Empty buffer used as anchor for SVG CustomGlyph TextAreas (no text content).
+    pub(crate) icon_empty_buffer: glyphon::Buffer,
+    /// Pre-built CustomGlyph arrays for each icon (avoid temporary lifetime issues).
+    pub(crate) cg_close: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_add: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_terminal: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_globe: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_split: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_search: [glyphon::CustomGlyph; 1],
+    pub(crate) cg_arrows: [[glyphon::CustomGlyph; 1]; 4],
+    pub(crate) cg_workspace: [glyphon::CustomGlyph; 1],
+    /// Pre-built CustomGlyph arrays for status badge icons, keyed by Icon variant.
+    pub(crate) status_icon_cgs: HashMap<wmux_render::icons::Icon, [glyphon::CustomGlyph; 1]>,
+
+    // Browser
+    /// WebView2 browser panel manager — lives on the UI/STA thread.
+    pub(crate) browser_manager: Option<wmux_browser::BrowserManager>,
+    /// The main window HWND — needed as parent for WebView2 child HWNDs.
+    pub(crate) main_hwnd: windows::Win32::Foundation::HWND,
+
+    // Status bar
+    pub(crate) status_bar: crate::status_bar::StatusBar,
+    pub(crate) status_bar_data: crate::status_bar::StatusBarData,
+    /// Elapsed time in seconds since window creation — used for status bar pulse animation.
+    pub(crate) start_instant: std::time::Instant,
+
+    // Chord shortcuts
+    /// State machine for Ctrl+K chord sequences.
+    pub(crate) chord_state: ChordState,
+
+    // Split menu
+    /// State of the split direction popup menu.
+    pub(crate) split_menu: SplitMenuState,
+    /// Glyphon text buffers for the 4 split menu items.
+    pub(crate) split_menu_buffers: [glyphon::Buffer; 4],
+    /// Glyphon text buffers for the 4 split menu shortcut hints.
+    pub(crate) split_menu_hint_buffers: [glyphon::Buffer; 4],
+    /// Which split menu item is currently hovered (0–3), if any.
+    pub(crate) split_menu_hover: Option<usize>,
+
+    // Animation
+    pub(crate) animation: crate::animation::AnimationEngine,
+    /// Animation ID for focus glow fade-in on the newly focused pane.
+    pub(crate) focus_glow_anim: Option<u64>,
+    /// Which tab is currently hovered: (pane_id, tab_index).
+    pub(crate) tab_hover: Option<(PaneId, usize)>,
+    /// Animation ID for tab hover background transition.
+    pub(crate) tab_hover_anim: Option<u64>,
+    /// Index of the currently hovered divider (into self.dividers).
+    pub(crate) divider_hover: Option<usize>,
 
     // Visual theming
     /// UI chrome colors derived from the current theme.
@@ -100,6 +164,79 @@ pub(crate) struct UiState<'window> {
     pub(crate) theme_foreground: (u8, u8, u8),
     /// Opacity for inactive panes (from config). 0.0 = fully dimmed, 1.0 = no dimming.
     pub(crate) inactive_pane_opacity: f32,
+    /// Display scale factor (DPI scaling) from the OS window.
+    pub(crate) scale_factor: f32,
+    /// User-configured terminal font family (e.g., "JetBrainsMono Nerd Font").
+    pub(crate) terminal_font_family: String,
+    /// User-configured terminal font size.
+    pub(crate) terminal_font_size: f32,
+}
+
+impl UiState<'_> {
+    /// Change the focused pane and start a focus glow fade-in animation.
+    pub(crate) fn set_focused_pane(&mut self, pane_id: PaneId) {
+        if pane_id == self.focused_pane {
+            return;
+        }
+        self.focused_pane = pane_id;
+        if let Some(old) = self.focus_glow_anim {
+            self.animation.cancel(old);
+        }
+        self.focus_glow_anim = Some(self.animation.start(
+            0.0,
+            1.0,
+            crate::animation::MOTION_NORMAL,
+            crate::animation::Easing::CubicOut,
+        ));
+    }
+}
+
+/// Inline editing state for renaming a surface tab.
+#[derive(Debug, Clone)]
+pub(crate) enum TabEditState {
+    None,
+    Editing {
+        pane_id: PaneId,
+        tab_index: usize,
+        surface_id: SurfaceId,
+        text: String,
+        cursor: usize,
+    },
+}
+
+/// Chord (key sequence) state machine for multi-key shortcuts like Ctrl+K → Arrow.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum ChordState {
+    /// No chord in progress.
+    #[default]
+    Idle,
+    /// Ctrl+K was pressed — waiting for the second key within the timeout.
+    Pending(std::time::Instant),
+}
+
+/// Maximum time between Ctrl+K and the second key for a chord shortcut (ms).
+const CHORD_TIMEOUT_MS: u128 = 1000;
+
+impl ChordState {
+    /// Check if a chord is pending and still within the timeout window.
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending(t) if t.elapsed().as_millis() < CHORD_TIMEOUT_MS)
+    }
+}
+
+/// State for the split direction popup menu.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum SplitMenuState {
+    /// Menu is closed.
+    #[default]
+    Closed,
+    /// Menu is open, anchored at a specific pane's split button.
+    Open {
+        pane_id: PaneId,
+        /// Top-left corner of the menu in logical pixels.
+        menu_x: f32,
+        menu_y: f32,
+    },
 }
 
 /// Tab drag-and-drop state machine.
@@ -125,6 +262,10 @@ pub struct App<'window> {
     pub(crate) app_event_rx: Option<mpsc::Receiver<AppEvent>>,
     pub(crate) rt_handle: tokio::runtime::Handle,
     pub(crate) proxy: EventLoopProxy<WmuxEvent>,
+    /// Saved session to restore on first frame. Consumed once during `resumed()`.
+    pub(crate) pending_session: Option<wmux_core::SessionState>,
+    /// Browser command receiver — forwarded from IPC handler to UI thread.
+    pub(crate) browser_cmd_rx: Option<mpsc::Receiver<wmux_core::BrowserCommand>>,
 }
 
 impl<'window> App<'window> {
@@ -133,6 +274,8 @@ impl<'window> App<'window> {
         rt_handle: tokio::runtime::Handle,
         app_state: AppStateHandle,
         app_event_rx: mpsc::Receiver<AppEvent>,
+        session: Option<wmux_core::SessionState>,
+        browser_cmd_rx: mpsc::Receiver<wmux_core::BrowserCommand>,
     ) -> Result<(), UiError> {
         let event_loop = EventLoop::<WmuxEvent>::with_user_event().build()?;
         let proxy = event_loop.create_proxy();
@@ -143,6 +286,8 @@ impl<'window> App<'window> {
             app_event_rx: Some(app_event_rx),
             rt_handle,
             proxy,
+            pending_session: session,
+            browser_cmd_rx: Some(browser_cmd_rx),
         };
         event_loop.run_app(&mut app)?;
         Ok(())

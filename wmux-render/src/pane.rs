@@ -1,21 +1,42 @@
-use wmux_core::{rect::Rect, types::PaneId};
+use wmux_core::{rect::Rect, types::PaneId, SurfaceId};
 
 use crate::quad::QuadPipeline;
 
 /// Height in pixels of the tab bar when a pane has multiple surfaces.
-pub const TAB_BAR_HEIGHT: f32 = 36.0;
+pub const TAB_BAR_HEIGHT: f32 = 40.0;
 
 /// Width in pixels of the focused pane accent stripe (left bar).
 pub const FOCUS_STRIPE_WIDTH: f32 = 3.0;
 
 /// Spacing between pill-style tabs.
-const TAB_GAP: f32 = 4.0;
+const TAB_GAP: f32 = 6.0;
 
 /// Border radius for pill-style tabs.
-const TAB_RADIUS: f32 = 6.0;
+const TAB_RADIUS: f32 = 4.0;
 
-/// Maximum width for a single tab pill (160px).
-const MAX_TAB_WIDTH: f32 = 160.0;
+/// Maximum width for a single tab pill (220px).
+const MAX_TAB_WIDTH: f32 = 220.0;
+
+/// Close button size (visual hit area).
+const CLOSE_BUTTON_SIZE: f32 = 18.0;
+
+/// Padding from the right edge of the pill to the close button.
+const CLOSE_BUTTON_PADDING: f32 = 8.0;
+
+/// Width of the "+" new surface button in the tab bar.
+const PLUS_BUTTON_WIDTH: f32 = 32.0;
+
+/// Height of the "+" new surface button (matches pill height).
+const PLUS_BUTTON_HEIGHT: f32 = 28.0;
+
+/// Width of the split direction button in the tab bar.
+const SPLIT_BUTTON_WIDTH: f32 = 32.0;
+
+/// Height of the split direction button (matches pill height).
+const SPLIT_BUTTON_HEIGHT: f32 = 28.0;
+
+/// Gap between the "+" button and the split button.
+const SPLIT_BUTTON_GAP: f32 = 4.0;
 
 /// Type of surface (Terminal or Browser) for a tab indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +57,8 @@ pub struct PaneViewport {
     pub tab_count: usize,
     /// Display titles for each tab.
     pub tab_titles: Vec<String>,
+    /// Surface IDs for each tab (parallel to `tab_titles`).
+    pub surface_ids: Vec<SurfaceId>,
     /// Index of the currently active tab.
     pub active_tab: usize,
     /// When `true`, this pane fills the entire workspace area (zoom mode).
@@ -44,6 +67,15 @@ pub struct PaneViewport {
     pub surface_types: Vec<SurfaceType>,
     /// Unsaved state for each tab (true = unsaved).
     pub unsaved: Vec<bool>,
+    /// Display scale factor (DPI). Multiplied into all UI dimensions.
+    pub scale: f32,
+}
+
+impl PaneViewport {
+    /// Tab bar height scaled for DPI.
+    pub fn tab_bar_height(&self) -> f32 {
+        TAB_BAR_HEIGHT * self.scale
+    }
 }
 
 /// Orchestrates multi-pane rendering within a single wgpu render pass.
@@ -104,16 +136,16 @@ impl PaneRenderer {
             return;
         }
 
-        const GLOW_RADIUS: f32 = 20.0;
+        const GLOW_RADIUS: f32 = 10.0;
 
-        // Shader-based glow: single expanded quad, inner = transparent, outer = glow
+        // Subtle outer glow halo
         let glow_color = [
             accent_glow[0],
             accent_glow[1],
             accent_glow[2],
-            accent_glow[3] * glow_alpha,
+            accent_glow[3] * glow_alpha * 0.4,
         ];
-        // Inner fill is transparent (we only want the glow halo, not a filled rect)
+        // Transparent inner (no fill, glow only)
         let inner_color = [
             accent_glow_core[0],
             accent_glow_core[1],
@@ -135,14 +167,12 @@ impl PaneRenderer {
 
     /// Push pill-style tab bar quads for a single pane.
     ///
-    /// Only called when `viewport.tab_count > 1`. The tab bar occupies
+    /// The tab bar is always visible (even with a single tab) and occupies
     /// `TAB_BAR_HEIGHT` pixels at the top of the pane rect.
     ///
     /// Each tab is a rounded pill with `TAB_GAP` spacing. The active tab
     /// has an elevated background and a 2px rounded accent indicator at the
-    /// bottom. Inactive tabs receive a subtle pill background (same as bar bg,
-    /// no visual change until hover is implemented). Tab width is clamped to
-    /// MAX_TAB_WIDTH (160px).
+    /// bottom. A "+" button at the end allows creating new surfaces.
     pub fn render_tab_bar(
         &self,
         quads: &mut QuadPipeline,
@@ -150,45 +180,64 @@ impl PaneRenderer {
         tab_bg: [f32; 4],
         active_tab_bg: [f32; 4],
         accent_color: [f32; 4],
+        cursor_pos: (f32, f32),
     ) -> Result<(), crate::RenderError> {
-        if viewport.tab_count <= 1 {
+        if viewport.tab_count == 0 {
             return Ok(());
         }
 
         let r = &viewport.rect;
+        let s = viewport.scale;
+        let tbh = TAB_BAR_HEIGHT * s;
+        let pad = 4.0 * s;
+        let radius = TAB_RADIUS * s;
 
         // Full tab bar background
-        quads.push_quad(r.x, r.y, r.width, TAB_BAR_HEIGHT, tab_bg);
+        quads.push_quad(r.x, r.y, r.width, tbh, tab_bg);
 
-        let pill_y = r.y + 4.0;
-        let pill_h = TAB_BAR_HEIGHT - 8.0;
+        let pill_y = r.y + pad;
+        let pill_h = tbh - pad * 2.0;
 
         for i in 0..viewport.tab_count {
             let (tab_width, tab_x) = Self::tab_metrics(viewport, i);
 
             if i == viewport.active_tab {
-                // Active tab pill
-                quads.push_rounded_quad(
-                    tab_x,
-                    pill_y,
-                    tab_width,
-                    pill_h,
-                    active_tab_bg,
-                    TAB_RADIUS,
-                );
-                // Active indicator: 2px rounded accent bar at the bottom of the pill
+                quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, active_tab_bg, radius);
+                // Active indicator bar
                 quads.push_rounded_quad(
                     tab_x + tab_width * 0.2,
-                    r.y + TAB_BAR_HEIGHT - 4.0,
+                    r.y + tbh - pad,
                     tab_width * 0.6,
-                    2.0,
+                    2.0 * s,
                     accent_color,
-                    1.0,
+                    1.0 * s,
                 );
             } else {
-                // Inactive tab pill: subtle background (same as bar bg for now).
-                // This provides hover-ready affordance and visual structure.
-                quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, tab_bg, TAB_RADIUS);
+                quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, tab_bg, radius);
+            }
+        }
+
+        // "+" button — transparent by default, subtle hover bg (Zed-like).
+        if let Some((px, py, pw, ph)) = Self::plus_button_rect(viewport) {
+            let hovered = cursor_pos.0 >= px
+                && cursor_pos.0 <= px + pw
+                && cursor_pos.1 >= py
+                && cursor_pos.1 <= py + ph;
+            if hovered {
+                let bg = [tab_bg[0], tab_bg[1], tab_bg[2], 0.6];
+                quads.push_rounded_quad(px, py, pw, ph, bg, radius);
+            }
+        }
+
+        // Split button — transparent by default, subtle hover bg (Zed-like).
+        if let Some((sx, sy, sw, sh)) = Self::split_button_rect(viewport) {
+            let hovered = cursor_pos.0 >= sx
+                && cursor_pos.0 <= sx + sw
+                && cursor_pos.1 >= sy
+                && cursor_pos.1 <= sy + sh;
+            if hovered {
+                let bg = [tab_bg[0], tab_bg[1], tab_bg[2], 0.6];
+                quads.push_rounded_quad(sx, sy, sw, sh, bg, radius);
             }
         }
 
@@ -242,16 +291,89 @@ impl PaneRenderer {
 
     /// Compute pill-style tab width and x-offset for a given tab index.
     ///
-    /// Returns `(tab_width, tab_x)` accounting for gaps, padding, and MAX_TAB_WIDTH clamping.
-    /// Use this to align text and drag visuals with the rendered tab pills.
+    /// Returns `(tab_width, tab_x)` accounting for gaps, padding, MAX_TAB_WIDTH clamping,
+    /// and the "+" button reserved space at the end.
     #[must_use]
     pub fn tab_metrics(viewport: &PaneViewport, tab_index: usize) -> (f32, f32) {
+        if viewport.tab_count == 0 {
+            return (0.0, viewport.rect.x);
+        }
+        let s = viewport.scale;
+        let tab_index = tab_index.min(viewport.tab_count - 1);
         let n = viewport.tab_count as f32;
-        let total_gaps = TAB_GAP * (n - 1.0) + TAB_GAP * 2.0;
-        let mut tab_width = ((viewport.rect.width - total_gaps) / n).max(1.0);
-        tab_width = tab_width.min(MAX_TAB_WIDTH);
-        let tab_x = viewport.rect.x + TAB_GAP + tab_index as f32 * (tab_width + TAB_GAP);
+        let gap = TAB_GAP * s;
+        let buttons_reserve =
+            PLUS_BUTTON_WIDTH * s + gap + SPLIT_BUTTON_WIDTH * s + SPLIT_BUTTON_GAP * s;
+        let total_gaps = gap * (n - 1.0) + gap * 2.0;
+        let mut tab_width = ((viewport.rect.width - total_gaps - buttons_reserve) / n).max(1.0);
+        tab_width = tab_width.min(MAX_TAB_WIDTH * s);
+        let tab_x = viewport.rect.x + gap + tab_index as f32 * (tab_width + gap);
         (tab_width, tab_x)
+    }
+
+    /// Return the close button rect `(x, y, width, height)` for a tab.
+    ///
+    /// Returns `None` when only one tab remains (to prevent closing the last surface)
+    /// or when the index is out of bounds.
+    #[must_use]
+    pub fn close_button_rect(
+        viewport: &PaneViewport,
+        tab_index: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        if viewport.tab_count <= 1 || tab_index >= viewport.tab_count {
+            return None;
+        }
+        let s = viewport.scale;
+        let (tab_width, tab_x) = Self::tab_metrics(viewport, tab_index);
+        let pad = 4.0 * s;
+        let pill_y = viewport.rect.y + pad;
+        let pill_h = TAB_BAR_HEIGHT * s - pad * 2.0;
+        let btn_size = CLOSE_BUTTON_SIZE * s;
+        let btn_pad = CLOSE_BUTTON_PADDING * s;
+        let btn_x = tab_x + tab_width - btn_pad - btn_size;
+        let btn_y = pill_y + (pill_h - btn_size) / 2.0;
+        Some((btn_x, btn_y, btn_size, btn_size))
+    }
+
+    /// Return the "+" button rect `(x, y, width, height)` at the end of the tab bar.
+    ///
+    /// Positioned after the last tab pill with standard gap spacing.
+    #[must_use]
+    pub fn plus_button_rect(viewport: &PaneViewport) -> Option<(f32, f32, f32, f32)> {
+        if viewport.tab_count == 0 {
+            return None;
+        }
+        let s = viewport.scale;
+        let last_index = viewport.tab_count - 1;
+        let (last_width, last_x) = Self::tab_metrics(viewport, last_index);
+        let gap = TAB_GAP * s;
+        let pw = PLUS_BUTTON_WIDTH * s;
+        let ph = PLUS_BUTTON_HEIGHT * s;
+        let plus_x = last_x + last_width + gap;
+        if plus_x + pw > viewport.rect.x + viewport.rect.width {
+            return None;
+        }
+        let pad = 4.0 * s;
+        let tbh = TAB_BAR_HEIGHT * s;
+        let plus_y = viewport.rect.y + pad + (tbh - pad * 2.0 - ph) / 2.0;
+        Some((plus_x, plus_y, pw, ph))
+    }
+
+    /// Return the split button rect `(x, y, width, height)` next to the "+" button.
+    ///
+    /// Positioned after the "+" button with a small gap.
+    #[must_use]
+    pub fn split_button_rect(viewport: &PaneViewport) -> Option<(f32, f32, f32, f32)> {
+        let (plus_x, plus_y, plus_w, _plus_h) = Self::plus_button_rect(viewport)?;
+        let s = viewport.scale;
+        let gap = SPLIT_BUTTON_GAP * s;
+        let sw = SPLIT_BUTTON_WIDTH * s;
+        let sh = SPLIT_BUTTON_HEIGHT * s;
+        let split_x = plus_x + plus_w + gap;
+        if split_x + sw > viewport.rect.x + viewport.rect.width {
+            return None;
+        }
+        Some((split_x, plus_y, sw, sh))
     }
 
     /// Return position information for rendering a tab type indicator.
@@ -274,20 +396,17 @@ impl PaneRenderer {
 
     /// Return the usable terminal content area for `viewport`.
     ///
-    /// When the pane has multiple tabs, the top `TAB_BAR_HEIGHT` pixels are
-    /// consumed by the tab bar and excluded from the returned rect.
+    /// The tab bar is always visible, so the top `TAB_BAR_HEIGHT` pixels are
+    /// always consumed and excluded from the returned rect.
     #[must_use]
     pub fn terminal_viewport(viewport: &PaneViewport) -> Rect {
-        if viewport.tab_count > 1 {
-            Rect::new(
-                viewport.rect.x,
-                viewport.rect.y + TAB_BAR_HEIGHT,
-                viewport.rect.width,
-                (viewport.rect.height - TAB_BAR_HEIGHT).max(0.0),
-            )
-        } else {
-            viewport.rect
-        }
+        let tbh = TAB_BAR_HEIGHT * viewport.scale;
+        Rect::new(
+            viewport.rect.x,
+            viewport.rect.y + tbh,
+            viewport.rect.width,
+            (viewport.rect.height - tbh).max(0.0),
+        )
     }
 
     /// Convert the pane `Rect` to a wgpu scissor rect `(x, y, width, height)`.
@@ -332,22 +451,24 @@ mod tests {
             focused,
             tab_count,
             tab_titles: (0..tab_count).map(|i| format!("Tab {i}")).collect(),
+            surface_ids: (0..tab_count).map(|_| SurfaceId::new()).collect(),
             active_tab: 0,
             zoomed: false,
             surface_types: vec![SurfaceType::Terminal; tab_count],
             unsaved: vec![false; tab_count],
+            scale: 1.0,
         }
     }
 
     #[test]
-    fn terminal_viewport_no_tabs() {
+    fn terminal_viewport_single_tab_reserves_tab_bar() {
         let rect = Rect::new(10.0, 20.0, 400.0, 300.0);
         let vp = make_viewport(rect, false, 1);
         let tv = PaneRenderer::terminal_viewport(&vp);
         assert_eq!(tv.x, 10.0);
-        assert_eq!(tv.y, 20.0);
+        assert_eq!(tv.y, 20.0 + TAB_BAR_HEIGHT);
         assert_eq!(tv.width, 400.0);
-        assert_eq!(tv.height, 300.0);
+        assert!((tv.height - (300.0 - TAB_BAR_HEIGHT)).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -445,6 +566,68 @@ mod tests {
         assert_eq!(vps.len(), 2);
         assert!(vps[0].focused);
         assert!(!vps[1].focused);
+    }
+
+    #[test]
+    fn close_button_rect_hidden_for_single_tab() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 1);
+        assert!(PaneRenderer::close_button_rect(&vp, 0).is_none());
+    }
+
+    #[test]
+    fn close_button_rect_valid_for_multi_tab() {
+        let rect = Rect::new(10.0, 10.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 3);
+        let btn = PaneRenderer::close_button_rect(&vp, 1);
+        assert!(btn.is_some());
+        let (bx, by, bw, bh) = btn.unwrap();
+        assert!(bx > rect.x);
+        assert!(by >= rect.y);
+        assert_eq!(bw, CLOSE_BUTTON_SIZE);
+        assert_eq!(bh, CLOSE_BUTTON_SIZE);
+    }
+
+    #[test]
+    fn close_button_rect_out_of_bounds() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 3);
+        assert!(PaneRenderer::close_button_rect(&vp, 5).is_none());
+    }
+
+    #[test]
+    fn plus_button_rect_positioned_after_last_tab() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 2);
+        let plus = PaneRenderer::plus_button_rect(&vp);
+        assert!(plus.is_some());
+        let (px, _py, pw, _ph) = plus.unwrap();
+        // "+" button should be after the last tab
+        let (last_w, last_x) = PaneRenderer::tab_metrics(&vp, 1);
+        assert!(px > last_x + last_w);
+        assert_eq!(pw, PLUS_BUTTON_WIDTH);
+    }
+
+    #[test]
+    fn plus_button_rect_single_tab() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 1);
+        let plus = PaneRenderer::plus_button_rect(&vp);
+        assert!(plus.is_some());
+    }
+
+    #[test]
+    fn split_button_rect_after_plus() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
+        let vp = make_viewport(rect, false, 1);
+        let plus = PaneRenderer::plus_button_rect(&vp);
+        let split = PaneRenderer::split_button_rect(&vp);
+        assert!(plus.is_some());
+        assert!(split.is_some());
+        let (px, _, pw, _) = plus.unwrap();
+        let (sx, _, sw, _) = split.unwrap();
+        assert!(sx > px + pw, "split button should be after plus button");
+        assert_eq!(sw, SPLIT_BUTTON_WIDTH);
     }
 
     #[test]

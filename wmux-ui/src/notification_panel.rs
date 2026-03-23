@@ -122,7 +122,7 @@ impl NotificationPanel {
         }
 
         // Render each visible notification item
-        for (i, _notif) in notifications.iter().enumerate() {
+        for (i, notif) in notifications.iter().enumerate() {
             let item_y = i as f32 * ITEM_HEIGHT - self.scroll_offset;
 
             // Skip items outside visible area
@@ -130,12 +130,20 @@ impl NotificationPanel {
                 continue;
             }
 
-            // TODO: Notification struct lacks severity field. Using accent (info) color for all stripes.
-            // Once severity is added to Notification, implement severity-specific colors:
-            // error, warning, success, info based on notification level.
+            // Severity-specific stripe color and background tint.
+            let (stripe_color, tint_color) = match notif.severity {
+                wmux_core::NotificationSeverity::Info => (ui_chrome.accent, ui_chrome.info_muted),
+                wmux_core::NotificationSeverity::Warning => {
+                    (ui_chrome.warning, ui_chrome.warning_muted)
+                }
+                wmux_core::NotificationSeverity::Error => (ui_chrome.error, ui_chrome.error_muted),
+                wmux_core::NotificationSeverity::Success => {
+                    (ui_chrome.success, ui_chrome.success_muted)
+                }
+            };
 
             // Left severity stripe (2px)
-            quads.push_quad(panel_x, item_y, 2.0, ITEM_HEIGHT, ui_chrome.accent);
+            quads.push_quad(panel_x, item_y, 2.0, ITEM_HEIGHT, stripe_color);
 
             // Severity background tint (subtle muted background)
             quads.push_rounded_quad(
@@ -143,7 +151,7 @@ impl NotificationPanel {
                 item_y + 2.0,
                 PANEL_WIDTH - 2.0 * ITEM_PADDING,
                 ITEM_HEIGHT - 4.0,
-                ui_chrome.info_muted,
+                tint_color,
                 6.0,
             );
 

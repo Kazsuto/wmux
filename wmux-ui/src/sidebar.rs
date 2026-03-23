@@ -4,20 +4,28 @@ use wmux_core::WorkspaceSnapshot;
 use wmux_render::QuadPipeline;
 
 use crate::f32_to_glyphon_color;
+use crate::typography;
 
-const SIDEBAR_FONT_SIZE: f32 = 13.0;
-const SIDEBAR_LINE_HEIGHT: f32 = 18.0;
+/// Sidebar workspace names — uses Body token.
+const SIDEBAR_FONT_SIZE: f32 = typography::BODY_FONT_SIZE;
+const SIDEBAR_LINE_HEIGHT: f32 = typography::BODY_LINE_HEIGHT;
 /// Height of each workspace row in pixels.
-pub const ROW_HEIGHT: f32 = 48.0;
-const PADDING_X: f32 = 12.0;
-const PADDING_Y: f32 = 8.0;
+pub const ROW_HEIGHT: f32 = 80.0;
+const PADDING_X: f32 = 16.0;
+const PADDING_Y: f32 = 12.0;
 const ACCENT_BAR_WIDTH: f32 = 3.0;
 /// Height of section header (e.g. "WORKSPACES").
-const SECTION_HEADER_HEIGHT: f32 = 28.0;
+const SECTION_HEADER_HEIGHT: f32 = 42.0;
 /// Minimum pixel distance before a press becomes a drag.
 const DRAG_THRESHOLD: f32 = 5.0;
 /// Notification badge diameter.
-const BADGE_SIZE: f32 = 16.0;
+const BADGE_SIZE: f32 = 18.0;
+/// Hit zone width for the resize handle on the sidebar right edge.
+const RESIZE_HIT_ZONE: f32 = 5.0;
+/// Minimum sidebar width when resizing.
+pub const MIN_SIDEBAR_WIDTH: f32 = 180.0;
+/// Maximum sidebar width when resizing.
+pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
 
 /// Sidebar interaction state.
 #[derive(Debug, Clone)]
@@ -36,6 +44,10 @@ pub enum SidebarInteraction {
         text: String,
         cursor: usize,
     },
+    /// Mouse hovering over the resize edge.
+    ResizeHover,
+    /// Actively resizing the sidebar width.
+    Resizing { start_x: f32, start_width: f32 },
 }
 
 /// Sidebar panel state — visibility, width, text buffers, and interaction.
@@ -61,9 +73,10 @@ pub struct SidebarState {
 impl SidebarState {
     /// Create a new sidebar with the given width in pixels.
     pub fn new(width: u16) -> Self {
+        let clamped = (width as f32).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
         Self {
             visible: true,
-            width: width as f32,
+            width: clamped,
             interaction: SidebarInteraction::Idle,
             name_buffers: Vec::new(),
             subtitle_buffers: Vec::new(),
@@ -77,6 +90,8 @@ impl SidebarState {
     /// Toggle sidebar visibility.
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
+        // Reset interaction to prevent stale states (e.g. ResizeHover) on hidden sidebar.
+        self.interaction = SidebarInteraction::Idle;
         tracing::debug!(visible = self.visible, "sidebar toggled");
     }
 
@@ -87,6 +102,22 @@ impl SidebarState {
         } else {
             0.0
         }
+    }
+
+    /// Test if x is within the resize handle zone at the right edge.
+    pub fn hit_test_resize_edge(&self, px: f32) -> bool {
+        if !self.visible {
+            return false;
+        }
+        let edge = self.width;
+        // Mostly inside sidebar (5px) with minimal overshoot (2px) to avoid
+        // conflicting with pane divider hit zones in the content area.
+        px >= edge - RESIZE_HIT_ZONE && px <= edge + 2.0
+    }
+
+    /// Clamp width to valid range.
+    pub fn clamp_width(&mut self) {
+        self.width = self.width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
     }
 
     /// Test if a y coordinate hits a workspace row.
@@ -142,7 +173,7 @@ impl SidebarState {
         if let SidebarInteraction::Editing { ref text, .. } = self.interaction {
             let text_width = self.width - PADDING_X * 2.0 - ACCENT_BAR_WIDTH;
             let metrics = Metrics::new(SIDEBAR_FONT_SIZE, SIDEBAR_LINE_HEIGHT);
-            let attrs = Attrs::new().family(Family::SansSerif);
+            let attrs = Attrs::new().family(Family::Name("Segoe UI"));
 
             let buf = self
                 .edit_buffer
@@ -180,12 +211,15 @@ impl SidebarState {
         let text_width = self.width - PADDING_X * 2.0 - ACCENT_BAR_WIDTH;
         let metrics = Metrics::new(SIDEBAR_FONT_SIZE, SIDEBAR_LINE_HEIGHT);
         let attrs_bold = Attrs::new()
-            .family(Family::SansSerif)
+            .family(Family::Name("Segoe UI"))
             .weight(glyphon::Weight(600));
-        let attrs = Attrs::new().family(Family::SansSerif);
+        let attrs = Attrs::new().family(Family::Name("Segoe UI"));
 
         // Section header buffer (small text for "WORKSPACES")
-        let header_metrics = Metrics::new(12.0, 16.0);
+        let header_metrics = Metrics::new(
+            typography::CAPTION_FONT_SIZE,
+            typography::CAPTION_LINE_HEIGHT,
+        );
         let header_buf = self
             .header_buffer
             .get_or_insert_with(|| Buffer::new(font_system, header_metrics));
@@ -221,7 +255,7 @@ impl SidebarState {
                 Some(SIDEBAR_LINE_HEIGHT),
             );
             let pane_word = if ws.pane_count == 1 { "pane" } else { "panes" };
-            let subtitle = format!("\u{25B8} {} {pane_word}", ws.pane_count);
+            let subtitle = format!("> {} {pane_word}", ws.pane_count);
             sub.set_text(font_system, &subtitle, &attrs, Shaping::Advanced, None);
             sub.shape_until_scroll(font_system, false);
         }
@@ -231,6 +265,18 @@ impl SidebarState {
         self.subtitle_buffers.truncate(workspaces.len());
     }
 
+    /// Workspace identity color palette — cycled per workspace index.
+    fn workspace_palette(ui_chrome: &UiChrome) -> [[f32; 4]; 6] {
+        [
+            ui_chrome.accent,     // blue
+            ui_chrome.success,    // green
+            ui_chrome.warning,    // yellow
+            ui_chrome.error,      // red
+            ui_chrome.dot_purple, // purple
+            ui_chrome.dot_cyan,   // cyan
+        ]
+    }
+
     /// Push sidebar quads into the quad pipeline.
     pub fn render_quads(
         &self,
@@ -238,11 +284,13 @@ impl SidebarState {
         quad_pipeline: &mut QuadPipeline,
         surface_height: f32,
         ui_chrome: &UiChrome,
+        scale_factor: f32,
     ) {
         if !self.visible {
             return;
         }
 
+        let _s = scale_factor; // available for future per-element scaling
         let w = self.width;
         let hover_color = [
             ui_chrome.surface_2[0],
@@ -260,30 +308,14 @@ impl SidebarState {
         // Section header area
         quad_pipeline.push_quad(0.0, 0.0, w, SECTION_HEADER_HEIGHT, ui_chrome.surface_1);
 
-        // ANSI palette colors for workspace dots (cycle through bright colors)
-        let dot_palette: [[f32; 4]; 6] = [
-            ui_chrome.accent,     // blue
-            ui_chrome.success,    // green
-            ui_chrome.warning,    // yellow
-            ui_chrome.error,      // red
-            ui_chrome.dot_purple, // purple (ANSI magenta)
-            ui_chrome.dot_cyan,   // cyan (ANSI cyan)
-        ];
+        let dot_palette = Self::workspace_palette(ui_chrome);
 
         // Workspace entry rows (offset by header height)
         for (i, ws) in workspaces.iter().enumerate() {
             let y = SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
 
-            // Workspace color dot (8px circle, left side)
-            let dot_color = dot_palette[i % dot_palette.len()];
-            quad_pipeline.push_rounded_quad(
-                PADDING_X,
-                y + (ROW_HEIGHT - 8.0) / 2.0,
-                8.0,
-                8.0,
-                dot_color,
-                4.0,
-            );
+            // Workspace identity color (used for icon tint, accent bar, glow).
+            let ws_color = dot_palette[i % dot_palette.len()];
 
             // Hover highlight (non-active, non-editing rows only)
             if matches!(self.interaction, SidebarInteraction::Hover(h) if h == i)
@@ -294,27 +326,22 @@ impl SidebarState {
             }
 
             if ws.active {
-                // Glow halo behind active row (accent_glow, slightly larger)
+                // Glow halo behind active row (workspace color, subtle)
                 let glow_radius = 8.0;
                 let glow_y = y.max(glow_radius) - glow_radius / 2.0;
-                quad_pipeline.push_quad(
-                    0.0,
-                    glow_y,
-                    w - 1.0,
-                    ROW_HEIGHT + glow_radius,
-                    ui_chrome.accent_glow,
-                );
+                let glow_color = [ws_color[0], ws_color[1], ws_color[2], 0.08];
+                quad_pipeline.push_quad(0.0, glow_y, w - 1.0, ROW_HEIGHT + glow_radius, glow_color);
 
                 // Highlight background for active workspace (surface_2)
                 quad_pipeline.push_quad(0.0, y, w - 1.0, ROW_HEIGHT, ui_chrome.surface_2);
 
-                // Accent bar on left edge (rounded)
+                // Accent bar on left edge — workspace color
                 quad_pipeline.push_rounded_quad(
                     0.0,
                     y + 4.0,
                     ACCENT_BAR_WIDTH,
                     ROW_HEIGHT - 8.0,
-                    ui_chrome.accent,
+                    ws_color,
                     2.0,
                 );
             }
@@ -333,10 +360,10 @@ impl SidebarState {
                 );
             }
 
-            // Editing mode: draw input box background + border
+            // Editing mode: draw input box background + border (after icon)
             if let SidebarInteraction::Editing { index, .. } = &self.interaction {
                 if *index == i {
-                    let edit_x = ACCENT_BAR_WIDTH + PADDING_X - 2.0;
+                    let edit_x = ACCENT_BAR_WIDTH + PADDING_X + 22.0;
                     let edit_y = y + PADDING_Y - 2.0;
                     let edit_w = w - edit_x - PADDING_X;
                     let edit_h = SIDEBAR_LINE_HEIGHT + 4.0;
@@ -394,12 +421,21 @@ impl SidebarState {
     ///
     /// Must be called after `update_text()`. The returned text areas should be
     /// appended to the terminal text areas before calling `prepare_text_areas`.
-    pub fn text_areas(
-        &self,
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_areas<'a>(
+        &'a self,
         _surface_width: u32,
         surface_height: u32,
         ui_chrome: &UiChrome,
-    ) -> Vec<TextArea<'_>> {
+        scale_factor: f32,
+        workspace_icon: Option<(&'a glyphon::Buffer, &'a [glyphon::CustomGlyph])>,
+        workspace_status_icons: &[Vec<(String, String)>],
+        icon_empty: &'a glyphon::Buffer,
+        status_icon_cgs: &'a std::collections::HashMap<
+            wmux_render::icons::Icon,
+            [glyphon::CustomGlyph; 1],
+        >,
+    ) -> Vec<TextArea<'a>> {
         if !self.visible {
             return Vec::new();
         }
@@ -414,9 +450,12 @@ impl SidebarState {
 
         let text_color = f32_to_glyphon_color(ui_chrome.text_primary);
         let text_dim = f32_to_glyphon_color(ui_chrome.text_secondary);
+        let dot_palette = Self::workspace_palette(ui_chrome);
         let text_muted = f32_to_glyphon_color(ui_chrome.text_muted);
 
         let mut areas = Vec::with_capacity(self.name_buffers.len() * 2 + 1);
+
+        // (workspace icon custom glyph is passed in via workspace_icon parameter)
 
         // Section header (WORKSPACES)
         if let Some(ref header_buf) = self.header_buffer {
@@ -424,7 +463,7 @@ impl SidebarState {
                 buffer: header_buf,
                 left: ACCENT_BAR_WIDTH + PADDING_X,
                 top: PADDING_Y,
-                scale: 1.0,
+                scale: scale_factor,
                 bounds,
                 default_color: text_muted,
                 custom_glyphs: &[],
@@ -437,15 +476,28 @@ impl SidebarState {
             None
         };
 
-        for (i, (name_buf, sub_buf)) in self
-            .name_buffers
-            .iter()
-            .zip(self.subtitle_buffers.iter())
-            .enumerate()
-        {
+        for (i, name_buf) in self.name_buffers.iter().enumerate() {
             let y = SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
-            // Offset past the workspace color dot (8px dot + 6px gap)
-            let text_x = ACCENT_BAR_WIDTH + PADDING_X + 14.0;
+            // Workspace icon replaces the old color dot.
+            // icon (16px) + gap (12px) = 28px reserve before text.
+            let icon_reserve = if workspace_icon.is_some() { 28.0 } else { 0.0 };
+            let text_x = ACCENT_BAR_WIDTH + PADDING_X + icon_reserve;
+
+            // Workspace icon — SVG folder icon colored with the workspace identity color.
+            if let Some((icon_buf, icon_cg)) = workspace_icon {
+                let icon_x = ACCENT_BAR_WIDTH + PADDING_X;
+                let ws_color = dot_palette[i % dot_palette.len()];
+                let icon_color = f32_to_glyphon_color(ws_color);
+                areas.push(TextArea {
+                    buffer: icon_buf,
+                    left: icon_x,
+                    top: y + PADDING_Y + 1.0,
+                    scale: scale_factor,
+                    bounds,
+                    default_color: icon_color,
+                    custom_glyphs: icon_cg,
+                });
+            }
 
             // If this row is being edited, show edit buffer instead of name buffer.
             if editing_index == Some(i) {
@@ -454,7 +506,7 @@ impl SidebarState {
                         buffer: edit_buf,
                         left: text_x,
                         top: y + PADDING_Y,
-                        scale: 1.0,
+                        scale: scale_factor,
                         bounds,
                         default_color: text_color,
                         custom_glyphs: &[],
@@ -466,23 +518,32 @@ impl SidebarState {
                     buffer: name_buf,
                     left: text_x,
                     top: y + PADDING_Y,
-                    scale: 1.0,
+                    scale: scale_factor,
                     bounds,
                     default_color: text_color,
                     custom_glyphs: &[],
                 });
             }
 
-            // Subtitle (dimmed, below name)
-            areas.push(TextArea {
-                buffer: sub_buf,
-                left: text_x,
-                top: y + PADDING_Y + SIDEBAR_LINE_HEIGHT + 2.0,
-                scale: 1.0,
-                bounds,
-                default_color: text_dim,
-                custom_glyphs: &[],
-            });
+            // Status icon from IPC (first icon per workspace, right-aligned).
+            if let Some(icons) = workspace_status_icons.get(i) {
+                if let Some((_key, icon_name)) = icons.first() {
+                    if let Some(icon) = wmux_render::icons::Icon::from_name(icon_name) {
+                        if let Some(cg) = status_icon_cgs.get(&icon) {
+                            let icon_x = self.width - PADDING_X - 18.0;
+                            areas.push(TextArea {
+                                buffer: icon_empty,
+                                left: icon_x,
+                                top: y + PADDING_Y,
+                                scale: scale_factor,
+                                bounds,
+                                default_color: text_dim,
+                                custom_glyphs: cg,
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         areas
@@ -555,6 +616,7 @@ mod tests {
             unread_count: 0,
             cwd: None,
             git_branch: None,
+            status_icons: Vec::new(),
         }];
         let ws2 = vec![WorkspaceSnapshot {
             id: wmux_core::WorkspaceId::new(),
@@ -564,6 +626,7 @@ mod tests {
             unread_count: 0,
             cwd: None,
             git_branch: None,
+            status_icons: Vec::new(),
         }];
         assert_ne!(compute_hash(&ws1), compute_hash(&ws2));
     }
@@ -571,15 +634,15 @@ mod tests {
     #[test]
     fn hit_test_row_returns_correct_index() {
         let s = SidebarState::new(220);
-        // With SECTION_HEADER_HEIGHT=28.0, ROW_HEIGHT=48.0
-        // Row 0 is at y=28..76, Row 1 at y=76..124, Row 2 at y=124..172
+        // With SECTION_HEADER_HEIGHT=42.0, ROW_HEIGHT=80.0
+        // Row 0 is at y=42..122, Row 1 at y=122..202, Row 2 at y=202..282
         assert_eq!(s.hit_test_row(0.0, 3), None); // Above header
-        assert_eq!(s.hit_test_row(28.0, 3), Some(0)); // Start of row 0
-        assert_eq!(s.hit_test_row(75.0, 3), Some(0)); // End of row 0
-        assert_eq!(s.hit_test_row(76.0, 3), Some(1)); // Start of row 1
-        assert_eq!(s.hit_test_row(123.0, 3), Some(1)); // End of row 1
-        assert_eq!(s.hit_test_row(124.0, 3), Some(2)); // Start of row 2
-        assert_eq!(s.hit_test_row(172.0, 3), None); // Beyond row 2
+        assert_eq!(s.hit_test_row(42.0, 3), Some(0)); // Start of row 0
+        assert_eq!(s.hit_test_row(121.0, 3), Some(0)); // End of row 0
+        assert_eq!(s.hit_test_row(122.0, 3), Some(1)); // Start of row 1
+        assert_eq!(s.hit_test_row(201.0, 3), Some(1)); // End of row 1
+        assert_eq!(s.hit_test_row(202.0, 3), Some(2)); // Start of row 2
+        assert_eq!(s.hit_test_row(282.0, 3), None); // Beyond row 2
     }
 
     #[test]
@@ -591,16 +654,16 @@ mod tests {
     #[test]
     fn drag_target_index_top_half() {
         let s = SidebarState::new(220);
-        // SECTION_HEADER_HEIGHT=28.0, ROW_HEIGHT=48.0
-        // y=28+10=38 is in top half of row 0 → target = 0
-        assert_eq!(s.drag_target_index(38.0, 3), 0);
+        // SECTION_HEADER_HEIGHT=42.0, ROW_HEIGHT=80.0
+        // y=42+12=54 is in top quarter of row 0 → target = 0
+        assert_eq!(s.drag_target_index(54.0, 3), 0);
     }
 
     #[test]
     fn drag_target_index_bottom_half() {
         let s = SidebarState::new(220);
-        // y=28+30=58 is in bottom half of row 0 → target = 1
-        assert_eq!(s.drag_target_index(58.0, 3), 1);
+        // y=42+50=92 is past 50% of row 0 (80*0.5=40 + 42=82) → target = 1
+        assert_eq!(s.drag_target_index(92.0, 3), 1);
     }
 
     #[test]

@@ -47,6 +47,14 @@ macro_rules! define_id {
                 write!(f, "{}", self.0)
             }
         }
+
+        impl std::str::FromStr for $name {
+            type Err = uuid::Error;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(Self(Uuid::parse_str(s)?))
+            }
+        }
     };
 }
 

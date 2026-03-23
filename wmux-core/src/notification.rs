@@ -62,6 +62,20 @@ pub enum NotificationState {
     Cleared,
 }
 
+/// Severity level of a notification — determines icon and stripe color in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum NotificationSeverity {
+    /// Informational message (default).
+    #[default]
+    Info,
+    /// Non-critical warning.
+    Warning,
+    /// Error or failure.
+    Error,
+    /// Successful operation.
+    Success,
+}
+
 /// Source of a notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotificationSource {
@@ -94,6 +108,8 @@ pub struct Notification {
     pub timestamp: SystemTime,
     /// Current state of the notification.
     pub state: NotificationState,
+    /// Severity level — determines icon and stripe color in the notification panel.
+    pub severity: NotificationSeverity,
 }
 
 /// Event emitted when notification state changes.
@@ -193,6 +209,7 @@ impl NotificationStore {
             source_surface: surface,
             timestamp: SystemTime::now(),
             state: NotificationState::Received,
+            severity: NotificationSeverity::default(),
         };
 
         self.notifications.push(notification);

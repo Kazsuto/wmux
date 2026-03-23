@@ -26,7 +26,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             font_family: "Cascadia Code".to_string(),
-            font_size: 12.0,
+            font_size: 16.0,
             theme: "wmux-default".to_string(),
             background: None,
             foreground: None,
@@ -34,7 +34,7 @@ impl Default for Config {
             scrollback_limit: 4000,
             cursor_style: "block".to_string(),
             keybindings: HashMap::new(),
-            sidebar_width: 200,
+            sidebar_width: 260,
             language: "en".to_string(),
             inactive_pane_opacity: 0.7,
         }
@@ -126,7 +126,7 @@ fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
 const MAX_SCROLLBACK: usize = 1_000_000;
 const MIN_FONT_SIZE: f32 = 4.0;
 const MAX_FONT_SIZE: f32 = 200.0;
-const MIN_SIDEBAR_WIDTH: u16 = 1;
+const MIN_SIDEBAR_WIDTH: u16 = 180;
 
 fn apply_values(config: &mut Config, values: &[(String, String)]) {
     for (key, value) in values {
@@ -241,13 +241,13 @@ mod tests {
     fn defaults_are_correct() {
         let c = Config::default();
         assert_eq!(c.font_family, "Cascadia Code");
-        assert_eq!(c.font_size, 12.0);
+        assert_eq!(c.font_size, 16.0);
         assert_eq!(c.theme, "wmux-default");
         assert!(c.background.is_none());
         assert!(c.foreground.is_none());
         assert_eq!(c.scrollback_limit, 4000);
         assert_eq!(c.cursor_style, "block");
-        assert_eq!(c.sidebar_width, 200);
+        assert_eq!(c.sidebar_width, 260);
         assert_eq!(c.language, "en");
         assert!(c.keybindings.is_empty());
         assert!(c.palette.iter().all(|p| p.is_none()));
@@ -266,13 +266,13 @@ mod tests {
     fn from_str_empty_gives_defaults() {
         let c = "".parse::<Config>().unwrap();
         assert_eq!(c.font_family, "Cascadia Code");
-        assert_eq!(c.font_size, 12.0);
+        assert_eq!(c.font_size, 16.0);
     }
 
     #[test]
     fn from_str_comments_only_gives_defaults() {
         let c = "# just a comment\n# another\n".parse::<Config>().unwrap();
-        assert_eq!(c.font_size, 12.0);
+        assert_eq!(c.font_size, 16.0);
         assert_eq!(c.theme, "wmux-default");
     }
 
@@ -287,7 +287,7 @@ mod tests {
     fn invalid_font_size_keeps_default() {
         let content = "font-size = not-a-number\n";
         let c = content.parse::<Config>().unwrap();
-        assert_eq!(c.font_size, 12.0);
+        assert_eq!(c.font_size, 16.0);
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
     fn invalid_sidebar_width_keeps_default() {
         let content = "sidebar-width = xyz\n";
         let c = content.parse::<Config>().unwrap();
-        assert_eq!(c.sidebar_width, 200);
+        assert_eq!(c.sidebar_width, 260);
     }
 
     #[test]
@@ -348,21 +348,21 @@ mod tests {
     fn font_size_nan_rejected() {
         let content = "font-size = NaN\n";
         let c = content.parse::<Config>().unwrap();
-        assert_eq!(c.font_size, 12.0); // default
+        assert_eq!(c.font_size, 16.0); // default
     }
 
     #[test]
     fn font_size_negative_rejected() {
         let content = "font-size = -5\n";
         let c = content.parse::<Config>().unwrap();
-        assert_eq!(c.font_size, 12.0); // default
+        assert_eq!(c.font_size, 16.0); // default
     }
 
     #[test]
     fn font_size_zero_rejected() {
         let content = "font-size = 0\n";
         let c = content.parse::<Config>().unwrap();
-        assert_eq!(c.font_size, 12.0); // default
+        assert_eq!(c.font_size, 16.0); // default
     }
 
     #[test]

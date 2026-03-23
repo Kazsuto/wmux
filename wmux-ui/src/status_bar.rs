@@ -3,14 +3,16 @@ use wmux_config::UiChrome;
 
 use crate::animation::MOTION_PULSE;
 use crate::f32_to_glyphon_color;
+use crate::typography;
 
 /// Height of the status bar in logical pixels.
-pub const STATUS_BAR_HEIGHT: f32 = 28.0;
+pub const STATUS_BAR_HEIGHT: f32 = 34.0;
 
-const FONT_SIZE: f32 = 12.0;
-const LINE_HEIGHT: f32 = 16.0;
-const PADDING_X: f32 = 12.0;
-const CONNECTION_DOT_SIZE: f32 = 6.0;
+/// Status bar text — uses Caption token.
+const FONT_SIZE: f32 = typography::CAPTION_FONT_SIZE;
+const LINE_HEIGHT: f32 = typography::CAPTION_LINE_HEIGHT;
+const PADDING_X: f32 = 14.0;
+const CONNECTION_DOT_SIZE: f32 = 7.0;
 
 /// Connection state for the status bar indicator dot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +87,7 @@ impl StatusBar {
                 font_system,
                 &text,
                 &glyphon::Attrs::new()
-                    .family(Family::SansSerif)
+                    .family(Family::Name("Segoe UI"))
                     .weight(glyphon::Weight::NORMAL),
                 Shaping::Advanced,
                 None,
@@ -149,6 +151,7 @@ impl StatusBar {
         y: f32,
         width: f32,
         ui_chrome: &UiChrome,
+        scale_factor: f32,
     ) -> glyphon::TextArea<'_> {
         // Offset text past the connection dot
         let text_x = x + PADDING_X + CONNECTION_DOT_SIZE + 8.0;
@@ -157,7 +160,7 @@ impl StatusBar {
             buffer: &self.text_buffer,
             left: text_x,
             top: y + (STATUS_BAR_HEIGHT - LINE_HEIGHT) / 2.0,
-            scale: 1.0,
+            scale: scale_factor,
             bounds: glyphon::TextBounds {
                 left: text_x as i32,
                 top: y as i32,
@@ -175,8 +178,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_bar_height_is_28() {
-        assert_eq!(STATUS_BAR_HEIGHT, 28.0);
+    fn status_bar_height_is_34() {
+        assert_eq!(STATUS_BAR_HEIGHT, 34.0);
     }
 
     #[test]

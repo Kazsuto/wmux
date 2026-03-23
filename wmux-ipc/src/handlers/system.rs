@@ -7,7 +7,42 @@ use crate::auth::ConnectionCtx;
 use crate::handler::{Handler, RpcError};
 
 /// Supported methods exposed in the capabilities list.
-const CAPABILITIES: &[&str] = &["system.ping", "system.capabilities", "system.identify"];
+///
+/// Includes all functional methods across all registered handlers.
+/// Stub methods (e.g. most browser.*) are excluded.
+const CAPABILITIES: &[&str] = &[
+    // system
+    "system.ping",
+    "system.capabilities",
+    "system.identify",
+    // workspace
+    "workspace.list",
+    "workspace.create",
+    "workspace.current",
+    "workspace.select",
+    "workspace.close",
+    "workspace.rename",
+    // surface
+    "surface.split",
+    "surface.list",
+    "surface.focus",
+    "surface.close",
+    "surface.send_text",
+    "surface.send_key",
+    "surface.read_text",
+    // sidebar
+    "sidebar.set_status",
+    "sidebar.clear_status",
+    "sidebar.list_status",
+    "sidebar.set_progress",
+    "sidebar.clear_progress",
+    "sidebar.log",
+    "sidebar.list_log",
+    "sidebar.clear_log",
+    "sidebar.state",
+    // browser (only identify is functional)
+    "browser.identify",
+];
 
 /// Handles all `system.*` JSON-RPC methods.
 pub struct SystemHandler {

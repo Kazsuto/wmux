@@ -12,6 +12,7 @@ pub mod shortcuts;
 pub mod sidebar;
 pub mod status_bar;
 pub mod toast;
+pub mod typography;
 pub mod window;
 
 pub use error::UiError;

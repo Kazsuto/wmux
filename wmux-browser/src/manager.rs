@@ -170,16 +170,16 @@ impl BrowserManager {
 
     /// Create a new browser panel attached to `parent_hwnd`, positioned within `rect`.
     ///
-    /// Returns the `SurfaceId` of the newly created panel. The panel is stored
-    /// internally and can be accessed via `get_panel` / `get_panel_mut`.
+    /// The caller provides the `surface_id` (matching the actor's Surface ID)
+    /// so that IPC commands can look up panels by the same ID.
     ///
     /// Must be called on the STA/UI thread. Uses the cached environment if available.
     pub fn create_panel(
         &mut self,
+        surface_id: SurfaceId,
         parent_hwnd: HWND,
         rect: &Rect,
     ) -> Result<SurfaceId, BrowserError> {
-        let surface_id = SurfaceId::new();
         let (x, y, w, h) = rect_to_bounds(rect)?;
 
         tracing::info!(

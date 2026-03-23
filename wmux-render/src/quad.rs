@@ -15,7 +15,8 @@ pub struct QuadInstance {
     pub w: f32,
     pub h: f32,
     pub color: [f32; 4],
-    pub border_radius: f32,
+    /// Per-corner border radii: [TL, TR, BR, BL].
+    pub border_radius: [f32; 4],
     /// Outer glow radius (px). When > 0, the quad is expanded and the shader
     /// renders a soft SDF glow beyond the inner rect boundary.
     pub glow_radius: f32,
@@ -24,6 +25,8 @@ pub struct QuadInstance {
     pub gradient_color: [f32; 4],
     /// Glow color (used when `glow_radius > 0`).
     pub glow_color: [f32; 4],
+    /// Gradient mode: 0=none, 1=vertical, 2=horizontal, 3=radial.
+    pub gradient_mode: f32,
     pub _pad: [f32; 2],
 }
 
@@ -131,29 +134,35 @@ impl QuadPipeline {
                     offset: 16,
                     shader_location: 2,
                 },
-                // border_radius: f32
+                // border_radius: vec4<f32> (TL, TR, BR, BL)
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
+                    format: wgpu::VertexFormat::Float32x4,
                     offset: 32,
                     shader_location: 3,
                 },
                 // glow_radius: f32
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32,
-                    offset: 36,
+                    offset: 48,
                     shader_location: 4,
                 },
                 // gradient_color: vec4<f32>
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x4,
-                    offset: 40,
+                    offset: 52,
                     shader_location: 5,
                 },
                 // glow_color: vec4<f32>
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x4,
-                    offset: 56,
+                    offset: 68,
                     shader_location: 6,
+                },
+                // gradient_mode: f32 (0=none, 1=vertical, 2=horizontal, 3=radial)
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 84,
+                    shader_location: 7,
                 },
             ],
         };
@@ -217,7 +226,7 @@ impl QuadPipeline {
         self.push_rounded_quad(x, y, w, h, color, 0.0);
     }
 
-    /// Queue a colored rectangle with rounded corners for rendering.
+    /// Queue a colored rectangle with uniform rounded corners for rendering.
     /// Silently skips zero/negative-size quads, non-finite values, and quads beyond capacity.
     #[inline]
     pub fn push_rounded_quad(
@@ -229,6 +238,21 @@ impl QuadPipeline {
         color: [f32; 4],
         border_radius: f32,
     ) {
+        self.push_asymmetric_quad(x, y, w, h, color, [border_radius; 4]);
+    }
+
+    /// Queue a colored rectangle with per-corner radii `[TL, TR, BR, BL]`.
+    /// Silently skips zero/negative-size quads, non-finite values, and quads beyond capacity.
+    #[inline]
+    pub fn push_asymmetric_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        border_radius: [f32; 4],
+    ) {
         if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
         {
             return;
@@ -236,18 +260,24 @@ impl QuadPipeline {
         if self.quads.len() >= self.capacity {
             return;
         }
-        // Clamp radius to valid range: non-negative and at most half the smaller dimension.
-        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        let max_r = w.min(h) / 2.0;
+        let r = [
+            border_radius[0].clamp(0.0, max_r),
+            border_radius[1].clamp(0.0, max_r),
+            border_radius[2].clamp(0.0, max_r),
+            border_radius[3].clamp(0.0, max_r),
+        ];
         self.quads.push(QuadInstance {
             x,
             y,
             w,
             h,
             color,
-            border_radius: radius,
+            border_radius: r,
             glow_radius: 0.0,
             gradient_color: [0.0; 4],
             glow_color: [0.0; 4],
+            gradient_mode: 0.0,
             _pad: [0.0; 2],
         });
     }
@@ -279,10 +309,83 @@ impl QuadPipeline {
             w,
             h,
             color: top_color,
-            border_radius: radius,
+            border_radius: [radius; 4],
             glow_radius: 0.0,
             gradient_color: bottom_color,
             glow_color: [0.0; 4],
+            gradient_mode: 1.0,
+            _pad: [0.0; 2],
+        });
+    }
+
+    /// Queue a quad with a horizontal gradient (left_color → right_color).
+    #[inline]
+    #[expect(clippy::too_many_arguments)]
+    pub fn push_horizontal_gradient_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        left_color: [f32; 4],
+        right_color: [f32; 4],
+        border_radius: f32,
+    ) {
+        if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
+        {
+            return;
+        }
+        if self.quads.len() >= self.capacity {
+            return;
+        }
+        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        self.quads.push(QuadInstance {
+            x,
+            y,
+            w,
+            h,
+            color: left_color,
+            border_radius: [radius; 4],
+            glow_radius: 0.0,
+            gradient_color: right_color,
+            glow_color: [0.0; 4],
+            gradient_mode: 2.0,
+            _pad: [0.0; 2],
+        });
+    }
+
+    /// Queue a quad with a radial gradient (center_color → edge_color).
+    #[inline]
+    #[expect(clippy::too_many_arguments)]
+    pub fn push_radial_gradient_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        center_color: [f32; 4],
+        edge_color: [f32; 4],
+        border_radius: f32,
+    ) {
+        if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite())
+        {
+            return;
+        }
+        if self.quads.len() >= self.capacity {
+            return;
+        }
+        let radius = border_radius.clamp(0.0, w.min(h) / 2.0);
+        self.quads.push(QuadInstance {
+            x,
+            y,
+            w,
+            h,
+            color: center_color,
+            border_radius: [radius; 4],
+            glow_radius: 0.0,
+            gradient_color: edge_color,
+            glow_color: [0.0; 4],
+            gradient_mode: 3.0,
             _pad: [0.0; 2],
         });
     }
@@ -325,10 +428,11 @@ impl QuadPipeline {
             w: expanded_w,
             h: expanded_h,
             color,
-            border_radius: radius,
+            border_radius: [radius; 4],
             glow_radius,
             gradient_color: [0.0; 4],
             glow_color,
+            gradient_mode: 0.0,
             _pad: [0.0; 2],
         });
     }
@@ -416,10 +520,11 @@ mod tests {
                     w,
                     h,
                     color: [1.0; 4],
-                    border_radius: 0.0,
+                    border_radius: [0.0; 4],
                     glow_radius: 0.0,
                     gradient_color: [0.0; 4],
                     glow_color: [0.0; 4],
+                    gradient_mode: 0.0,
                     _pad: [0.0; 2],
                 });
             }
@@ -429,8 +534,8 @@ mod tests {
 
     #[test]
     fn quad_instance_size_matches_layout() {
-        assert_eq!(std::mem::size_of::<QuadInstance>(), 80);
-        // pos(2) + size(2) + color(4) + border_radius(1) + glow_radius(1) + gradient_color(4) + glow_color(4) + pad(2) = 20 * 4 = 80 bytes
+        assert_eq!(std::mem::size_of::<QuadInstance>(), 96);
+        // pos(2) + size(2) + color(4) + border_radius(4) + glow_radius(1) + gradient_color(4) + glow_color(4) + pad(3) = 24 * 4 = 96 bytes
     }
 
     #[test]
@@ -461,10 +566,11 @@ mod tests {
             w,
             h,
             color,
-            border_radius: 0.0,
+            border_radius: [0.0; 4],
             glow_radius: 0.0,
             gradient_color: [0.0; 4],
             glow_color: [0.0; 4],
+            gradient_mode: 0.0,
             _pad: [0.0; 2],
         });
     }

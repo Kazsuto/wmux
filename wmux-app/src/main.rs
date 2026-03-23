@@ -34,6 +34,9 @@ fn main() -> Result<()> {
     let (app_event_tx, app_event_rx) = tokio::sync::mpsc::channel(64);
     let (app_state, actor_handle) = AppStateHandle::spawn(app_event_tx);
 
+    // Browser command channel: IPC handler → UI thread (bounded, 32 pending commands).
+    let (browser_cmd_tx, browser_cmd_rx) = tokio::sync::mpsc::channel(32);
+
     // Start IPC server for CLI and AI agent access.
     let mut router = Router::new();
     router.register(
@@ -51,7 +54,7 @@ fn main() -> Result<()> {
     router.register(
         "browser",
         std::sync::Arc::new(wmux_ipc::handlers::browser::BrowserHandler::new(
-            app_state.clone(),
+            browser_cmd_tx,
         )),
     );
     router.register(
@@ -71,30 +74,35 @@ fn main() -> Result<()> {
     });
     tracing::info!(pipe = %ipc_pipe, "IPC server started");
 
-    // Attempt to restore previous session.
-    rt.block_on(async {
+    // Attempt to load previous session for restore during UI init.
+    let session = rt.block_on(async {
         match wmux_core::load_session().await {
             Ok(Some(session)) => {
                 tracing::info!(
                     workspace_count = session.workspaces.len(),
-                    "session loaded, restore will happen on first frame"
+                    "session loaded, will restore on first frame"
                 );
-                // TODO: implement full session restore (recreate workspaces, pane trees, PTYs)
-                // For now, log the loaded session. Full restore requires spawning PTYs
-                // in the right CWDs and rebuilding pane trees, which will be wired
-                // when the UI integration is complete.
+                Some(session)
             }
             Ok(None) => {
                 tracing::debug!("no session to restore, starting fresh");
+                None
             }
             Err(e) => {
                 tracing::warn!(error = %e, "session restore failed, starting fresh");
+                None
             }
         }
     });
 
-    App::run(rt.handle().clone(), app_state.clone(), app_event_rx)
-        .context("application terminated with error")?;
+    App::run(
+        rt.handle().clone(),
+        app_state.clone(),
+        app_event_rx,
+        session,
+        browser_cmd_rx,
+    )
+    .context("application terminated with error")?;
 
     // Graceful shutdown: signal the actor to stop, then wait for it to
     // complete its final session save before force-exiting the process.

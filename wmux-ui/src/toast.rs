@@ -205,6 +205,7 @@ mod tests {
             source_surface: None,
             timestamp: std::time::SystemTime::now(),
             state: wmux_core::NotificationState::Unread,
+            severity: wmux_core::NotificationSeverity::Info,
         };
         svc.show(&notification);
     }

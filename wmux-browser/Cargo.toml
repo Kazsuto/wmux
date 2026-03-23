@@ -7,9 +7,7 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 webview2-com.workspace = true
 windows.workspace = true
 dirs.workspace = true

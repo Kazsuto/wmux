@@ -6,11 +6,15 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShortcutAction {
     // Pane management
-    /// Ctrl+D — split focused pane right (horizontal split).
+    /// Ctrl+D or Ctrl+K Right — split focused pane right (horizontal split).
     SplitRight,
-    /// Alt+D — split focused pane down (vertical split).
+    /// Ctrl+K Left — split focused pane left (new pane goes left).
+    SplitLeft,
+    /// Alt+D or Ctrl+K Down — split focused pane down (vertical split).
     /// Note: Ctrl+Shift+D conflicts with Windows keyboard layout switcher.
     SplitDown,
+    /// Ctrl+K Up — split focused pane up (new pane goes above).
+    SplitUp,
     /// Ctrl+W — close focused surface/pane.
     ClosePane,
     /// Ctrl+Shift+Enter — toggle zoom on focused pane.
@@ -33,8 +37,10 @@ pub enum ShortcutAction {
     SwitchWorkspace(u8),
 
     // Surface/Tab
-    /// Ctrl+T — create a new surface in the focused pane.
+    /// Ctrl+T — create a new terminal surface in the focused pane.
     NewSurface,
+    /// Ctrl+Shift+L — create a new browser surface in the focused pane.
+    NewBrowserSurface,
     /// Ctrl+Tab — cycle surfaces forward in the focused pane.
     CycleSurfaceForward,
     /// Ctrl+Shift+Tab — cycle surfaces backward in the focused pane.
@@ -55,6 +61,11 @@ pub enum ShortcutAction {
     NotificationPanelToggle,
     /// Ctrl+Shift+U — jump to last unread notification (Task L3_09).
     JumpLastUnread,
+
+    // Chord prefix
+    /// Ctrl+K — chord prefix for split shortcuts (Ctrl+K then Arrow).
+    /// Not a final action — consumed by the chord state machine.
+    ChordPrefix,
 
     // Future placeholders (detected but not yet implemented)
     /// Ctrl+Shift+P — open command palette (Task L4_01).
@@ -120,6 +131,9 @@ impl ShortcutMap {
                     // Sidebar
                     (false, false, "b" | "B") => return Some(ShortcutAction::ToggleSidebar),
 
+                    // Browser
+                    (true, false, "l" | "L") => return Some(ShortcutAction::NewBrowserSurface),
+
                     // Clipboard
                     (true, false, "c" | "C") => return Some(ShortcutAction::Copy),
                     (true, false, "v" | "V") => return Some(ShortcutAction::Paste),
@@ -132,6 +146,9 @@ impl ShortcutMap {
 
                     // Command palette
                     (true, false, "p" | "P") => return Some(ShortcutAction::CommandPalette),
+
+                    // Chord prefix: Ctrl+K starts a chord sequence for splits.
+                    (false, false, "k" | "K") => return Some(ShortcutAction::ChordPrefix),
 
                     // Find
                     (_, false, "f" | "F") => return Some(ShortcutAction::Find),
@@ -532,6 +549,30 @@ mod tests {
                 &mods(true, true, false)
             ),
             Some(ShortcutAction::JumpLastUnread)
+        );
+    }
+
+    #[test]
+    fn ctrl_k_chord_prefix() {
+        assert_eq!(
+            map().match_shortcut(
+                &char_key("k"),
+                phys(KeyCode::KeyK),
+                &mods(true, false, false)
+            ),
+            Some(ShortcutAction::ChordPrefix)
+        );
+    }
+
+    #[test]
+    fn ctrl_k_uppercase_chord_prefix() {
+        assert_eq!(
+            map().match_shortcut(
+                &char_key("K"),
+                phys(KeyCode::KeyK),
+                &mods(true, false, false)
+            ),
+            Some(ShortcutAction::ChordPrefix)
         );
     }
 }

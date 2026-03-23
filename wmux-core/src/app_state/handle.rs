@@ -282,6 +282,30 @@ impl AppStateHandle {
         })?
     }
 
+    /// Create a new browser surface in a pane. Returns the SurfaceId.
+    ///
+    /// Like `create_surface` but creates a `PanelKind::Browser` surface.
+    pub async fn create_browser_surface(
+        &self,
+        pane_id: PaneId,
+        backing_pane_id: PaneId,
+    ) -> Result<SurfaceId, CoreError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(AppCommand::CreateBrowserSurface {
+                pane_id,
+                backing_pane_id,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| CoreError::PaneNotFound {
+                pane_id: pane_id.to_string(),
+            })?;
+        rx.await.map_err(|_| CoreError::PaneNotFound {
+            pane_id: pane_id.to_string(),
+        })?
+    }
+
     /// Close a surface in a pane. Fire-and-forget.
     pub fn close_surface(&self, pane_id: PaneId, surface_id: SurfaceId) {
         if self
@@ -296,6 +320,25 @@ impl AppStateHandle {
                 pane_id = %pane_id,
                 surface_id = %surface_id,
                 "command channel full, CloseSurface dropped"
+            );
+        }
+    }
+
+    /// Rename a surface (tab) in a pane. Fire-and-forget.
+    pub fn rename_surface(&self, pane_id: PaneId, surface_id: SurfaceId, name: String) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::RenameSurface {
+                pane_id,
+                surface_id,
+                name,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                pane_id = %pane_id,
+                surface_id = %surface_id,
+                "command channel full, RenameSurface dropped"
             );
         }
     }

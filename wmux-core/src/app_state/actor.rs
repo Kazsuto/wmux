@@ -10,8 +10,9 @@ use crate::metadata_store::{LogLevel, MetadataSnapshot, MetadataStore, StatusEnt
 use crate::notification::{NotificationEvent, NotificationSource, NotificationStore};
 use crate::pane_registry::PaneRegistry;
 use crate::pane_tree::PaneTree;
+use crate::surface::PanelKind;
 use crate::surface_manager::Surface;
-use crate::types::{PaneId, WorkspaceId};
+use crate::types::{PaneId, SurfaceId, WorkspaceId};
 use crate::workspace_manager::WorkspaceManager;
 
 use super::handle::AppStateHandle;
@@ -287,6 +288,30 @@ impl AppStateActor {
                     let _ = reply.send(result);
                 }
 
+                AppCommand::CreateBrowserSurface { pane_id, backing_pane_id, reply } => {
+                    let result = if let Some(pane) = self.registry.get_mut(pane_id) {
+                        let surface = Surface::with_kind("browser", PanelKind::Browser, backing_pane_id);
+                        let id = surface.id;
+                        pane.surfaces.add(surface);
+                        let _ = pane.surfaces.switch_to_id(id);
+                        tracing::info!(
+                            pane_id = %pane_id,
+                            surface_id = %id,
+                            backing = %backing_pane_id,
+                            "browser surface created",
+                        );
+                        Ok(id)
+                    } else {
+                        Err(CoreError::PaneNotFound {
+                            pane_id: pane_id.to_string(),
+                        })
+                    };
+                    if result.is_ok() {
+                        let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    }
+                    let _ = reply.send(result);
+                }
+
                 AppCommand::CloseSurface {
                     pane_id,
                     surface_id,
@@ -324,6 +349,41 @@ impl AppStateActor {
                             bp.terminal.grid_mut().mark_all_dirty();
                         }
                         let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    }
+                }
+
+                AppCommand::RenameSurface {
+                    pane_id,
+                    surface_id,
+                    mut name,
+                } => {
+                    // Sanitize: strip control chars, truncate to 256 chars.
+                    name.retain(|c| !c.is_control());
+                    if name.chars().count() > 256 {
+                        name = name.chars().take(256).collect();
+                    }
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                        if let Some(surface) = pane.surfaces.find_mut(surface_id) {
+                            tracing::info!(
+                                pane_id = %pane_id,
+                                surface_id = %surface_id,
+                                name = %name,
+                                "surface renamed"
+                            );
+                            surface.title = name;
+                            let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                        } else {
+                            tracing::warn!(
+                                pane_id = %pane_id,
+                                surface_id = %surface_id,
+                                "RenameSurface: surface not found"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            pane_id = %pane_id,
+                            "RenameSurface: pane not found"
+                        );
                     }
                 }
 
@@ -367,6 +427,22 @@ impl AppStateActor {
                                 .as_ref()
                                 .map_or(0, |t| t.pane_count());
                             let meta = ws.metadata();
+                            let status_icons = self
+                                .metadata_stores
+                                .get(&ws.id())
+                                .map(|store| {
+                                    store
+                                        .list_status()
+                                        .into_iter()
+                                        .filter_map(|entry| {
+                                            entry
+                                                .icon
+                                                .as_ref()
+                                                .map(|icon| (entry.key.clone(), icon.clone()))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             WorkspaceSnapshot {
                                 id: ws.id(),
                                 name: ws.name().to_owned(),
@@ -379,6 +455,7 @@ impl AppStateActor {
                                     p.to_string_lossy().into_owned()
                                 }),
                                 git_branch: meta.git_branch.clone(),
+                                status_icons,
                             }
                         })
                         .collect();
@@ -391,6 +468,22 @@ impl AppStateActor {
                         .as_ref()
                         .map_or(0, |t| t.pane_count());
                     let meta = ws.metadata();
+                    let status_icons = self
+                        .metadata_stores
+                        .get(&ws.id())
+                        .map(|store| {
+                            store
+                                .list_status()
+                                .into_iter()
+                                .filter_map(|entry| {
+                                    entry
+                                        .icon
+                                        .as_ref()
+                                        .map(|icon| (entry.key.clone(), icon.clone()))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     let _ = reply.send(WorkspaceSnapshot {
                         id: ws.id(),
                         name: ws.name().to_owned(),
@@ -401,6 +494,7 @@ impl AppStateActor {
                             p.to_string_lossy().into_owned()
                         }),
                         git_branch: meta.git_branch.clone(),
+                        status_icons,
                     });
                 }
                 AppCommand::SelectWorkspaceById { id, reply } => {
@@ -936,12 +1030,14 @@ impl AppStateActor {
         let terminal_pane_id = self.resolve_terminal_pane(pane_id);
 
         // Read surface metadata from the layout pane first (immutable borrow ends here).
-        let (surface_count, surface_titles, active_surface) = {
+        let (surface_count, surface_titles, surface_ids, surface_kinds, active_surface) = {
             let pane = self.registry.get(pane_id)?;
             let sc = pane.surfaces.count();
             let st: Vec<String> = pane.surfaces.iter().map(|s| s.title.clone()).collect();
+            let si: Vec<SurfaceId> = pane.surfaces.iter().map(|s| s.id).collect();
+            let sk: Vec<PanelKind> = pane.surfaces.iter().map(|s| s.kind).collect();
             let ai = pane.surfaces.active_index();
-            (sc, st, ai)
+            (sc, st, si, sk, ai)
         };
 
         // Get mutable access to the backing terminal pane (may differ from layout pane).
@@ -980,6 +1076,8 @@ impl AppStateActor {
             process_exited: pane.process_exited,
             surface_count,
             surface_titles,
+            surface_ids,
+            surface_kinds,
             active_surface,
         })
     }

@@ -2,13 +2,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::auth::ConnectionCtx;
 use crate::handler::{Handler, RpcError};
 
 /// All browser.* method names supported by this handler.
-///
-/// Most are stubs pending the COM thread bridge (see task L3_07 notes).
 const BROWSER_METHODS: &[&str] = &[
     "browser.open",
     "browser.navigate",
@@ -48,22 +47,17 @@ const BROWSER_METHODS: &[&str] = &[
 
 /// Handles all `browser.*` JSON-RPC methods.
 ///
-/// This is a stub handler: `identify` works immediately, but all other methods
-/// return an "not yet wired" error because the actual BrowserManager lives on
-/// the COM STA thread and is not `Send + Sync`. A browser command channel will
-/// be added to `AppState` in a later task to bridge the two threads.
+/// Commands are forwarded to the UI thread via a `BrowserCommand` channel.
+/// The UI thread processes them on the STA thread (required for WebView2 COM)
+/// and sends results back via a oneshot reply channel.
 pub struct BrowserHandler {
-    #[expect(
-        dead_code,
-        reason = "used when browser command channel is wired to AppState"
-    )]
-    app_state: wmux_core::AppStateHandle,
+    browser_cmd_tx: mpsc::Sender<wmux_core::BrowserCommand>,
 }
 
 impl BrowserHandler {
-    /// Create a new `BrowserHandler` backed by the given `AppStateHandle`.
-    pub fn new(app_state: wmux_core::AppStateHandle) -> Self {
-        Self { app_state }
+    /// Create a new `BrowserHandler` backed by a browser command channel.
+    pub fn new(browser_cmd_tx: mpsc::Sender<wmux_core::BrowserCommand>) -> Self {
+        Self { browser_cmd_tx }
     }
 }
 
@@ -71,37 +65,46 @@ impl Handler for BrowserHandler {
     fn handle(
         &self,
         method: &str,
-        _params: Value,
+        params: Value,
         _ctx: &ConnectionCtx,
     ) -> Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send + '_>> {
-        let result = match method {
-            "identify" => {
-                tracing::debug!("browser.identify called");
+        // identify is handled immediately — no need to round-trip to UI thread.
+        if method == "identify" {
+            tracing::debug!("browser.identify called");
+            return Box::pin(async {
                 Ok(serde_json::json!({
                     "handler": "browser",
-                    "status": "stub",
+                    "status": "active",
                     "methods": BROWSER_METHODS,
                 }))
-            }
+            });
+        }
 
-            "open" | "navigate" | "back" | "forward" | "reload" | "url" | "eval" | "click"
-            | "dblclick" | "hover" | "focus" | "fill" | "type" | "press" | "select" | "check"
-            | "uncheck" | "scroll" | "snapshot" | "screenshot" | "get" | "is" | "find"
-            | "highlight" | "wait" | "console" | "errors" | "cookies" | "storage" | "state"
-            | "tab" | "addinitscript" | "open-split" => {
-                tracing::debug!(method = %method, "browser stub method called — not yet wired to COM thread");
-                Err(RpcError::internal_error(format!(
-                    "browser.{method} not yet wired to COM thread"
-                )))
-            }
+        let method_owned = method.to_owned();
+        let tx = self.browser_cmd_tx.clone();
 
-            _ => {
-                tracing::debug!(method = %method, "browser handler received unknown method");
-                Err(RpcError::method_not_found(&format!("browser.{method}")))
-            }
-        };
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
 
-        Box::pin(async move { result })
+            let cmd = wmux_core::BrowserCommand {
+                method: method_owned,
+                params,
+                reply: reply_tx,
+            };
+
+            tx.send(cmd).await.map_err(|_| {
+                RpcError::internal_error("browser command channel closed".to_owned())
+            })?;
+
+            let result = reply_rx.await.map_err(|_| {
+                RpcError::internal_error("browser command reply dropped".to_owned())
+            })?;
+
+            match result {
+                Ok(value) => Ok(value),
+                Err(msg) => Err(RpcError::internal_error(msg)),
+            }
+        })
     }
 }
 
@@ -117,9 +120,8 @@ mod tests {
     }
 
     fn make_handler() -> BrowserHandler {
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
-        let (app_state, _actor_handle) = wmux_core::AppStateHandle::spawn(event_tx);
-        BrowserHandler::new(app_state)
+        let (tx, _rx) = mpsc::channel(8);
+        BrowserHandler::new(tx)
     }
 
     #[tokio::test]
@@ -131,7 +133,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["handler"], "browser");
-        assert_eq!(result["status"], "stub");
+        assert_eq!(result["status"], "active");
 
         let methods = result["methods"].as_array().unwrap();
         assert!(!methods.is_empty());
@@ -142,34 +144,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_method_returns_method_not_found() {
-        let handler = make_handler();
+    async fn unknown_method_forwards_to_channel() {
+        // Handler now forwards all methods to the channel.
+        // With a dropped receiver, the channel send will fail.
+        let (tx, _rx) = mpsc::channel(1);
+        let handler = BrowserHandler::new(tx);
+
+        // Drop the receiver so the channel is closed.
+        drop(_rx);
+
         let err = handler
             .handle("nonexistent", Value::Null, &make_ctx())
             .await
             .unwrap_err();
 
-        assert_eq!(err.code, -32601);
-        assert!(err.message.contains("browser.nonexistent"));
-    }
-
-    #[tokio::test]
-    async fn stub_methods_return_internal_error() {
-        let handler = make_handler();
-        for method in &["open", "navigate", "eval", "screenshot", "open-split"] {
-            let err = handler
-                .handle(method, Value::Null, &make_ctx())
-                .await
-                .unwrap_err();
-
-            assert_eq!(
-                err.code, -32603,
-                "expected internal_error (-32603) for browser.{method}"
-            );
-            assert!(
-                err.message.contains("not yet wired to COM thread"),
-                "expected COM thread message for browser.{method}"
-            );
-        }
+        assert_eq!(err.code, -32603);
     }
 }

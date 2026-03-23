@@ -27,8 +27,8 @@ pub mod workspace;
 pub mod workspace_manager;
 
 pub use app_state::{
-    AppCommand, AppEvent, AppStateHandle, FocusDirection, PaneRenderData, PaneSurfaceInfo,
-    WorkspaceSnapshot,
+    AppCommand, AppEvent, AppStateHandle, BrowserCommand, FocusDirection, PaneRenderData,
+    PaneSurfaceInfo, WorkspaceSnapshot,
 };
 pub use cell::{Cell, CellFlags, Row};
 pub use color::Color;
@@ -43,8 +43,8 @@ pub use metadata_store::{
 };
 pub use mode::TerminalMode;
 pub use notification::{
-    Notification, NotificationEvent, NotificationId, NotificationSource, NotificationState,
-    NotificationStore,
+    Notification, NotificationEvent, NotificationId, NotificationSeverity, NotificationSource,
+    NotificationState, NotificationStore,
 };
 pub use pane_registry::{PaneRegistry, PaneState};
 pub use pane_tree::PaneTree;

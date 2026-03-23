@@ -19,6 +19,9 @@ pub enum Easing {
     EaseInOut,
     /// Linear interpolation — cursor blink, continuous.
     Linear,
+    /// Critically damped spring — natural deceleration for drag release, scroll.
+    /// No overshoot, settles smoothly. `1.0 - (1 + 6t) * e^(-6t)`.
+    SpringOut,
 }
 
 /// A single running animation interpolating a float value.
@@ -42,11 +45,32 @@ struct Animation {
 ///
 /// When `reduced_motion` is true, all animations complete instantly (duration=0)
 /// except cursor blink.
-#[derive(Debug, Default)]
 pub struct AnimationEngine {
     animations: Vec<Animation>,
     next_id: u64,
     reduced_motion: bool,
+    last_update: Instant,
+}
+
+impl Default for AnimationEngine {
+    fn default() -> Self {
+        Self {
+            animations: Vec::new(),
+            next_id: 0,
+            reduced_motion: false,
+            last_update: Instant::now(),
+        }
+    }
+}
+
+impl std::fmt::Debug for AnimationEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnimationEngine")
+            .field("animations", &self.animations)
+            .field("next_id", &self.next_id)
+            .field("reduced_motion", &self.reduced_motion)
+            .finish()
+    }
 }
 
 impl AnimationEngine {
@@ -56,6 +80,7 @@ impl AnimationEngine {
             animations: Vec::new(),
             next_id: 0,
             reduced_motion,
+            last_update: Instant::now(),
         }
     }
 
@@ -95,9 +120,27 @@ impl AnimationEngine {
         id
     }
 
+    /// Maximum frame delta (33ms ≈ 30fps floor).
+    /// Prevents animation jumps after alt-tab or system freeze.
+    const MAX_FRAME_DELTA: Duration = Duration::from_millis(33);
+
     /// Advance all animations to current time, removing completed ones.
     pub fn update(&mut self) {
         let now = Instant::now();
+        let frame_dt = now.duration_since(self.last_update);
+        self.last_update = now;
+
+        // If frame took longer than MAX_FRAME_DELTA, shift all animation
+        // start times forward so they only advance MAX_FRAME_DELTA of progress.
+        if frame_dt > Self::MAX_FRAME_DELTA {
+            let overshoot = frame_dt - Self::MAX_FRAME_DELTA;
+            for anim in &mut self.animations {
+                // Clamp so start never exceeds now (animations created after last_update).
+                let shifted = anim.start + overshoot;
+                anim.start = if shifted > now { now } else { shifted };
+            }
+        }
+
         self.animations.retain_mut(|anim| {
             let elapsed = now.duration_since(anim.start);
             if elapsed >= anim.duration {
@@ -119,6 +162,11 @@ impl AnimationEngine {
                         let inv = -2.0 * t + 2.0;
                         1.0 - inv * inv * inv / 2.0
                     }
+                }
+                Easing::SpringOut => {
+                    // Critically damped spring: no overshoot, natural deceleration.
+                    let k = 6.0;
+                    1.0 - (1.0 + k * t) * (-k * t).exp()
                 }
             };
             anim.current = anim.from + (anim.to - anim.from) * eased;
