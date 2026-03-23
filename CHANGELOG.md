@@ -1,6 +1,103 @@
 # Changelog
 
+## 2026-03-23
+
+REFACTOR: Extract `json_str` helper in wmux-browser automation — DRY 21 repeated `map_err` error conversions
+REFACTOR: Simplify sidebar workspace rows — remove subtitle ("> 1 pane"), reduce row height (72→36px)
+FIX: Fix rename input box position — offset past icon, properly sized for single-line layout
+FIX: Render SVG icons as alpha masks (ContentType::Mask) for theme colorization — icons now visible on dark backgrounds
+FIX: Remove permanent blue background on + button — now transparent with hover-only bg (Zed-like)
+FIX: Align tab bar surface type icon vertically with text baseline
+REFACTOR: Replace all icon font glyphs with Codicons SVGs via CustomGlyph — 18 SVGs embedded, resvg rasterization
+FEATURE: Activate CustomGlyph SVG pipeline — prepare_with_custom() + resvg rasterization for SVG icons
+FIX: Increase icon font size (14→16px) and buffer bounds to prevent clipping in tab bar
+FIX: Increase icon-to-text spacing in sidebar (20→24px) and tab bar (22→24px)
+FIX: Correct split button icon codepoint (E73F→E738 ColumnDouble)
+FEATURE: Add hover glow effect on + and split tab bar buttons
+FEATURE: Render StatusEntry icons in sidebar — status badges from IPC display icon glyphs per workspace
+FEATURE: Add Icon::from_name() for IPC icon name resolution and wire StatusEntry::icon to WorkspaceSnapshot
+FEATURE: Wire config font-family/font-size to terminal renderer — enables Nerd Fonts and custom monospace fonts
+FEATURE: Add NotificationSeverity enum with severity-specific stripe colors in notification panel
+FEATURE: Add workspace icon (terminal glyph) to sidebar workspace list
+FEATURE: Add search magnifying glass icon to search overlay when icon font is available
+REFACTOR: Migrate icon rendering from quad primitives to Segoe Fluent Icons font glyphs with quad fallback
+FEATURE: Add pre-shaped icon buffers for UI chrome (terminal, browser, split, search, direction arrows)
+FEATURE: Add centralized Icon enum with Segoe Fluent Icons codepoints (17 icons for UI chrome)
+FEATURE: Add icon font detection — probe for Segoe Fluent Icons at startup with has_icon_font() accessor
+
 ## 2026-03-22
+
+FEATURE: Add sidebar drag-to-resize — click and drag the right edge to adjust width (180-480px range)
+FIX: Clamp sidebar width on initialization to prevent unusable layouts from config
+FIX: Reset cursor icon to default after sidebar resize release
+FIX: Reset sidebar interaction state on toggle to prevent stale ResizeHover
+FIX: Reduce sidebar resize hit zone overshoot into content area (5→2px) to avoid divider conflicts
+REFACTOR: Improve tab bar styling — reduce corner radius (8→4px), height (44→40px), fix text vertical centering
+REFACTOR: Switch default theme palette to VS Code Dark+ inspired colors for better contrast and readability
+REFACTOR: Increase sidebar workspace row height (64→72px) for better visual separation
+REFACTOR: Increase default sidebar width from 240 to 260px
+
+FEATURE: Add Zed-style chord shortcuts for split — Ctrl+K then Arrow (Right/Left/Up/Down)
+FEATURE: Add SplitLeft and SplitUp actions — new pane placed before the original via swap
+FEATURE: Add split direction button in tab bar with dropdown menu (4 directions with icons and shortcut hints)
+FEATURE: Add chord shortcut state machine with 1s timeout for multi-key sequences
+
+FIX: Switch default theme to cmux Apple System Colors dark — bg=#1e1e1e, fg=#ffffff, accent=#0869cb
+FIX: Fix Unicode tofu (square blocks) — use explicit "Segoe UI" font family instead of generic SansSerif for all UI chrome text
+FIX: Make shadows visible — increase shadow alpha (0.25→0.45 dark, 0.15→0.30 light) and sigma (2→4 for shadow_sm)
+FIX: Make focus glow visible — inner ring alpha 0.0→0.12, outer halo alpha 0.25→0.35
+FIX: Reduce plus button background opacity (0.3→0.12) so quad-drawn + icon is clearly visible
+
+FEATURE: Add centralized typography tokens (Title/Body/Caption/Badge) — consistent type scale across all UI chrome
+FEATURE: Add horizontal and radial gradient modes to shader — gradient_mode field (0=none, 1=vertical, 2=horizontal, 3=radial) with linear-space interpolation
+FEATURE: Add push_horizontal_gradient_quad and push_radial_gradient_quad to QuadPipeline
+REFACTOR: Apply typography tokens to tab bar (Body), sidebar (Body/Caption), status bar (Caption), search bar (Caption)
+
+FEATURE: Wire AnimationEngine into render loop — animations now drive continuous redraws, foundation for all UI motion
+FEATURE: Animate focus glow cross-fade — "Luminous Void" glow fades in smoothly (MOTION_NORMAL, CubicOut) on pane focus change
+FEATURE: Add tab hover background animation — hovered tabs show animated surface_2 highlight (MOTION_FAST, CubicOut)
+FEATURE: Add SpringOut easing to AnimationEngine — critically damped spring curve for natural deceleration
+FEATURE: Track divider hover state — dividers now trigger redraw on hover change for visual feedback
+
+FEATURE: Add ShadowPipeline with Evan Wallace analytical erf() drop shadows — GPU-native Gaussian-convolved box shadows in a single quad per shadow
+FEATURE: Add shadow depth tokens (shadow_sm/md/lg) to UiChrome — sigma and offset_y for 3 elevation levels
+FEATURE: Add accent_pressed color to UiChrome — accent darkened by 10% lightness for press states
+FEATURE: Replace flat shadow quads with analytical shadows — tab bar, status bar, and sidebar now use ShadowPipeline with soft Gaussian blur
+
+FEATURE: Add per-corner border radius (vec4) to shader SDF — enables asymmetric rounded corners via push_asymmetric_quad([TL, TR, BR, BL])
+FEATURE: Add fwidth()-based adaptive anti-aliasing to SDF edges — scale-independent AA, sharper on HiDPI
+FEATURE: Add linear-space gradient interpolation — sRGB↔linear conversion for perceptually correct gradients
+FEATURE: Add atlas.trim() call per frame to prevent GPU glyph cache memory leak
+REFACTOR: Switch terminal text shaping from Advanced to Basic for ~30% faster ASCII rendering
+REFACTOR: Add delta time capping (33ms) to AnimationEngine — prevents animation jumps after alt-tab
+REFACTOR: Grow QuadInstance from 80 to 96 bytes for per-corner radius support
+
+FEATURE: Add Ctrl+Shift+L shortcut to open a browser tab (WebView2) in the focused pane
+FEATURE: Add `wmux browser open/navigate/back/forward/reload/url/eval` CLI commands — fully functional browser control from the shell
+FEATURE: Add surface type indicators on tab pills — chevron for terminal, circle for browser
+FEATURE: Wire WebView2 browser integration — BrowserManager on UI/STA thread, browser command channel (IPC → EventLoopProxy → UI), browser.open/navigate/back/forward/reload/url/eval/close IPC methods functional, CreateBrowserSurface actor command
+FEATURE: Make tab bar always visible — tab bar renders for all panes (even single-tab), "+" button to create new surfaces, click-to-switch works with any tab count
+FEATURE: Add FromStr to all ID types (PaneId, SurfaceId, WorkspaceId, WindowId) for string parsing
+FIX: Align mouse coordinates and selection highlights with terminal content area by accounting for always-visible tab bar offset
+
+CHORE: Increase all UI element sizes for better readability on high-res displays — terminal font 14→20, tab bar 36→44, sidebar rows 48→56, status bar 28→34, close button 14→18, default font-size 12→16, sidebar width 200→240
+
+FEATURE: Wire Config::load() — load user config from disk (wmux > Ghostty > defaults) instead of hardcoded defaults, enabling theme selection, font, sidebar width, scrollback, inactive pane opacity
+FEATURE: Wire StatusBar rendering — display workspace name, pane count, git branch, and connection status dot with pulse animation in the bottom bar
+FEATURE: Wire session restore — recreate workspaces, pane trees with split ratios, and PTYs with saved CWDs from session.json on startup
+FIX: Expand system.capabilities to list all 26 functional IPC methods across all handlers (was only listing 3 system.* methods)
+
+FEATURE: Add close button (×) on surface tabs — click × to close a surface, hover highlights in red
+FEATURE: Add double-click to rename surface tabs — inline editing with Enter/Escape, same UX pattern as sidebar workspace rename
+FEATURE: Add RenameSurface command to actor pipeline — rename_surface() on AppStateHandle, surface_ids in PaneRenderData/PaneViewport
+
+FIX: Search bar space key input — winit reports Space as NamedKey::Space, was silently consumed by catch-all
+FIX: Search bar cursor position — use glyphon layout_runs().line_w instead of monospace cell_width estimate
+FIX: Search bar input blocked after shell exit — move search handler before process_exited check
+FIX: Add Shift+Enter for previous match navigation in search bar
+REFACTOR: Extract search bar layout constants (SEARCH_BAR_HEIGHT, SEARCH_BAR_PADDING, SEARCH_COUNT_WIDTH)
+
+FIX: Render search bar text (query + match count) via glyphon — search overlay was only drawing background quads without any visible text, making it non-functional
 
 REFACTOR: Apply clean code improvements to wmux-core — #[allow] → #[expect] with reasons in selection.rs, match → let-else in session.rs/vte_handler.rs, Vec::with_capacity pre-allocation in actor build_surface_list
 

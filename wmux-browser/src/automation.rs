@@ -12,6 +12,13 @@ use windows::Win32::System::Com::CoTaskMemFree;
 
 use crate::BrowserError;
 
+/// Serialize a value to a JSON string for embedding in JavaScript.
+///
+/// Maps serialization errors to `BrowserError::JavaScriptError`.
+fn json_str(s: &str) -> Result<String, BrowserError> {
+    serde_json::to_string(s).map_err(|e| BrowserError::JavaScriptError(e.to_string()))
+}
+
 /// Current navigation state of the WebView2 panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NavigationState {
@@ -254,19 +261,14 @@ fn check_condition(
             Ok(result.as_bool().unwrap_or(false))
         }
         WaitCondition::Selector(selector) => {
-            let js = format!(
-                "document.querySelector({}) !== null",
-                serde_json::to_string(selector)
-                    .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?
-            );
+            let js = format!("document.querySelector({}) !== null", json_str(selector)?);
             let result = eval(webview, &js)?;
             Ok(result.as_bool().unwrap_or(false))
         }
         WaitCondition::Text(text) => {
             let js = format!(
                 "document.body && document.body.innerText.includes({})",
-                serde_json::to_string(text)
-                    .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?
+                json_str(text)?
             );
             let result = eval(webview, &js)?;
             Ok(result.as_bool().unwrap_or(false))
@@ -287,8 +289,7 @@ fn check_condition(
 
 /// Click the element matching `selector`.
 pub fn click(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -301,8 +302,7 @@ pub fn click(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError
 
 /// Double-click the element matching `selector`.
 pub fn dblclick(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -316,8 +316,7 @@ pub fn dblclick(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserEr
 
 /// Hover over the element matching `selector` (dispatches mouseover + mouseenter).
 pub fn hover(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -332,8 +331,7 @@ pub fn hover(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError
 
 /// Focus the element matching `selector`.
 pub fn focus_element(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -346,8 +344,7 @@ pub fn focus_element(webview: &ICoreWebView2, selector: &str) -> Result<(), Brow
 
 /// Check the checkbox/radio matching `selector`.
 pub fn check(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -363,8 +360,7 @@ pub fn check(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError
 
 /// Uncheck the checkbox/radio matching `selector`.
 pub fn uncheck(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -380,8 +376,7 @@ pub fn uncheck(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserErr
 
 /// Scroll the element matching `selector` into view.
 pub fn scroll_into_view(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -397,10 +392,8 @@ pub fn scroll_into_view(webview: &ICoreWebView2, selector: &str) -> Result<(), B
 
 /// Clear and fill the input/textarea matching `selector` with `value`.
 pub fn fill(webview: &ICoreWebView2, selector: &str, value: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
-    let val_json =
-        serde_json::to_string(value).map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
+    let val_json = json_str(value)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -417,10 +410,8 @@ pub fn fill(webview: &ICoreWebView2, selector: &str, value: &str) -> Result<(), 
 
 /// Type `text` character-by-character into the element matching `selector`.
 pub fn type_text(webview: &ICoreWebView2, selector: &str, text: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
-    let text_json =
-        serde_json::to_string(text).map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
+    let text_json = json_str(text)?;
     let js = format!(
         "(function(){{
          var el=document.querySelector({sel_json});
@@ -445,8 +436,7 @@ pub fn type_text(webview: &ICoreWebView2, selector: &str, text: &str) -> Result<
 
 /// Dispatch a keyboard event for `key` on the currently focused element.
 pub fn press_key(webview: &ICoreWebView2, key: &str) -> Result<(), BrowserError> {
-    let key_json =
-        serde_json::to_string(key).map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let key_json = json_str(key)?;
     let js = format!(
         "(function(){{
          var el=document.activeElement||document.body;
@@ -466,10 +456,8 @@ pub fn select_option(
     selector: &str,
     value: &str,
 ) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
-    let val_json =
-        serde_json::to_string(value).map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
+    let val_json = json_str(value)?;
     let js = format!(
         "(function(){{var el=document.querySelector({sel_json});\
          if(!el)throw new Error('Element not found: '+{sel_json});\
@@ -543,10 +531,8 @@ pub fn get_attribute(
     selector: &str,
     attribute: &str,
 ) -> Result<serde_json::Value, BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
-    let attr_json = serde_json::to_string(attribute)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
+    let attr_json = json_str(attribute)?;
     let js = format!(
         "(function(){{
          var el=document.querySelector({sel_json});
@@ -573,8 +559,7 @@ pub fn is_state(
     selector: &str,
     state: &str,
 ) -> Result<bool, BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{
          var el=document.querySelector({sel_json});
@@ -591,8 +576,7 @@ pub fn is_state(
          }}
          return false;
          }})()",
-        state_json = serde_json::to_string(state)
-            .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?
+        state_json = json_str(state)?
     );
     tracing::debug!(selector = %selector, state = %state, "is_state");
     let result = eval(webview, &js)?;
@@ -604,8 +588,7 @@ pub fn find_elements(
     webview: &ICoreWebView2,
     selector: &str,
 ) -> Result<serde_json::Value, BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{
          var els=document.querySelectorAll({sel_json});
@@ -633,8 +616,7 @@ pub fn find_elements(
 
 /// Inject a temporary red outline on the element matching `selector` for 2 s.
 pub fn highlight(webview: &ICoreWebView2, selector: &str) -> Result<(), BrowserError> {
-    let sel_json = serde_json::to_string(selector)
-        .map_err(|e| BrowserError::JavaScriptError(e.to_string()))?;
+    let sel_json = json_str(selector)?;
     let js = format!(
         "(function(){{
          var el=document.querySelector({sel_json});
