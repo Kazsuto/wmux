@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::pane_registry::PaneRegistry;
 use crate::pane_tree::PaneTree;
+use crate::process_detect::{
+    list_recent_claude_sessions, query_claude_session_ids_from_cmdline, ProcessSnapshot,
+};
 use crate::surface::SplitDirection;
 use crate::types::PaneId;
 use crate::workspace_manager::WorkspaceManager;
@@ -13,6 +16,11 @@ use crate::workspace_manager::WorkspaceManager;
 // Scrollback limits before serialization (ADR-0009).
 const MAX_SCROLLBACK_LINES: usize = 4000;
 const MAX_SCROLLBACK_CHARS: usize = 400_000;
+
+/// Marker value stored in `claude_session_id` when Claude Code is detected
+/// but the exact session UUID is unknown. At restore, this triggers
+/// `claude --continue` (resume most recent session for the CWD).
+pub const CLAUDE_CONTINUE_MARKER: &str = "__continue__";
 
 // ─── Session Schema ───────────────────────────────────────────────────────────
 
@@ -41,6 +49,11 @@ pub enum PaneTreeSnapshot {
         surface_id: String,
         cwd: Option<String>,
         scrollback_text: Option<String>,
+        /// Claude Code session marker. When present, the pane was running Claude
+        /// Code at save time and should be restored with `claude --continue` (or
+        /// `claude --resume <id>` if a specific session ID is stored).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_session_id: Option<String>,
     },
     Split {
         /// "horizontal" or "vertical"
@@ -72,17 +85,42 @@ pub fn build_session_state(
     workspace_manager: &WorkspaceManager,
     registry: &PaneRegistry,
     pane_cwds: &HashMap<PaneId, PathBuf>,
+    pane_pids: &HashMap<PaneId, u32>,
+    known_claude_sessions: &HashMap<PaneId, String>,
     sidebar_width: u16,
     window: Option<WindowGeometry>,
 ) -> SessionState {
     let active_workspace_index = workspace_manager.active_index();
 
+    // Capture a single process snapshot for all panes (one kernel call).
+    let proc_snapshot = if pane_pids.is_empty() {
+        None
+    } else {
+        Some(ProcessSnapshot::capture())
+    };
+
+    // Resolve Claude Code session UUIDs.
+    // Priority: known sessions (from --resume at restore time) > filesystem heuristic.
+    let claude_uuids = match proc_snapshot.as_ref() {
+        Some(snap) => {
+            resolve_claude_session_uuids(pane_pids, pane_cwds, snap, known_claude_sessions)
+        }
+        None => HashMap::new(),
+    };
+
     let workspaces = workspace_manager
         .iter()
         .map(|ws| {
-            let pane_tree = ws
-                .pane_tree()
-                .map(|tree| snapshot_pane_tree(tree, registry, pane_cwds));
+            let pane_tree = ws.pane_tree().map(|tree| {
+                snapshot_pane_tree(
+                    tree,
+                    registry,
+                    pane_cwds,
+                    pane_pids,
+                    proc_snapshot.as_ref(),
+                    &claude_uuids,
+                )
+            });
             WorkspaceSnapshot {
                 id: ws.id().to_string(),
                 name: ws.name().to_owned(),
@@ -100,12 +138,130 @@ pub fn build_session_state(
     }
 }
 
+/// Resolve Claude Code session UUIDs for panes that are running Claude.
+///
+/// Uses two strategies in priority order:
+/// 1. **Known sessions** (`known_claude_sessions`): UUIDs remembered from the
+///    previous restore cycle (`claude --resume <uuid>`). These are exact matches.
+/// 2. **Filesystem heuristic**: For panes without a known UUID, groups by CWD and
+///    lists the N most recently modified `.jsonl` files, excluding already-claimed UUIDs.
+fn resolve_claude_session_uuids(
+    pane_pids: &HashMap<PaneId, u32>,
+    pane_cwds: &HashMap<PaneId, PathBuf>,
+    proc_snapshot: &ProcessSnapshot,
+    known_claude_sessions: &HashMap<PaneId, String>,
+) -> HashMap<PaneId, String> {
+    // 1. Find all panes running Claude Code.
+    let claude_panes: Vec<PaneId> = pane_pids
+        .iter()
+        .filter(|(_, &pid)| proc_snapshot.has_claude_descendant(pid))
+        .map(|(&pane_id, _)| pane_id)
+        .collect();
+
+    if claude_panes.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut result: HashMap<PaneId, String> = HashMap::new();
+
+    // 2. Use known session UUIDs first (exact match from restore).
+    let mut claimed_uuids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut unresolved_panes: Vec<PaneId> = Vec::new();
+    for &pane_id in &claude_panes {
+        if let Some(uuid) = known_claude_sessions.get(&pane_id) {
+            tracing::debug!(pane_id = %pane_id, uuid = %uuid, "using known Claude session UUID");
+            claimed_uuids.insert(uuid.clone());
+            result.insert(pane_id, uuid.clone());
+        } else {
+            unresolved_panes.push(pane_id);
+        }
+    }
+
+    // 3. For remaining panes, resolve via WMI command-line query.
+    // This gives exact PID→UUID mapping for restored sessions (--resume <uuid>).
+    if !unresolved_panes.is_empty() {
+        // Find the Claude PID for each unresolved pane.
+        let mut pane_to_claude_pid: Vec<(PaneId, u32)> = Vec::new();
+        for &pane_id in &unresolved_panes {
+            if let Some(&root_pid) = pane_pids.get(&pane_id) {
+                if let Some(claude_pid) = proc_snapshot.find_claude_pid(root_pid) {
+                    pane_to_claude_pid.push((pane_id, claude_pid));
+                }
+            }
+        }
+
+        if !pane_to_claude_pid.is_empty() {
+            let claude_pids: Vec<u32> = pane_to_claude_pid.iter().map(|(_, pid)| *pid).collect();
+            let cmdline_uuids = query_claude_session_ids_from_cmdline(&claude_pids);
+
+            let mut newly_resolved = Vec::new();
+            for &(pane_id, claude_pid) in &pane_to_claude_pid {
+                if let Some(uuid) = cmdline_uuids.get(&claude_pid) {
+                    tracing::debug!(pane_id = %pane_id, uuid = %uuid, claude_pid, "resolved UUID from command line");
+                    claimed_uuids.insert(uuid.clone());
+                    result.insert(pane_id, uuid.clone());
+                    newly_resolved.push(pane_id);
+                }
+            }
+
+            // Remove resolved panes from the unresolved list.
+            unresolved_panes.retain(|p| !newly_resolved.contains(p));
+        }
+    }
+
+    // 4. For still-unresolved panes, resolve via filesystem heuristic.
+    if !unresolved_panes.is_empty() {
+        let mut by_cwd: HashMap<String, Vec<PaneId>> = HashMap::new();
+        for pane_id in &unresolved_panes {
+            if let Some(cwd) = pane_cwds.get(pane_id) {
+                let cwd_str = cwd.to_string_lossy().into_owned();
+                by_cwd.entry(cwd_str).or_default().push(*pane_id);
+            }
+        }
+
+        for (cwd, pane_ids) in &by_cwd {
+            // Request extra candidates to account for already-claimed UUIDs.
+            let uuids = list_recent_claude_sessions(cwd, pane_ids.len() + claimed_uuids.len());
+            // Filter out UUIDs already assigned to known-session panes.
+            let available: Vec<&String> = uuids
+                .iter()
+                .filter(|u| !claimed_uuids.contains(*u))
+                .collect();
+            for (pane_id, uuid) in pane_ids.iter().zip(available.iter()) {
+                result.insert(*pane_id, (*uuid).clone());
+            }
+            let resolved = available.len().min(pane_ids.len());
+            let unresolved = pane_ids.len().saturating_sub(resolved);
+            if unresolved > 0 {
+                tracing::warn!(
+                    cwd = cwd,
+                    resolved,
+                    unresolved,
+                    "fewer Claude session files than panes, some will use --continue"
+                );
+            }
+        }
+    }
+
+    tracing::debug!(
+        total_claude_panes = claude_panes.len(),
+        resolved = result.len(),
+        "Claude session UUID resolution complete"
+    );
+
+    result
+}
+
 /// Recursively convert a `PaneTree` into a `PaneTreeSnapshot`, reading
 /// scrollback from the registry and per-pane CWDs, applying truncation limits.
+/// Detects Claude Code sessions via the process snapshot when available.
 fn snapshot_pane_tree(
     tree: &PaneTree,
     registry: &PaneRegistry,
     pane_cwds: &HashMap<PaneId, PathBuf>,
+    pane_pids: &HashMap<PaneId, u32>,
+    proc_snapshot: Option<&ProcessSnapshot>,
+    claude_uuids: &HashMap<PaneId, String>,
 ) -> PaneTreeSnapshot {
     match tree {
         PaneTree::Leaf(pane_id) => {
@@ -149,10 +305,26 @@ fn snapshot_pane_tree(
                 .get(pane_id)
                 .map(|p| p.to_string_lossy().into_owned());
 
+            // Detect Claude Code running in this pane via process tree inspection.
+            // Use resolved UUID if available, otherwise fall back to __continue__.
+            let claude_session_id = pane_pids.get(pane_id).and_then(|&pid| match proc_snapshot {
+                Some(snap) if snap.has_claude_descendant(pid) => {
+                    if let Some(uuid) = claude_uuids.get(pane_id) {
+                        tracing::debug!(pane_id = %pane_id, uuid = %uuid, "resolved Claude session UUID");
+                        Some(uuid.clone())
+                    } else {
+                        tracing::debug!(pane_id = %pane_id, pid, "Claude detected but UUID unresolved, using --continue fallback");
+                        Some(CLAUDE_CONTINUE_MARKER.to_owned())
+                    }
+                }
+                _ => None,
+            });
+
             PaneTreeSnapshot::Leaf {
                 surface_id,
                 cwd,
                 scrollback_text,
+                claude_session_id,
             }
         }
         PaneTree::Split {
@@ -168,8 +340,22 @@ fn snapshot_pane_tree(
             PaneTreeSnapshot::Split {
                 direction: direction_str.to_owned(),
                 ratio: *ratio,
-                first: Box::new(snapshot_pane_tree(first, registry, pane_cwds)),
-                second: Box::new(snapshot_pane_tree(second, registry, pane_cwds)),
+                first: Box::new(snapshot_pane_tree(
+                    first,
+                    registry,
+                    pane_cwds,
+                    pane_pids,
+                    proc_snapshot,
+                    claude_uuids,
+                )),
+                second: Box::new(snapshot_pane_tree(
+                    second,
+                    registry,
+                    pane_cwds,
+                    pane_pids,
+                    proc_snapshot,
+                    claude_uuids,
+                )),
             }
         }
     }
@@ -181,6 +367,7 @@ fn snapshot_pane_tree(
 pub struct FirstLeafData<'a> {
     pub cwd: Option<&'a str>,
     pub scrollback_text: Option<&'a str>,
+    pub claude_session_id: Option<&'a str>,
 }
 
 /// Extract data from the first (leftmost / topmost) leaf of a pane tree snapshot.
@@ -193,10 +380,12 @@ pub fn first_leaf(snapshot: &PaneTreeSnapshot) -> FirstLeafData<'_> {
         PaneTreeSnapshot::Leaf {
             cwd,
             scrollback_text,
+            claude_session_id,
             ..
         } => FirstLeafData {
             cwd: cwd.as_deref(),
             scrollback_text: scrollback_text.as_deref(),
+            claude_session_id: claude_session_id.as_deref(),
         },
         PaneTreeSnapshot::Split { first, .. } => first_leaf(first),
     }
@@ -331,6 +520,14 @@ pub async fn load_session() -> Result<Option<SessionState>, io::Error> {
         }
     }
 
+    // Sanitize claude_session_id values — only allow the known marker or UUID format.
+    // Defense-in-depth: prevents arbitrary strings from being passed to CLI args in future.
+    for ws in &mut state.workspaces {
+        if let Some(ref mut tree) = ws.pane_tree {
+            sanitize_claude_session_ids(tree);
+        }
+    }
+
     // Validate active_workspace_index is in bounds
     if state.active_workspace_index >= state.workspaces.len() {
         tracing::warn!(
@@ -348,6 +545,34 @@ pub async fn load_session() -> Result<Option<SessionState>, io::Error> {
     );
 
     Ok(Some(state))
+}
+
+/// Recursively sanitize `claude_session_id` values in a pane tree.
+///
+/// Only allows the `CLAUDE_CONTINUE_MARKER` or UUID-format strings (hex + hyphens).
+/// Rejects anything else to prevent command injection via tampered session.json.
+fn sanitize_claude_session_ids(tree: &mut PaneTreeSnapshot) {
+    match tree {
+        PaneTreeSnapshot::Leaf {
+            claude_session_id, ..
+        } => {
+            if let Some(ref val) = claude_session_id {
+                let valid = val == CLAUDE_CONTINUE_MARKER
+                    || (val.len() <= 40 && val.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+                if !valid {
+                    tracing::warn!(
+                        value = val,
+                        "session restore: rejected suspicious claude_session_id"
+                    );
+                    *claude_session_id = None;
+                }
+            }
+        }
+        PaneTreeSnapshot::Split { first, second, .. } => {
+            sanitize_claude_session_ids(first);
+            sanitize_claude_session_ids(second);
+        }
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -381,7 +606,15 @@ mod tests {
         let wm = WorkspaceManager::new();
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            0,
+            None,
+        );
 
         assert_eq!(state.version, 1);
         assert_eq!(state.workspaces.len(), 1);
@@ -400,7 +633,15 @@ mod tests {
         let active = wm.active_mut();
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            0,
+            None,
+        );
 
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
@@ -419,7 +660,15 @@ mod tests {
         wm.create("Third".to_string());
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            0,
+            None,
+        );
 
         assert_eq!(state.workspaces.len(), 3);
         assert_eq!(state.workspaces[1].name, "Second");
@@ -437,6 +686,7 @@ mod tests {
                     surface_id: "surf-1".to_string(),
                     cwd: Some("/home/user".to_string()),
                     scrollback_text: Some("hello\nworld".to_string()),
+                    claude_session_id: None,
                 }),
             }],
             active_workspace_index: 0,
@@ -477,11 +727,13 @@ mod tests {
                         surface_id: "surf-1".to_string(),
                         cwd: None,
                         scrollback_text: None,
+                        claude_session_id: None,
                     }),
                     second: Box::new(PaneTreeSnapshot::Leaf {
                         surface_id: "surf-2".to_string(),
                         cwd: None,
                         scrollback_text: None,
+                        claude_session_id: None,
                     }),
                 }),
             }],
@@ -539,7 +791,15 @@ mod tests {
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
         // Build state — should succeed even with empty scrollback.
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            0,
+            None,
+        );
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
     }
@@ -557,7 +817,15 @@ mod tests {
         let mut cwds = HashMap::new();
         cwds.insert(pane_id, PathBuf::from("F:/Workspaces/wmux"));
 
-        let state = build_session_state(&wm, &registry, &cwds, 260, None);
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &cwds,
+            &HashMap::new(),
+            &HashMap::new(),
+            260,
+            None,
+        );
         assert_eq!(state.sidebar_width, 260);
 
         if let Some(PaneTreeSnapshot::Leaf { cwd, .. }) = &state.workspaces[0].pane_tree {
@@ -579,7 +847,15 @@ mod tests {
             maximized: true,
         };
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, Some(geom));
+        let state = build_session_state(
+            &wm,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            0,
+            Some(geom),
+        );
         let w = state.window.unwrap();
         assert_eq!(w.x, 50);
         assert_eq!(w.width, 1920);
@@ -598,23 +874,70 @@ mod tests {
                     surface_id: "a".to_string(),
                     cwd: Some("/deep/leaf".to_string()),
                     scrollback_text: Some("deep content".to_string()),
+                    claude_session_id: Some("__continue__".to_string()),
                 }),
                 second: Box::new(PaneTreeSnapshot::Leaf {
                     surface_id: "b".to_string(),
                     cwd: None,
                     scrollback_text: None,
+                    claude_session_id: None,
                 }),
             }),
             second: Box::new(PaneTreeSnapshot::Leaf {
                 surface_id: "c".to_string(),
                 cwd: None,
                 scrollback_text: None,
+                claude_session_id: None,
             }),
         };
 
         let leaf = first_leaf(&tree);
         assert_eq!(leaf.cwd, Some("/deep/leaf"));
         assert_eq!(leaf.scrollback_text, Some("deep content"));
+        assert_eq!(leaf.claude_session_id, Some("__continue__"));
+    }
+
+    #[test]
+    fn claude_session_id_backward_compat() {
+        // Old session files without claude_session_id should deserialize fine.
+        let json = r#"{"Leaf":{"surface_id":"s1","cwd":"/tmp","scrollback_text":null}}"#;
+        let tree: PaneTreeSnapshot = serde_json::from_str(json).unwrap();
+        if let PaneTreeSnapshot::Leaf {
+            claude_session_id, ..
+        } = &tree
+        {
+            assert!(claude_session_id.is_none());
+        } else {
+            panic!("expected Leaf variant");
+        }
+    }
+
+    #[test]
+    fn claude_session_id_skipped_when_none() {
+        let tree = PaneTreeSnapshot::Leaf {
+            surface_id: "s1".to_string(),
+            cwd: None,
+            scrollback_text: None,
+            claude_session_id: None,
+        };
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(
+            !json.contains("claude_session_id"),
+            "None claude_session_id should be skipped in JSON"
+        );
+    }
+
+    #[test]
+    fn claude_session_id_serialized_when_present() {
+        let tree = PaneTreeSnapshot::Leaf {
+            surface_id: "s1".to_string(),
+            cwd: None,
+            scrollback_text: None,
+            claude_session_id: Some("__continue__".to_string()),
+        };
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(json.contains("claude_session_id"));
+        assert!(json.contains("__continue__"));
     }
 
     #[test]

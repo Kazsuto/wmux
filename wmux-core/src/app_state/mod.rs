@@ -85,6 +85,17 @@ pub enum AppCommand {
     /// Mark a pane's process as exited.
     MarkExited { pane_id: PaneId, success: bool },
 
+    /// Store the child process PID for a pane (used for Claude Code detection).
+    /// Optionally sets an initial CWD if the pane was spawned with a known directory
+    /// (needed for restored panes that run Claude directly without a shell to emit OSC 7).
+    /// Optionally sets a known Claude session UUID (from `--resume` at restore time).
+    SetPanePid {
+        pane_id: PaneId,
+        pid: u32,
+        initial_cwd: Option<std::path::PathBuf>,
+        claude_session_id: Option<String>,
+    },
+
     /// Extract selected text from a pane's grid using a Selection.
     ExtractSelection {
         pane_id: PaneId,
@@ -349,6 +360,18 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("MarkExited")
                 .field("pane_id", pane_id)
                 .field("success", success)
+                .finish(),
+            Self::SetPanePid {
+                pane_id,
+                pid,
+                initial_cwd,
+                claude_session_id,
+            } => f
+                .debug_struct("SetPanePid")
+                .field("pane_id", pane_id)
+                .field("pid", pid)
+                .field("has_cwd", &initial_cwd.is_some())
+                .field("has_claude_session", &claude_session_id.is_some())
                 .finish(),
             Self::ExtractSelection { pane_id, .. } => f
                 .debug_struct("ExtractSelection")

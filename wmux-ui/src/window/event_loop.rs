@@ -1631,6 +1631,7 @@ fn restore_pane_tree(
         rows,
         leaf_data.cwd,
         leaf_data.scrollback_text,
+        leaf_data.claude_session_id,
         app_state,
         rt_handle,
     );
@@ -1702,6 +1703,7 @@ fn fill_second(
         PaneTreeSnapshot::Leaf {
             cwd,
             scrollback_text,
+            claude_session_id,
             ..
         } => {
             handlers::spawn_pane_pty_for_restore(
@@ -1710,6 +1712,7 @@ fn fill_second(
                 rows,
                 cwd.as_deref(),
                 scrollback_text.as_deref(),
+                claude_session_id.as_deref(),
                 app_state,
                 rt_handle,
             );
@@ -1723,6 +1726,7 @@ fn fill_second(
                 rows,
                 leaf_data.cwd,
                 leaf_data.scrollback_text,
+                leaf_data.claude_session_id,
                 app_state,
                 rt_handle,
             );

@@ -121,6 +121,24 @@ impl AppStateHandle {
         }
     }
 
+    /// Store the child process PID for a pane (used for Claude Code detection at save time).
+    /// Optionally sets an initial CWD and/or a known Claude session UUID.
+    /// Fire-and-forget.
+    pub fn set_pane_pid(
+        &self,
+        pane_id: PaneId,
+        pid: u32,
+        initial_cwd: Option<std::path::PathBuf>,
+        claude_session_id: Option<String>,
+    ) {
+        let _ = self.cmd_tx.try_send(AppCommand::SetPanePid {
+            pane_id,
+            pid,
+            initial_cwd,
+            claude_session_id,
+        });
+    }
+
     /// Request render data for a pane. Blocks until the actor responds.
     pub async fn get_render_data(&self, pane_id: PaneId) -> Option<PaneRenderData> {
         let (tx, rx) = tokio::sync::oneshot::channel();

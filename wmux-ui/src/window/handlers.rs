@@ -18,17 +18,23 @@ pub(super) fn spawn_pane_pty(
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
-    spawn_pane_pty_inner(pane_id, cols, rows, None, None, app_state, rt_handle);
+    spawn_pane_pty_inner(pane_id, cols, rows, None, None, None, app_state, rt_handle);
 }
 
 /// Spawn a PTY for a pane during session restore, optionally injecting scrollback text
 /// into the terminal before registration so it appears in the scrollback buffer.
+///
+/// If `claude_session_id` is `Some`, the pane was running Claude Code at save time.
+/// The restore will spawn `claude --continue` instead of a shell, with fallback to
+/// normal shell if Claude Code is not installed.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_pane_pty_for_restore(
     pane_id: PaneId,
     cols: u16,
     rows: u16,
     cwd: Option<&str>,
     scrollback_text: Option<&str>,
+    claude_session_id: Option<&str>,
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
@@ -38,17 +44,20 @@ pub(super) fn spawn_pane_pty_for_restore(
         rows,
         cwd,
         scrollback_text,
+        claude_session_id,
         app_state,
         rt_handle,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_pane_pty_inner(
     pane_id: PaneId,
     cols: u16,
     rows: u16,
     cwd: Option<&str>,
     scrollback_text: Option<&str>,
+    claude_session_id: Option<&str>,
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
@@ -96,20 +105,88 @@ fn spawn_pane_pty_inner(
             }
         }
     });
+    let working_directory = validated_cwd.map(std::path::PathBuf::from);
+    // Keep a copy for set_pane_pid (working_directory is consumed by SpawnConfig).
+    let initial_cwd = working_directory.clone();
     let manager = PtyManager::new();
-    let config = SpawnConfig {
-        cols,
-        rows,
-        working_directory: validated_cwd.map(std::path::PathBuf::from),
-        ..Default::default()
-    };
-    let handle = match manager.spawn(config) {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::error!(error = %e, pane_id = %pane_id, "failed to spawn PTY for new pane");
-            return;
+
+    // If the pane was running Claude Code, try to restore the session.
+    // UUID → `claude --resume <uuid>` (exact session)
+    // CLAUDE_CONTINUE_MARKER → `claude --continue` (most recent session)
+    // Falls back to a normal shell if Claude Code is not installed or spawn fails.
+    //
+    // `known_uuid`: the exact session UUID to remember in the actor (for stable
+    // pane→session mapping across save/restore cycles). Only set for --resume.
+    let mut known_uuid: Option<String> = None;
+    let handle = if let Some(session_id) = claude_session_id {
+        let (args, mode) = if session_id == wmux_core::CLAUDE_CONTINUE_MARKER {
+            (vec!["--continue".to_string()], "--continue")
+        } else {
+            known_uuid = Some(session_id.to_string());
+            (
+                vec!["--resume".to_string(), session_id.to_string()],
+                "--resume",
+            )
+        };
+        let claude_config = SpawnConfig {
+            shell: Some(std::path::PathBuf::from("claude")),
+            args,
+            cols,
+            rows,
+            working_directory: working_directory.clone(),
+            ..Default::default()
+        };
+        match manager.spawn(claude_config) {
+            Ok(h) => {
+                tracing::info!(
+                    pane_id = %pane_id,
+                    mode,
+                    session_id,
+                    "restoring Claude Code session"
+                );
+                h
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    pane_id = %pane_id,
+                    "Claude Code restore failed, falling back to shell"
+                );
+                let fallback = SpawnConfig {
+                    cols,
+                    rows,
+                    working_directory,
+                    ..Default::default()
+                };
+                match manager.spawn(fallback) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::error!(error = %e, pane_id = %pane_id, "fallback shell spawn failed");
+                        return;
+                    }
+                }
+            }
+        }
+    } else {
+        let config = SpawnConfig {
+            cols,
+            rows,
+            working_directory,
+            ..Default::default()
+        };
+        match manager.spawn(config) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!(error = %e, pane_id = %pane_id, "failed to spawn PTY for new pane");
+                return;
+            }
         }
     };
+
+    // Store child PID, initial CWD, and known Claude session UUID in the actor.
+    // The CWD is essential for panes without a shell to emit OSC 7.
+    // The UUID preserves exact pane→session mapping across save/restore cycles.
+    app_state.set_pane_pid(pane_id, handle.child_pid(), initial_cwd, known_uuid);
 
     // PTY bridge task: PTY output → AppState actor, AppState input → PTY.
     let app_state_clone = app_state.clone();

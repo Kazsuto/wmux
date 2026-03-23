@@ -53,6 +53,11 @@ pub(super) struct AppStateActor {
     port_scan_in_flight: bool,
     /// Per-pane current working directory (populated from OSC 7 events).
     pane_cwds: HashMap<PaneId, PathBuf>,
+    /// Per-pane child process PID (set after PTY spawn, used for Claude Code detection).
+    pane_pids: HashMap<PaneId, u32>,
+    /// Per-pane Claude Code session UUID (set at restore time from `--resume <uuid>`).
+    /// Used to preserve exact pane→session mapping across save/restore cycles.
+    pane_claude_sessions: HashMap<PaneId, String>,
     /// Sidebar width (pixels), sent from UI layer for session persistence.
     ui_sidebar_width: u16,
     /// Window geometry, sent from UI layer for session persistence.
@@ -75,6 +80,8 @@ pub(super) fn spawn_actor(event_tx: mpsc::Sender<AppEvent>) -> (AppStateHandle, 
         last_git_detect: HashMap::new(),
         port_scan_in_flight: false,
         pane_cwds: HashMap::new(),
+        pane_pids: HashMap::new(),
+        pane_claude_sessions: HashMap::new(),
         ui_sidebar_width: 0,
         ui_window_geometry: None,
         cmd_rx,
@@ -146,6 +153,26 @@ impl AppStateActor {
                 }
                 AppCommand::MarkExited { pane_id, success } => {
                     self.handle_exit(pane_id, success);
+                }
+                AppCommand::SetPanePid {
+                    pane_id,
+                    pid,
+                    initial_cwd,
+                    claude_session_id,
+                } => {
+                    self.pane_pids.insert(pane_id, pid);
+                    // Set initial CWD for panes without a shell to emit OSC 7
+                    // (e.g., restored Claude Code panes spawned directly).
+                    if let Some(cwd) = initial_cwd {
+                        self.pane_cwds.entry(pane_id).or_insert(cwd);
+                    }
+                    // Track Claude session UUID: set from --resume, or clear when
+                    // the pane spawns a non-Claude process (user opened new tab).
+                    if let Some(id) = claude_session_id {
+                        self.pane_claude_sessions.insert(pane_id, id);
+                    } else {
+                        self.pane_claude_sessions.remove(&pane_id);
+                    }
                 }
                 AppCommand::ExtractSelection {
                     pane_id,
@@ -343,6 +370,8 @@ impl AppStateActor {
                         if bpid != pane_id {
                             self.registry.remove(bpid);
                             self.pane_cwds.remove(&bpid);
+                            self.pane_pids.remove(&bpid);
+                            self.pane_claude_sessions.remove(&bpid);
                         }
                     }
 
@@ -640,6 +669,8 @@ impl AppStateActor {
             &self.workspace_manager,
             &self.registry,
             &self.pane_cwds,
+            &self.pane_pids,
+            &self.pane_claude_sessions,
             self.ui_sidebar_width,
             self.ui_window_geometry.clone(),
         )
@@ -766,10 +797,14 @@ impl AppStateActor {
         for hid in &hidden_ids {
             self.registry.remove(*hid);
             self.pane_cwds.remove(hid);
+            self.pane_pids.remove(hid);
+            self.pane_claude_sessions.remove(hid);
         }
 
         self.registry.remove(pane_id);
         self.pane_cwds.remove(&pane_id);
+        self.pane_pids.remove(&pane_id);
+        self.pane_claude_sessions.remove(&pane_id);
         if self.zoomed_pane == Some(pane_id) {
             self.zoomed_pane = None;
         }
@@ -849,6 +884,9 @@ impl AppStateActor {
             pane.terminal.process(msg.as_bytes());
             tracing::info!(pane_id = %pane_id, success, "pane process exited");
         }
+        // Clear stale Claude session tracking — the process that was running
+        // Claude has exited, so the UUID is no longer valid for this pane.
+        self.pane_claude_sessions.remove(&pane_id);
         let _ = self
             .event_tx
             .try_send(AppEvent::PaneExited { pane_id, success });

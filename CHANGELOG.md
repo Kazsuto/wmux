@@ -2,6 +2,13 @@
 
 ## 2026-03-23
 
+FIX: Invalidate stale Claude session UUIDs — clear `pane_claude_sessions` on process exit and when new non-Claude process spawns, prevents saving old UUID when user switches to a different Claude session
+FIX: Exact pane→session mapping via WMI command-line query — read `--resume <uuid>` from each Claude process to correlate PIDs to sessions, eliminates wrong-panel assignment
+FIX: Remove 5-minute cutoff on session file resolution — active sessions are always the most recently modified, cutoff was too aggressive and caused all UUIDs to resolve as `__continue__`
+FIX: Stable pane→session mapping — remember Claude session UUID from `--resume` at restore time, reuse it at subsequent saves instead of re-resolving from filesystem (prevents session swapping between panels)
+FIX: Detect Claude in restored panes — `has_claude_descendant` now checks the root PID itself (handles direct Claude spawn without shell), set initial CWD for panes without OSC 7
+FIX: Resolve unique Claude Code session UUIDs per pane — multi-pane same-CWD now restores each panel's own session via `claude --resume <uuid>` instead of all panels competing for `--continue`
+FEATURE: Detect Claude Code sessions in panes and auto-restore on session restore — process tree detection via ToolHelp32 snapshot, `claude_session_id` field in session schema, filesystem-based UUID resolution, fallback to normal shell if Claude not installed
 REFACTOR: Persist window geometry (position, size, maximized state) and sidebar width in session — restore on startup, update when window resizes or sidebar width changes
 REFACTOR: Add session restore safety — validate pane tree depth (max 16) to prevent pathological recursion from malformed session files; extract first_leaf helper for simplified restore logic
 REFACTOR: Extract DRY helpers in app_state actor (build_workspace_snapshot, mark_active_backing_dirty) and UI handlers (apply_text_edit_key) — eliminate 3 code duplications

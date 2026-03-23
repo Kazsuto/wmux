@@ -70,6 +70,11 @@ impl PtyHandle {
         self.conpty.resize(cols, rows)
     }
 
+    /// Process ID of the child (shell) process.
+    pub fn child_pid(&self) -> u32 {
+        self.child.pid()
+    }
+
     /// Consume the handle, returning its individual components.
     ///
     /// Used by [`PtyActorHandle`](crate::PtyActorHandle) to move each component
