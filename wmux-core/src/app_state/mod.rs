@@ -287,6 +287,12 @@ pub enum AppCommand {
         reply: tokio::sync::oneshot::Sender<MetadataSnapshot>,
     },
 
+    /// Update UI-owned state (sidebar width, window geometry) for session persistence.
+    UpdateUiState {
+        sidebar_width: u16,
+        window: Option<crate::session::WindowGeometry>,
+    },
+
     /// Shut down the actor.
     Shutdown,
 }
@@ -527,6 +533,10 @@ impl fmt::Debug for AppCommand {
                 .finish_non_exhaustive(),
             Self::SidebarClearLog => write!(f, "SidebarClearLog"),
             Self::SidebarState { .. } => write!(f, "SidebarState"),
+            Self::UpdateUiState { sidebar_width, .. } => f
+                .debug_struct("UpdateUiState")
+                .field("sidebar_width", sidebar_width)
+                .finish_non_exhaustive(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }

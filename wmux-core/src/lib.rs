@@ -54,8 +54,8 @@ pub use remote::{ReconnectBackoff, RemoteConfig, RemoteConnectionState, RemoteEr
 pub use scrollback::Scrollback;
 pub use selection::{Selection, SelectionMode, SelectionPoint};
 pub use session::{
-    build_session_state, load_session, save_session, session_file_path, PaneTreeSnapshot,
-    SessionState, WindowGeometry, SESSION_VERSION,
+    build_session_state, first_leaf, load_session, save_session, session_file_path, FirstLeafData,
+    PaneTreeSnapshot, SessionState, WindowGeometry, SESSION_VERSION,
 };
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};
 pub use surface_manager::{Surface, SurfaceManager};

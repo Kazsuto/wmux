@@ -576,6 +576,18 @@ impl AppStateHandle {
         rx.await.unwrap_or_else(|_| MetadataSnapshot::empty())
     }
 
+    /// Update UI-owned state for session persistence. Fire-and-forget.
+    pub fn update_ui_state(
+        &self,
+        sidebar_width: u16,
+        window: Option<crate::session::WindowGeometry>,
+    ) {
+        let _ = self.cmd_tx.try_send(AppCommand::UpdateUiState {
+            sidebar_width,
+            window,
+        });
+    }
+
     /// Shut down the actor. Fire-and-forget.
     pub fn shutdown(&self) {
         let _ = self.cmd_tx.try_send(AppCommand::Shutdown);

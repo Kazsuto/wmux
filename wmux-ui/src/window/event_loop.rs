@@ -41,9 +41,23 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             return;
         }
 
-        let attrs = WindowAttributes::default()
-            .with_title("wmux")
-            .with_inner_size(winit::dpi::LogicalSize::new(1200, 800));
+        // Apply saved window geometry from session, or use default size.
+        let attrs = if let Some(ref session) = self.pending_session {
+            if let Some(ref geom) = session.window {
+                WindowAttributes::default()
+                    .with_title("wmux")
+                    .with_inner_size(winit::dpi::PhysicalSize::new(geom.width, geom.height))
+                    .with_position(winit::dpi::PhysicalPosition::new(geom.x, geom.y))
+            } else {
+                WindowAttributes::default()
+                    .with_title("wmux")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1200, 800))
+            }
+        } else {
+            WindowAttributes::default()
+                .with_title("wmux")
+                .with_inner_size(winit::dpi::LogicalSize::new(1200, 800))
+        };
 
         let window = Arc::new(
             event_loop
@@ -133,7 +147,15 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         };
 
         // Restore session or create a fresh default pane.
-        let pane_id = if let Some(session) = self.pending_session.take() {
+        let session = self.pending_session.take();
+        let restored_sidebar_width = session.as_ref().and_then(|s| {
+            if s.sidebar_width > 0 {
+                Some(s.sidebar_width)
+            } else {
+                None
+            }
+        });
+        let pane_id = if let Some(session) = session {
             restore_session(&session, cols, rows, &self.app_state, &self.rt_handle)
         } else {
             let id = PaneId::new();
@@ -389,6 +411,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             terminal_font_family: config.font_family.clone(),
             terminal_font_size: config.font_size,
         });
+
+        // Override sidebar width from saved session (takes priority over config default).
+        if let Some(sw) = restored_sidebar_width {
+            if let Some(ref mut state) = self.state {
+                state.sidebar.width = (sw as f32).clamp(
+                    crate::sidebar::MIN_SIDEBAR_WIDTH,
+                    crate::sidebar::MAX_SIDEBAR_WIDTH,
+                );
+            }
+        }
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: WmuxEvent) {
@@ -501,6 +533,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         // Per-pane renderer + PTY resizing is handled in render()
                         // based on each pane's actual rect dimensions.
                     }
+
+                    // Update session persistence with current window geometry.
+                    send_ui_state(state, &self.app_state);
 
                     state.window.request_redraw();
                 }
@@ -730,6 +765,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 {
                     state.sidebar.interaction = SidebarInteraction::Idle;
                     state.window.set_cursor(winit::window::CursorIcon::Default);
+                    // Persist new sidebar width for session save.
+                    send_ui_state(state, &self.app_state);
                     state.window.request_redraw();
                     return;
                 }
@@ -1570,9 +1607,14 @@ fn restore_session(
     })
 }
 
-/// Recursively restore a pane tree from a snapshot.
+/// Restore an entire pane tree from a snapshot at arbitrary depth.
 ///
-/// Returns the PaneId of the first (leftmost/topmost) leaf — used as the focused pane.
+/// **Algorithm**: the first (leftmost) leaf is created and registered, which
+/// initialises the workspace's pane_tree. Then `fill_splits` recursively
+/// splits that leaf to build the full tree structure, and `fill_second`
+/// spawns PTYs for each second-child created by those splits.
+///
+/// Returns the PaneId of the first leaf (used as the focused pane).
 fn restore_pane_tree(
     tree: &PaneTreeSnapshot,
     cols: u16,
@@ -1580,63 +1622,130 @@ fn restore_pane_tree(
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) -> PaneId {
-    match tree {
-        PaneTreeSnapshot::Leaf { cwd, .. } => {
-            let pane_id = PaneId::new();
-            handlers::spawn_pane_pty_with_cwd(
+    // Create the root pane from the leftmost leaf of the snapshot.
+    let root_id = PaneId::new();
+    let leaf_data = wmux_core::first_leaf(tree);
+    handlers::spawn_pane_pty_for_restore(
+        root_id,
+        cols,
+        rows,
+        leaf_data.cwd,
+        leaf_data.scrollback_text,
+        app_state,
+        rt_handle,
+    );
+
+    // Build the tree structure by recursively splitting.
+    fill_splits(tree, root_id, cols, rows, app_state, rt_handle);
+
+    root_id
+}
+
+/// Recursively build the split structure for a snapshot subtree.
+///
+/// `pane_id` is the first (leftmost) leaf of this subtree — it was already
+/// created by the caller. If `snapshot` is a Split, we split `pane_id` and
+/// recurse into both children.
+fn fill_splits(
+    snapshot: &PaneTreeSnapshot,
+    pane_id: PaneId,
+    cols: u16,
+    rows: u16,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+) {
+    let PaneTreeSnapshot::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = snapshot
+    else {
+        // Leaf — pane_id already has a PTY; nothing to do.
+        return;
+    };
+
+    let split_dir = match direction.as_str() {
+        "vertical" => SplitDirection::Vertical,
+        _ => SplitDirection::Horizontal,
+    };
+
+    let second_id = match rt_handle.block_on(app_state.split_pane(pane_id, split_dir)) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(error = %e, "session restore: split failed, skipping subtree");
+            return;
+        }
+    };
+    app_state.resize_split(pane_id, *ratio);
+
+    // Recurse into first child (pane_id remains its first leaf).
+    fill_splits(first, pane_id, cols, rows, app_state, rt_handle);
+
+    // Handle second child — needs a PTY and possibly more splits.
+    fill_second(second, second_id, cols, rows, app_state, rt_handle);
+}
+
+/// Spawn a PTY for a second-child pane and optionally continue splitting.
+///
+/// `pane_id` was created by `split_pane` and exists as a leaf in the tree
+/// but has no PTY yet.
+fn fill_second(
+    snapshot: &PaneTreeSnapshot,
+    pane_id: PaneId,
+    cols: u16,
+    rows: u16,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+) {
+    match snapshot {
+        PaneTreeSnapshot::Leaf {
+            cwd,
+            scrollback_text,
+            ..
+        } => {
+            handlers::spawn_pane_pty_for_restore(
                 pane_id,
                 cols,
                 rows,
                 cwd.as_deref(),
+                scrollback_text.as_deref(),
                 app_state,
                 rt_handle,
             );
-            pane_id
         }
-        PaneTreeSnapshot::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => {
-            // Restore the first child as the root pane.
-            let first_id = restore_pane_tree(first, cols, rows, app_state, rt_handle);
-
-            // Split the first pane to create space for the second child.
-            let split_dir = match direction.as_str() {
-                "vertical" => SplitDirection::Vertical,
-                _ => SplitDirection::Horizontal,
-            };
-
-            match rt_handle.block_on(app_state.split_pane(first_id, split_dir)) {
-                Ok(second_id) => {
-                    // Set the split ratio.
-                    app_state.resize_split(first_id, *ratio);
-
-                    // Spawn a PTY for the second pane using the snapshot's CWD.
-                    let second_cwd = match second.as_ref() {
-                        PaneTreeSnapshot::Leaf { cwd, .. } => cwd.as_deref(),
-                        _ => None,
-                    };
-                    handlers::spawn_pane_pty_with_cwd(
-                        second_id, cols, rows, second_cwd, app_state, rt_handle,
-                    );
-
-                    // If the second child is itself a split, we need deeper recursion.
-                    // For now, nested splits beyond depth 1 are not fully restored
-                    // (the second child is always a leaf with PTY). Full recursive
-                    // tree restore requires replacing pane IDs in the actor's tree,
-                    // which is a more invasive change.
-
-                    first_id
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "session restore: split failed, continuing with single pane");
-                    first_id
-                }
-            }
+        PaneTreeSnapshot::Split { .. } => {
+            // pane_id is the first leaf of this sub-split — spawn its PTY.
+            let leaf_data = wmux_core::first_leaf(snapshot);
+            handlers::spawn_pane_pty_for_restore(
+                pane_id,
+                cols,
+                rows,
+                leaf_data.cwd,
+                leaf_data.scrollback_text,
+                app_state,
+                rt_handle,
+            );
+            // Then build the split structure.
+            fill_splits(snapshot, pane_id, cols, rows, app_state, rt_handle);
         }
     }
+}
+
+/// Send current UI state (sidebar width + window geometry) to the actor for session persistence.
+fn send_ui_state(state: &super::UiState<'_>, app_state: &AppStateHandle) {
+    let size = state.window.inner_size();
+    let pos = state.window.outer_position().unwrap_or_default();
+    app_state.update_ui_state(
+        state.sidebar.width as u16,
+        Some(wmux_core::WindowGeometry {
+            x: pos.x,
+            y: pos.y,
+            width: size.width,
+            height: size.height,
+            maximized: state.window.is_maximized(),
+        }),
+    );
 }
 
 /// Process a browser command from the IPC handler on the UI/STA thread.

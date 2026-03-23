@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::pane_registry::PaneRegistry;
 use crate::pane_tree::PaneTree;
 use crate::surface::SplitDirection;
+use crate::types::PaneId;
 use crate::workspace_manager::WorkspaceManager;
 
 // Scrollback limits before serialization (ADR-0009).
@@ -56,6 +58,8 @@ pub struct WindowGeometry {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 // ─── Build helpers ────────────────────────────────────────────────────────────
@@ -67,6 +71,9 @@ pub struct WindowGeometry {
 pub fn build_session_state(
     workspace_manager: &WorkspaceManager,
     registry: &PaneRegistry,
+    pane_cwds: &HashMap<PaneId, PathBuf>,
+    sidebar_width: u16,
+    window: Option<WindowGeometry>,
 ) -> SessionState {
     let active_workspace_index = workspace_manager.active_index();
 
@@ -75,7 +82,7 @@ pub fn build_session_state(
         .map(|ws| {
             let pane_tree = ws
                 .pane_tree()
-                .map(|tree| snapshot_pane_tree(tree, registry));
+                .map(|tree| snapshot_pane_tree(tree, registry, pane_cwds));
             WorkspaceSnapshot {
                 id: ws.id().to_string(),
                 name: ws.name().to_owned(),
@@ -88,14 +95,18 @@ pub fn build_session_state(
         version: 1,
         workspaces,
         active_workspace_index,
-        sidebar_width: 0,
-        window: None,
+        sidebar_width,
+        window,
     }
 }
 
 /// Recursively convert a `PaneTree` into a `PaneTreeSnapshot`, reading
-/// scrollback from the registry and applying the truncation limits.
-fn snapshot_pane_tree(tree: &PaneTree, registry: &PaneRegistry) -> PaneTreeSnapshot {
+/// scrollback from the registry and per-pane CWDs, applying truncation limits.
+fn snapshot_pane_tree(
+    tree: &PaneTree,
+    registry: &PaneRegistry,
+    pane_cwds: &HashMap<PaneId, PathBuf>,
+) -> PaneTreeSnapshot {
     match tree {
         PaneTree::Leaf(pane_id) => {
             let (surface_id, scrollback_text) = if let Some(pane) = registry.get(*pane_id) {
@@ -134,9 +145,13 @@ fn snapshot_pane_tree(tree: &PaneTree, registry: &PaneRegistry) -> PaneTreeSnaps
                 (pane_id.to_string(), None)
             };
 
+            let cwd = pane_cwds
+                .get(pane_id)
+                .map(|p| p.to_string_lossy().into_owned());
+
             PaneTreeSnapshot::Leaf {
                 surface_id,
-                cwd: None,
+                cwd,
                 scrollback_text,
             }
         }
@@ -153,9 +168,53 @@ fn snapshot_pane_tree(tree: &PaneTree, registry: &PaneRegistry) -> PaneTreeSnaps
             PaneTreeSnapshot::Split {
                 direction: direction_str.to_owned(),
                 ratio: *ratio,
-                first: Box::new(snapshot_pane_tree(first, registry)),
-                second: Box::new(snapshot_pane_tree(second, registry)),
+                first: Box::new(snapshot_pane_tree(first, registry, pane_cwds)),
+                second: Box::new(snapshot_pane_tree(second, registry, pane_cwds)),
             }
+        }
+    }
+}
+
+// ─── Restore helpers ─────────────────────────────────────────────────────────
+
+/// Data extracted from the first (leftmost) leaf of a snapshot tree.
+pub struct FirstLeafData<'a> {
+    pub cwd: Option<&'a str>,
+    pub scrollback_text: Option<&'a str>,
+}
+
+/// Extract data from the first (leftmost / topmost) leaf of a pane tree snapshot.
+///
+/// Used during session restore to populate the root pane before building the
+/// rest of the tree structure via split operations.
+#[must_use]
+pub fn first_leaf(snapshot: &PaneTreeSnapshot) -> FirstLeafData<'_> {
+    match snapshot {
+        PaneTreeSnapshot::Leaf {
+            cwd,
+            scrollback_text,
+            ..
+        } => FirstLeafData {
+            cwd: cwd.as_deref(),
+            scrollback_text: scrollback_text.as_deref(),
+        },
+        PaneTreeSnapshot::Split { first, .. } => first_leaf(first),
+    }
+}
+
+/// Maximum pane tree nesting depth. Protects against pathological session files
+/// that would cause excessive recursion during restore.
+const MAX_PANE_TREE_DEPTH: usize = 16;
+
+/// Check that a pane tree snapshot does not exceed the depth limit.
+fn validate_tree_depth(tree: &PaneTreeSnapshot, depth: usize) -> bool {
+    if depth > MAX_PANE_TREE_DEPTH {
+        return false;
+    }
+    match tree {
+        PaneTreeSnapshot::Leaf { .. } => true,
+        PaneTreeSnapshot::Split { first, second, .. } => {
+            validate_tree_depth(first, depth + 1) && validate_tree_depth(second, depth + 1)
         }
     }
 }
@@ -258,6 +317,20 @@ pub async fn load_session() -> Result<Option<SessionState>, io::Error> {
         return Ok(None);
     }
 
+    // Validate pane tree depth to prevent pathological session files.
+    for ws in &state.workspaces {
+        if let Some(ref tree) = ws.pane_tree {
+            if !validate_tree_depth(tree, 0) {
+                tracing::warn!(
+                    workspace = %ws.name,
+                    max_depth = MAX_PANE_TREE_DEPTH,
+                    "pane tree too deep, starting fresh"
+                );
+                return Ok(None);
+            }
+        }
+    }
+
     // Validate active_workspace_index is in bounds
     if state.active_workspace_index >= state.workspaces.len() {
         tracing::warn!(
@@ -285,7 +358,6 @@ mod tests {
     use crate::pane_registry::PaneState;
     use crate::surface_manager::{Surface, SurfaceManager};
     use crate::terminal::Terminal;
-    use crate::types::PaneId;
     use tokio::sync::mpsc;
 
     fn make_pane_state() -> PaneState {
@@ -309,7 +381,7 @@ mod tests {
         let wm = WorkspaceManager::new();
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
 
         assert_eq!(state.version, 1);
         assert_eq!(state.workspaces.len(), 1);
@@ -328,7 +400,7 @@ mod tests {
         let active = wm.active_mut();
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
-        let state = build_session_state(&wm, &registry);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
 
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
@@ -347,7 +419,7 @@ mod tests {
         wm.create("Third".to_string());
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
 
         assert_eq!(state.workspaces.len(), 3);
         assert_eq!(state.workspaces[1].name, "Second");
@@ -374,6 +446,7 @@ mod tests {
                 y: 200,
                 width: 1280,
                 height: 720,
+                maximized: false,
             }),
         };
 
@@ -466,8 +539,89 @@ mod tests {
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
         // Build state — should succeed even with empty scrollback.
-        let state = build_session_state(&wm, &registry);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
+    }
+
+    #[test]
+    fn build_session_state_captures_pane_cwd() {
+        let mut wm = WorkspaceManager::new();
+        let mut registry = PaneRegistry::new();
+        let pane_id = PaneId::new();
+
+        registry.register(pane_id, make_pane_state());
+        let active = wm.active_mut();
+        active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
+
+        let mut cwds = HashMap::new();
+        cwds.insert(pane_id, PathBuf::from("F:/Workspaces/wmux"));
+
+        let state = build_session_state(&wm, &registry, &cwds, 260, None);
+        assert_eq!(state.sidebar_width, 260);
+
+        if let Some(PaneTreeSnapshot::Leaf { cwd, .. }) = &state.workspaces[0].pane_tree {
+            assert_eq!(cwd.as_deref(), Some("F:/Workspaces/wmux"));
+        } else {
+            panic!("expected Leaf with CWD");
+        }
+    }
+
+    #[test]
+    fn build_session_state_captures_window_geometry() {
+        let wm = WorkspaceManager::new();
+        let registry = PaneRegistry::new();
+        let geom = WindowGeometry {
+            x: 50,
+            y: 100,
+            width: 1920,
+            height: 1080,
+            maximized: true,
+        };
+
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, Some(geom));
+        let w = state.window.unwrap();
+        assert_eq!(w.x, 50);
+        assert_eq!(w.width, 1920);
+        assert!(w.maximized);
+    }
+
+    #[test]
+    fn first_leaf_extracts_leftmost_leaf() {
+        let tree = PaneTreeSnapshot::Split {
+            direction: "horizontal".to_string(),
+            ratio: 0.5,
+            first: Box::new(PaneTreeSnapshot::Split {
+                direction: "vertical".to_string(),
+                ratio: 0.5,
+                first: Box::new(PaneTreeSnapshot::Leaf {
+                    surface_id: "a".to_string(),
+                    cwd: Some("/deep/leaf".to_string()),
+                    scrollback_text: Some("deep content".to_string()),
+                }),
+                second: Box::new(PaneTreeSnapshot::Leaf {
+                    surface_id: "b".to_string(),
+                    cwd: None,
+                    scrollback_text: None,
+                }),
+            }),
+            second: Box::new(PaneTreeSnapshot::Leaf {
+                surface_id: "c".to_string(),
+                cwd: None,
+                scrollback_text: None,
+            }),
+        };
+
+        let leaf = first_leaf(&tree);
+        assert_eq!(leaf.cwd, Some("/deep/leaf"));
+        assert_eq!(leaf.scrollback_text, Some("deep content"));
+    }
+
+    #[test]
+    fn window_geometry_maximized_defaults_false() {
+        // Backward compat: old session files without `maximized` field.
+        let json = r#"{"x":0,"y":0,"width":800,"height":600}"#;
+        let geom: WindowGeometry = serde_json::from_str(json).unwrap();
+        assert!(!geom.maximized);
     }
 }
