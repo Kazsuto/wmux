@@ -18,20 +18,51 @@ pub(super) fn spawn_pane_pty(
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
-    spawn_pane_pty_with_cwd(pane_id, cols, rows, None, app_state, rt_handle);
+    spawn_pane_pty_inner(pane_id, cols, rows, None, None, app_state, rt_handle);
 }
 
-/// Spawn a PTY for a pane with an optional working directory (used by session restore).
-pub(super) fn spawn_pane_pty_with_cwd(
+/// Spawn a PTY for a pane during session restore, optionally injecting scrollback text
+/// into the terminal before registration so it appears in the scrollback buffer.
+pub(super) fn spawn_pane_pty_for_restore(
     pane_id: PaneId,
     cols: u16,
     rows: u16,
     cwd: Option<&str>,
+    scrollback_text: Option<&str>,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+) {
+    spawn_pane_pty_inner(
+        pane_id,
+        cols,
+        rows,
+        cwd,
+        scrollback_text,
+        app_state,
+        rt_handle,
+    );
+}
+
+fn spawn_pane_pty_inner(
+    pane_id: PaneId,
+    cols: u16,
+    rows: u16,
+    cwd: Option<&str>,
+    scrollback_text: Option<&str>,
     app_state: &AppStateHandle,
     rt_handle: &tokio::runtime::Handle,
 ) {
     // Create terminal with event channel (owned by actor via PaneState).
-    let (terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
+    let (mut terminal, terminal_event_rx) = Terminal::with_event_channel(cols, rows);
+
+    // Inject saved scrollback before registration — this populates the terminal
+    // grid/scrollback so content appears immediately on session restore.
+    // SECURITY: sanitize to printable chars + CR/LF only — strip escape sequences
+    // to prevent VTE injection from a tampered session.json.
+    if let Some(text) = scrollback_text {
+        let sanitized = sanitize_scrollback(text);
+        terminal.process(sanitized.as_bytes());
+    }
 
     // Bounded bridge channels between PTY actor and AppState actor.
     let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(256);
@@ -50,11 +81,26 @@ pub(super) fn spawn_pane_pty_with_cwd(
     app_state.register_pane(pane_id, pane_state);
 
     // Spawn PTY process.
+    // SECURITY: validate CWD is a local absolute path — reject UNC paths
+    // to prevent NTLM relay attacks via crafted session.json.
+    let validated_cwd = cwd.and_then(|c| {
+        if c.starts_with("\\\\") || c.starts_with("//") || c.contains("..") {
+            tracing::warn!(cwd = c, "session restore: rejected suspicious CWD path");
+            None
+        } else {
+            let p = std::path::Path::new(c);
+            if p.is_absolute() {
+                Some(c)
+            } else {
+                None
+            }
+        }
+    });
     let manager = PtyManager::new();
     let config = SpawnConfig {
         cols,
         rows,
-        working_directory: cwd.map(std::path::PathBuf::from),
+        working_directory: validated_cwd.map(std::path::PathBuf::from),
         ..Default::default()
     };
     let handle = match manager.spawn(config) {
@@ -107,6 +153,95 @@ pub(super) fn spawn_pane_pty_with_cwd(
     });
 }
 
+/// Apply a text editing key to a string buffer with cursor position tracking.
+///
+/// Handles Backspace, Delete, ArrowLeft, ArrowRight, Home, End, and character
+/// insertion. Returns `true` if the key was handled, `false` if not (the caller
+/// should handle Escape, Enter, and other keys).
+fn apply_text_edit_key(
+    text: &mut String,
+    cursor: &mut usize,
+    key: &Key,
+    max_len: Option<usize>,
+) -> bool {
+    match key {
+        Key::Named(NamedKey::Backspace) => {
+            if *cursor > 0 {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor - 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(0);
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+                *cursor -= 1;
+            }
+            true
+        }
+        Key::Named(NamedKey::Delete) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                let next_byte = text
+                    .char_indices()
+                    .nth(*cursor + 1)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.replace_range(byte_pos..next_byte, "");
+            }
+            true
+        }
+        Key::Named(NamedKey::ArrowLeft) => {
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
+            true
+        }
+        Key::Named(NamedKey::ArrowRight) => {
+            let char_count = text.chars().count();
+            if *cursor < char_count {
+                *cursor += 1;
+            }
+            true
+        }
+        Key::Named(NamedKey::Home) => {
+            *cursor = 0;
+            true
+        }
+        Key::Named(NamedKey::End) => {
+            *cursor = text.chars().count();
+            true
+        }
+        Key::Character(ch) => {
+            let s = ch.as_str();
+            if s.chars().all(|c| !c.is_control()) {
+                if let Some(max) = max_len {
+                    if text.chars().count() + s.chars().count() > max {
+                        return true;
+                    }
+                }
+                let byte_pos = text
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(pos, _)| pos)
+                    .unwrap_or(text.len());
+                text.insert_str(byte_pos, s);
+                *cursor += s.chars().count();
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn handle_sidebar_edit_key(
     state: &mut UiState<'_>,
     event: &KeyEvent,
@@ -139,72 +274,8 @@ pub(super) fn handle_sidebar_edit_key(
             }
             state.sidebar.interaction = SidebarInteraction::Idle;
         }
-        Key::Named(NamedKey::Backspace) => {
-            if *cursor > 0 {
-                // Remove the character before the cursor (byte-aware).
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor - 1)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(0);
-                let next_byte = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.replace_range(byte_pos..next_byte, "");
-                *cursor -= 1;
-            }
-        }
-        Key::Named(NamedKey::Delete) => {
-            let char_count = text.chars().count();
-            if *cursor < char_count {
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                let next_byte = text
-                    .char_indices()
-                    .nth(*cursor + 1)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.replace_range(byte_pos..next_byte, "");
-            }
-        }
-        Key::Named(NamedKey::ArrowLeft) => {
-            if *cursor > 0 {
-                *cursor -= 1;
-            }
-        }
-        Key::Named(NamedKey::ArrowRight) => {
-            let char_count = text.chars().count();
-            if *cursor < char_count {
-                *cursor += 1;
-            }
-        }
-        Key::Named(NamedKey::Home) => {
-            *cursor = 0;
-        }
-        Key::Named(NamedKey::End) => {
-            *cursor = text.chars().count();
-        }
-        Key::Character(ch) => {
-            let s = ch.as_str();
-            // Filter out control characters.
-            if s.chars().all(|c| !c.is_control()) {
-                // Insert at cursor position (byte-aware).
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.insert_str(byte_pos, s);
-                *cursor += s.chars().count();
-            }
-        }
-        _ => {
-            // Other named keys silently consumed.
+        other => {
+            apply_text_edit_key(text, cursor, other, None);
         }
     }
 }
@@ -240,70 +311,9 @@ pub(super) fn handle_tab_edit_key(
             }
             state.tab_edit = super::TabEditState::None;
         }
-        Key::Named(NamedKey::Backspace) => {
-            if *cursor > 0 {
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor - 1)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(0);
-                let next_byte = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.replace_range(byte_pos..next_byte, "");
-                *cursor -= 1;
-            }
+        other => {
+            apply_text_edit_key(text, cursor, other, Some(MAX_TAB_TITLE_LEN));
         }
-        Key::Named(NamedKey::Delete) => {
-            let char_count = text.chars().count();
-            if *cursor < char_count {
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                let next_byte = text
-                    .char_indices()
-                    .nth(*cursor + 1)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.replace_range(byte_pos..next_byte, "");
-            }
-        }
-        Key::Named(NamedKey::ArrowLeft) => {
-            if *cursor > 0 {
-                *cursor -= 1;
-            }
-        }
-        Key::Named(NamedKey::ArrowRight) => {
-            let char_count = text.chars().count();
-            if *cursor < char_count {
-                *cursor += 1;
-            }
-        }
-        Key::Named(NamedKey::Home) => {
-            *cursor = 0;
-        }
-        Key::Named(NamedKey::End) => {
-            *cursor = text.chars().count();
-        }
-        Key::Character(ch) => {
-            let s = ch.as_str();
-            if s.chars().all(|c| !c.is_control())
-                && text.chars().count() + s.chars().count() <= MAX_TAB_TITLE_LEN
-            {
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.insert_str(byte_pos, s);
-                *cursor += s.chars().count();
-            }
-        }
-        _ => {}
     }
 }
 
@@ -652,4 +662,33 @@ pub(super) fn handle_shortcut(
             tracing::debug!("JumpLastUnread shortcut (placeholder — L3_09 UI wiring)");
         }
     }
+}
+
+/// Sanitize scrollback text for safe VTE injection during session restore.
+///
+/// Strips all control characters except `\r` and `\n`, and normalizes bare `\n`
+/// to `\r\n` so lines render left-aligned. This prevents escape sequence
+/// injection from a tampered session.json.
+fn sanitize_scrollback(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_cr = false;
+    for ch in text.chars() {
+        if ch == '\r' {
+            out.push('\r');
+            prev_cr = true;
+        } else if ch == '\n' {
+            if !prev_cr {
+                out.push('\r');
+            }
+            out.push('\n');
+            prev_cr = false;
+        } else if ch.is_control() {
+            // Strip all other control characters (ESC, BEL, etc.)
+            prev_cr = false;
+        } else {
+            out.push(ch);
+            prev_cr = false;
+        }
+    }
+    out
 }

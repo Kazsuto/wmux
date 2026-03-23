@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
@@ -10,6 +11,7 @@ use crate::metadata_store::{LogLevel, MetadataSnapshot, MetadataStore, StatusEnt
 use crate::notification::{NotificationEvent, NotificationSource, NotificationStore};
 use crate::pane_registry::PaneRegistry;
 use crate::pane_tree::PaneTree;
+use crate::session::WindowGeometry;
 use crate::surface::PanelKind;
 use crate::surface_manager::Surface;
 use crate::types::{PaneId, SurfaceId, WorkspaceId};
@@ -49,6 +51,12 @@ pub(super) struct AppStateActor {
     last_git_detect: HashMap<WorkspaceId, Instant>,
     /// Whether a port scan is currently in flight (prevents overlapping scans).
     port_scan_in_flight: bool,
+    /// Per-pane current working directory (populated from OSC 7 events).
+    pane_cwds: HashMap<PaneId, PathBuf>,
+    /// Sidebar width (pixels), sent from UI layer for session persistence.
+    ui_sidebar_width: u16,
+    /// Window geometry, sent from UI layer for session persistence.
+    ui_window_geometry: Option<WindowGeometry>,
     cmd_rx: mpsc::Receiver<AppCommand>,
     event_tx: mpsc::Sender<AppEvent>,
 }
@@ -66,6 +74,9 @@ pub(super) fn spawn_actor(event_tx: mpsc::Sender<AppEvent>) -> (AppStateHandle, 
         background_tasks: JoinSet::new(),
         last_git_detect: HashMap::new(),
         port_scan_in_flight: false,
+        pane_cwds: HashMap::new(),
+        ui_sidebar_width: 0,
+        ui_window_geometry: None,
         cmd_rx,
         event_tx,
     };
@@ -331,6 +342,7 @@ impl AppStateActor {
                     if let Some(bpid) = backing_pane_id {
                         if bpid != pane_id {
                             self.registry.remove(bpid);
+                            self.pane_cwds.remove(&bpid);
                         }
                     }
 
@@ -388,20 +400,11 @@ impl AppStateActor {
                 }
 
                 AppCommand::CycleSurface { pane_id, forward } => {
-                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
                         pane.surfaces.cycle(forward);
                         tracing::debug!(pane_id = %pane_id, forward, "surface cycled");
-                        pane.surfaces.active().map(|s| s.pane_id)
-                    } else {
-                        None
-                    };
-                    // Force full re-render of the new backing terminal.
-                    if let Some(bid) = backing_id {
-                        if let Some(bp) = self.registry.get_mut(bid) {
-                            bp.terminal.grid_mut().mark_all_dirty();
-                        }
                     }
-                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    self.mark_active_backing_dirty(pane_id);
                 }
 
                 // ─── IPC Query commands ───────────────────────────────────
@@ -421,81 +424,14 @@ impl AppStateActor {
                     let snapshots: Vec<WorkspaceSnapshot> = self
                         .workspace_manager
                         .iter()
-                        .map(|ws| {
-                            let pane_count = ws
-                                .pane_tree
-                                .as_ref()
-                                .map_or(0, |t| t.pane_count());
-                            let meta = ws.metadata();
-                            let status_icons = self
-                                .metadata_stores
-                                .get(&ws.id())
-                                .map(|store| {
-                                    store
-                                        .list_status()
-                                        .into_iter()
-                                        .filter_map(|entry| {
-                                            entry
-                                                .icon
-                                                .as_ref()
-                                                .map(|icon| (entry.key.clone(), icon.clone()))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            WorkspaceSnapshot {
-                                id: ws.id(),
-                                name: ws.name().to_owned(),
-                                active: ws.id() == active_id,
-                                pane_count,
-                                unread_count: self
-                                    .notification_store
-                                    .unread_count(ws.id()),
-                                cwd: meta.cwd.as_ref().map(|p| {
-                                    p.to_string_lossy().into_owned()
-                                }),
-                                git_branch: meta.git_branch.clone(),
-                                status_icons,
-                            }
-                        })
+                        .map(|ws| self.build_workspace_snapshot(ws, active_id))
                         .collect();
                     let _ = reply.send(snapshots);
                 }
                 AppCommand::GetCurrentWorkspace { reply } => {
+                    let active_id = self.workspace_manager.active_id();
                     let ws = self.workspace_manager.active();
-                    let pane_count = ws
-                        .pane_tree
-                        .as_ref()
-                        .map_or(0, |t| t.pane_count());
-                    let meta = ws.metadata();
-                    let status_icons = self
-                        .metadata_stores
-                        .get(&ws.id())
-                        .map(|store| {
-                            store
-                                .list_status()
-                                .into_iter()
-                                .filter_map(|entry| {
-                                    entry
-                                        .icon
-                                        .as_ref()
-                                        .map(|icon| (entry.key.clone(), icon.clone()))
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let _ = reply.send(WorkspaceSnapshot {
-                        id: ws.id(),
-                        name: ws.name().to_owned(),
-                        active: true,
-                        pane_count,
-                        unread_count: self.notification_store.unread_count(ws.id()),
-                        cwd: meta.cwd.as_ref().map(|p| {
-                            p.to_string_lossy().into_owned()
-                        }),
-                        git_branch: meta.git_branch.clone(),
-                        status_icons,
-                    });
+                    let _ = reply.send(self.build_workspace_snapshot(ws, active_id));
                 }
                 AppCommand::SelectWorkspaceById { id, reply } => {
                     let ok = self.workspace_manager.switch_to_id(id);
@@ -513,32 +449,16 @@ impl AppStateActor {
                     let _ = reply.send(infos);
                 }
                 AppCommand::FocusSurface { pane_id, surface_id } => {
-                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
                         let _ = pane.surfaces.switch_to_id(surface_id);
-                        pane.surfaces.active().map(|s| s.pane_id)
-                    } else {
-                        None
-                    };
-                    if let Some(bid) = backing_id {
-                        if let Some(bp) = self.registry.get_mut(bid) {
-                            bp.terminal.grid_mut().mark_all_dirty();
-                        }
                     }
-                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    self.mark_active_backing_dirty(pane_id);
                 }
                 AppCommand::SwitchSurfaceIndex { pane_id, index } => {
-                    let backing_id = if let Some(pane) = self.registry.get_mut(pane_id) {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
                         pane.surfaces.switch_to(index);
-                        pane.surfaces.active().map(|s| s.pane_id)
-                    } else {
-                        None
-                    };
-                    if let Some(bid) = backing_id {
-                        if let Some(bp) = self.registry.get_mut(bid) {
-                            bp.terminal.grid_mut().mark_all_dirty();
-                        }
                     }
-                    let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+                    self.mark_active_backing_dirty(pane_id);
                 }
                 AppCommand::ReorderSurface { pane_id, from, to } => {
                     if let Some(pane) = self.registry.get_mut(pane_id) {
@@ -637,6 +557,14 @@ impl AppStateActor {
                     let _ = reply.send(snapshot);
                 }
 
+                AppCommand::UpdateUiState {
+                    sidebar_width,
+                    window,
+                } => {
+                    self.ui_sidebar_width = sidebar_width;
+                    self.ui_window_geometry = window;
+                }
+
                         AppCommand::Shutdown => {
                             tracing::info!("AppState actor shutting down");
                             self.background_tasks.abort_all();
@@ -686,7 +614,7 @@ impl AppStateActor {
 
     /// Periodic auto-save: fire-and-forget so the actor loop never awaits disk I/O.
     fn auto_save(&mut self) {
-        let state = crate::session::build_session_state(&self.workspace_manager, &self.registry);
+        let state = self.build_current_session_state();
         self.background_tasks.spawn(async move {
             if let Err(e) = crate::session::save_session(&state).await {
                 tracing::warn!(error = %e, "auto-save failed");
@@ -698,12 +626,23 @@ impl AppStateActor {
 
     /// Save session state and wait for completion (used on shutdown).
     async fn save_session_now(&self) {
-        let state = crate::session::build_session_state(&self.workspace_manager, &self.registry);
+        let state = self.build_current_session_state();
         if let Err(e) = crate::session::save_session(&state).await {
             tracing::warn!(error = %e, "final session save failed");
         } else {
             tracing::debug!("session saved on shutdown");
         }
+    }
+
+    /// Snapshot the current state for session persistence.
+    fn build_current_session_state(&self) -> crate::session::SessionState {
+        crate::session::build_session_state(
+            &self.workspace_manager,
+            &self.registry,
+            &self.pane_cwds,
+            self.ui_sidebar_width,
+            self.ui_window_geometry.clone(),
+        )
     }
 
     /// Find which workspace contains a specific pane by searching all workspaces' pane trees.
@@ -755,6 +694,9 @@ impl AppStateActor {
                     }
                 }
                 TerminalEvent::CwdChanged(cwd) => {
+                    // Track per-pane CWD for session persistence.
+                    self.pane_cwds.insert(pane_id, cwd.clone());
+
                     // Use the workspace ID found at the start of this function
                     let Some(cwd_ws_id) = ws_id else {
                         tracing::warn!(pane_id = %pane_id, "CwdChanged event but pane not in any workspace tree");
@@ -821,11 +763,13 @@ impl AppStateActor {
                     .collect()
             })
             .unwrap_or_default();
-        for hid in hidden_ids {
-            self.registry.remove(hid);
+        for hid in &hidden_ids {
+            self.registry.remove(*hid);
+            self.pane_cwds.remove(hid);
         }
 
         self.registry.remove(pane_id);
+        self.pane_cwds.remove(&pane_id);
         if self.zoomed_pane == Some(pane_id) {
             self.zoomed_pane = None;
         }
@@ -1149,6 +1093,59 @@ impl AppStateActor {
             .map(|l| l.trim_end())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Mark the active surface's backing terminal grid as fully dirty and signal a redraw.
+    ///
+    /// Used after switching the active surface in a pane — the incoming terminal
+    /// may have unseen changes that the renderer needs to pick up.
+    fn mark_active_backing_dirty(&mut self, pane_id: PaneId) {
+        let backing_id = self
+            .registry
+            .get(pane_id)
+            .and_then(|p| p.surfaces.active().map(|s| s.pane_id));
+        if let Some(bid) = backing_id {
+            if let Some(bp) = self.registry.get_mut(bid) {
+                bp.terminal.grid_mut().mark_all_dirty();
+            }
+        }
+        let _ = self.event_tx.try_send(AppEvent::PaneNeedsRedraw(pane_id));
+    }
+
+    /// Build a snapshot of a single workspace for IPC queries.
+    fn build_workspace_snapshot(
+        &self,
+        ws: &crate::workspace::Workspace,
+        active_id: WorkspaceId,
+    ) -> WorkspaceSnapshot {
+        let pane_count = ws.pane_tree.as_ref().map_or(0, |t| t.pane_count());
+        let meta = ws.metadata();
+        let status_icons = self
+            .metadata_stores
+            .get(&ws.id())
+            .map(|store| {
+                store
+                    .list_status()
+                    .into_iter()
+                    .filter_map(|entry| {
+                        entry
+                            .icon
+                            .as_ref()
+                            .map(|icon| (entry.key.clone(), icon.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        WorkspaceSnapshot {
+            id: ws.id(),
+            name: ws.name().to_owned(),
+            active: ws.id() == active_id,
+            pane_count,
+            unread_count: self.notification_store.unread_count(ws.id()),
+            cwd: meta.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            git_branch: meta.git_branch.clone(),
+            status_icons,
+        }
     }
 
     /// Build surface list for IPC ListSurfaces query.

@@ -2,6 +2,11 @@
 
 ## 2026-03-23
 
+REFACTOR: Extract DRY helpers in app_state actor (build_workspace_snapshot, mark_active_backing_dirty) and UI handlers (apply_text_edit_key) — eliminate 3 code duplications
+FEATURE: Complete session persistence — save per-pane CWD (via OSC 7), window geometry (position/size/maximized), sidebar width; restore full recursive pane tree at arbitrary depth (was depth-1 only); inject saved scrollback text into terminals on restore
+FIX: Sanitize scrollback text on session restore — strip VTE escape sequences, normalize \n to \r\n for correct line alignment
+FIX: Validate CWD from session.json — reject UNC paths, relative paths, and path traversal to prevent NTLM relay
+FIX: Add pane tree depth limit (16) on session load to prevent pathological nesting
 REFACTOR: Extract `json_str` helper in wmux-browser automation — DRY 21 repeated `map_err` error conversions
 REFACTOR: Simplify sidebar workspace rows — remove subtitle ("> 1 pane"), reduce row height (72→36px)
 FIX: Fix rename input box position — offset past icon, properly sized for single-line layout
