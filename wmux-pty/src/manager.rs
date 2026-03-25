@@ -115,27 +115,39 @@ fn ensure_hook_files() -> Result<PathBuf, PtyError> {
     Ok(hook_dir)
 }
 
-/// Collect shell arguments including hook injection into a `Vec<String>`.
+/// Collect shell arguments and extra environment variables for hook injection.
+///
+/// Returns `(args, extra_env)` where `extra_env` should be merged into the
+/// spawn environment. PowerShell hooks use an env var to avoid path quoting
+/// issues with `quote_arg` (spaces/backslashes in paths cause `-Command`
+/// values to be double-quoted, which PowerShell misinterprets).
 fn build_shell_args(
     base_args: &[String],
     shell_type: &ShellType,
     hook_dir: Option<&Path>,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<(String, String)>) {
     let mut args: Vec<String> = base_args.to_vec();
+    let mut extra_env: Vec<(String, String)> = Vec::new();
 
     let Some(hook_dir) = hook_dir else {
-        return args;
+        return (args, extra_env);
     };
 
     match shell_type {
         ShellType::Pwsh | ShellType::PowerShell => {
             let hook_path = hook_dir.join("wmux.ps1");
-            let hook_path_str = hook_path.to_string_lossy().replace('\'', "''");
+            // Pass hook path via env var to avoid quote_arg mangling the
+            // -Command value. `. $env:WMUX_SHELL_HOOK` has no spaces or
+            // backslashes, so quote_arg passes it through unchanged.
+            extra_env.push((
+                "WMUX_SHELL_HOOK".to_string(),
+                hook_path.to_string_lossy().into_owned(),
+            ));
             args.push("-NoExit".to_string());
             args.push("-ExecutionPolicy".to_string());
             args.push("Bypass".to_string());
             args.push("-Command".to_string());
-            args.push(format!(". '{hook_path_str}'"));
+            args.push(". $env:WMUX_SHELL_HOOK".to_string());
             tracing::debug!(hook = %hook_path.display(), "injected PowerShell shell integration hook");
         }
         ShellType::Bash => {
@@ -147,7 +159,7 @@ fn build_shell_args(
             );
             if let Err(e) = std::fs::write(&wrapper, content) {
                 tracing::warn!(error = %e, "failed to write bash wrapper rcfile, skipping hook injection");
-                return args;
+                return (args, extra_env);
             }
             tracing::debug!(hook = %hook_path.display(), "injected Bash shell integration hook");
             args.push("--rcfile".to_string());
@@ -158,7 +170,7 @@ fn build_shell_args(
         }
     }
 
-    args
+    (args, extra_env)
 }
 
 /// Manages PTY lifecycle: shell detection, spawning, and handle creation.
@@ -228,7 +240,10 @@ impl PtyManager {
                 None
             }
         };
-        let args = build_shell_args(&config.args, &shell_type, hook_dir.as_deref());
+        let (args, extra_env) = build_shell_args(&config.args, &shell_type, hook_dir.as_deref());
+        for (k, v) in extra_env {
+            env.insert(k, v);
+        }
 
         // Create ConPTY with PSEUDOCONSOLE_RESIZE_QUIRK
         let pair = create_conpty(config.cols, config.rows)?;
@@ -311,22 +326,26 @@ mod tests {
     #[test]
     fn build_shell_args_powershell_hooks() {
         let hook_dir = PathBuf::from("C:/test/hooks");
-        let args = build_shell_args(&[], &ShellType::Pwsh, Some(&hook_dir));
+        let (args, extra_env) = build_shell_args(&[], &ShellType::Pwsh, Some(&hook_dir));
         assert!(args.contains(&"-NoExit".to_string()));
         assert!(args.contains(&"-ExecutionPolicy".to_string()));
         assert!(args.contains(&"Bypass".to_string()));
+        assert!(args.contains(&". $env:WMUX_SHELL_HOOK".to_string()));
+        assert!(extra_env.iter().any(|(k, _)| k == "WMUX_SHELL_HOOK"));
     }
 
     #[test]
     fn build_shell_args_no_hook_dir() {
-        let args = build_shell_args(&["--login".to_string()], &ShellType::Bash, None);
+        let (args, extra_env) = build_shell_args(&["--login".to_string()], &ShellType::Bash, None);
         assert_eq!(args, vec!["--login".to_string()]);
+        assert!(extra_env.is_empty());
     }
 
     #[test]
     fn build_shell_args_cmd_no_hooks() {
-        let args = build_shell_args(&[], &ShellType::Cmd, Some(Path::new("C:/hooks")));
+        let (args, extra_env) = build_shell_args(&[], &ShellType::Cmd, Some(Path::new("C:/hooks")));
         assert!(args.is_empty());
+        assert!(extra_env.is_empty());
     }
 
     #[test]

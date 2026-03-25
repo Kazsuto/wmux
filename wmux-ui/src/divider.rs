@@ -1,4 +1,4 @@
-use wmux_core::{rect::Rect, PaneId};
+use wmux_core::{pane_tree::LayoutDivider, SplitDirection, SplitId};
 
 /// Direction of the divider (matches the split axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,24 +9,56 @@ pub enum DividerOrientation {
     Horizontal,
 }
 
+impl DividerOrientation {
+    /// Convert from `SplitDirection` (tree domain) to `DividerOrientation` (UI domain).
+    #[must_use]
+    pub fn from_split_direction(dir: SplitDirection) -> Self {
+        match dir {
+            SplitDirection::Horizontal => Self::Vertical,
+            SplitDirection::Vertical => Self::Horizontal,
+        }
+    }
+}
+
 /// A detected divider between two panes.
 #[derive(Debug, Clone)]
 pub struct Divider {
     pub orientation: DividerOrientation,
-    /// The pane ID used for resize_split (second child of the split node).
-    pub pane_id: PaneId,
+    /// The split node ID used for `resize_by_split_id`.
+    pub split_id: SplitId,
     /// Divider center position (x for vertical, y for horizontal).
     pub position: f32,
     /// Range on the perpendicular axis (start coordinate).
     pub start: f32,
     /// Range on the perpendicular axis (end coordinate).
     pub end: f32,
+    /// Offset of the split container's origin on the split axis.
+    pub split_start: f32,
+    /// Total dimension of the split container on the split axis.
+    pub split_dimension: f32,
+    /// Current ratio of the split node.
+    pub current_ratio: f32,
+}
+
+impl From<LayoutDivider> for Divider {
+    fn from(ld: LayoutDivider) -> Self {
+        Self {
+            orientation: DividerOrientation::from_split_direction(ld.direction),
+            split_id: ld.split_id,
+            position: ld.position,
+            start: ld.start,
+            end: ld.end,
+            split_start: ld.split_start,
+            split_dimension: ld.split_dimension,
+            current_ratio: ld.current_ratio,
+        }
+    }
 }
 
 /// Tracks active divider drag state.
 #[derive(Debug, Clone)]
 pub struct DragState {
-    pub pane_id: PaneId,
+    pub split_id: SplitId,
     pub orientation: DividerOrientation,
     /// Total split dimension (width for vertical divider, height for horizontal).
     pub split_dimension: f32,
@@ -43,85 +75,6 @@ const HIT_ZONE: f32 = 8.0;
 
 /// Minimum pane size in pixels (prevent collapse during drag).
 pub const MIN_PANE_SIZE: f32 = 50.0;
-
-/// Find all dividers from a flat layout (pane_id, rect) slice.
-///
-/// Iterates all pairs of panes and detects shared vertical or horizontal edges.
-#[must_use]
-pub fn find_dividers(layout: &[(PaneId, Rect)]) -> Vec<Divider> {
-    let mut dividers = Vec::new();
-
-    for i in 0..layout.len() {
-        for j in (i + 1)..layout.len() {
-            let (id_a, a) = &layout[i];
-            let (id_b, b) = &layout[j];
-
-            let a_right = a.x + a.width;
-            let b_right = b.x + b.width;
-
-            // Check vertical edge: a is left of b
-            if (a_right - b.x).abs() < 2.0 {
-                let overlap_start = a.y.max(b.y);
-                let overlap_end = (a.y + a.height).min(b.y + b.height);
-                if overlap_end > overlap_start {
-                    dividers.push(Divider {
-                        orientation: DividerOrientation::Vertical,
-                        pane_id: *id_b,
-                        position: a_right,
-                        start: overlap_start,
-                        end: overlap_end,
-                    });
-                }
-            // Check vertical edge: b is left of a
-            } else if (b_right - a.x).abs() < 2.0 {
-                let overlap_start = a.y.max(b.y);
-                let overlap_end = (a.y + a.height).min(b.y + b.height);
-                if overlap_end > overlap_start {
-                    dividers.push(Divider {
-                        orientation: DividerOrientation::Vertical,
-                        pane_id: *id_a,
-                        position: b_right,
-                        start: overlap_start,
-                        end: overlap_end,
-                    });
-                }
-            }
-
-            let a_bottom = a.y + a.height;
-            let b_bottom = b.y + b.height;
-
-            // Check horizontal edge: a is above b
-            if (a_bottom - b.y).abs() < 2.0 {
-                let overlap_start = a.x.max(b.x);
-                let overlap_end = (a.x + a.width).min(b.x + b.width);
-                if overlap_end > overlap_start {
-                    dividers.push(Divider {
-                        orientation: DividerOrientation::Horizontal,
-                        pane_id: *id_b,
-                        position: a_bottom,
-                        start: overlap_start,
-                        end: overlap_end,
-                    });
-                }
-            // Check horizontal edge: b is above a
-            } else if (b_bottom - a.y).abs() < 2.0 {
-                let overlap_start = a.x.max(b.x);
-                let overlap_end = (a.x + a.width).min(b.x + b.width);
-                if overlap_end > overlap_start {
-                    dividers.push(Divider {
-                        orientation: DividerOrientation::Horizontal,
-                        pane_id: *id_a,
-                        position: b_bottom,
-                        start: overlap_start,
-                        end: overlap_end,
-                    });
-                }
-            }
-        }
-    }
-
-    dividers
-}
 
 /// Hit-test a cursor position against a list of dividers.
 ///
@@ -158,6 +111,10 @@ pub fn compute_ratio(drag: &DragState, cursor: f32) -> f32 {
     let raw_ratio = (new_position - drag.split_start) / drag.split_dimension;
     let min_ratio = MIN_PANE_SIZE / drag.split_dimension;
     let max_ratio = 1.0 - min_ratio;
+    if min_ratio >= max_ratio {
+        // Split too small for two panes — keep centered.
+        return 0.5;
+    }
     raw_ratio.clamp(min_ratio, max_ratio)
 }
 
@@ -165,86 +122,51 @@ pub fn compute_ratio(drag: &DragState, cursor: f32) -> f32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn find_dividers_horizontal_split() {
-        let id_a = PaneId::new();
-        let id_b = PaneId::new();
-        // a is on the left, b is on the right with a 4px gap
-        let rect_a = Rect::new(0.0, 0.0, 100.0, 200.0);
-        let _rect_b = Rect::new(104.0, 0.0, 100.0, 200.0);
-        // a_right = 100, b.x = 104 — gap of 4px, not adjacent by <2px threshold
-        // Let's use adjacent rects (gap=0 or within 2px tolerance)
-        let rect_b_adj = Rect::new(100.0, 0.0, 100.0, 200.0);
-
-        let layout = vec![(id_a, rect_a), (id_b, rect_b_adj)];
-        let dividers = find_dividers(&layout);
-
-        assert_eq!(dividers.len(), 1);
-        let div = &dividers[0];
-        assert_eq!(div.orientation, DividerOrientation::Vertical);
-        assert_eq!(div.pane_id, id_b);
-        assert!((div.position - 100.0).abs() < 1e-4);
-        assert_eq!(div.start, 0.0);
-        assert_eq!(div.end, 200.0);
-    }
-
-    #[test]
-    fn find_dividers_vertical_split() {
-        let id_a = PaneId::new();
-        let id_b = PaneId::new();
-        let rect_a = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let rect_b = Rect::new(0.0, 100.0, 200.0, 100.0);
-
-        let layout = vec![(id_a, rect_a), (id_b, rect_b)];
-        let dividers = find_dividers(&layout);
-
-        assert_eq!(dividers.len(), 1);
-        let div = &dividers[0];
-        assert_eq!(div.orientation, DividerOrientation::Horizontal);
-        assert_eq!(div.pane_id, id_b);
-        assert!((div.position - 100.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn find_dividers_single_pane_no_dividers() {
-        let id_a = PaneId::new();
-        let layout = vec![(id_a, Rect::new(0.0, 0.0, 800.0, 600.0))];
-        let dividers = find_dividers(&layout);
-        assert!(dividers.is_empty());
+    fn make_divider(
+        orientation: DividerOrientation,
+        position: f32,
+        start: f32,
+        end: f32,
+    ) -> Divider {
+        Divider {
+            orientation,
+            split_id: SplitId::new(),
+            position,
+            start,
+            end,
+            split_start: 0.0,
+            split_dimension: 400.0,
+            current_ratio: 0.5,
+        }
     }
 
     #[test]
     fn hit_test_vertical_divider() {
-        let id_a = PaneId::new();
-        let id_b = PaneId::new();
-        let layout = vec![
-            (id_a, Rect::new(0.0, 0.0, 100.0, 200.0)),
-            (id_b, Rect::new(100.0, 0.0, 100.0, 200.0)),
-        ];
-        let dividers = find_dividers(&layout);
+        let dividers = vec![make_divider(
+            DividerOrientation::Vertical,
+            100.0,
+            0.0,
+            200.0,
+        )];
 
-        // Should hit at x=100, y=100 (center of divider range)
         let hit = hit_test(&dividers, 100.0, 100.0);
         assert!(hit.is_some());
 
-        // Should miss far away
         let miss = hit_test(&dividers, 200.0, 100.0);
         assert!(miss.is_none());
 
-        // Should miss outside perpendicular range
         let miss_y = hit_test(&dividers, 100.0, 250.0);
         assert!(miss_y.is_none());
     }
 
     #[test]
     fn hit_test_horizontal_divider() {
-        let id_a = PaneId::new();
-        let id_b = PaneId::new();
-        let layout = vec![
-            (id_a, Rect::new(0.0, 0.0, 200.0, 100.0)),
-            (id_b, Rect::new(0.0, 100.0, 200.0, 100.0)),
-        ];
-        let dividers = find_dividers(&layout);
+        let dividers = vec![make_divider(
+            DividerOrientation::Horizontal,
+            100.0,
+            0.0,
+            200.0,
+        )];
 
         let hit = hit_test(&dividers, 100.0, 100.0);
         assert!(hit.is_some());
@@ -253,16 +175,14 @@ mod tests {
 
     #[test]
     fn compute_ratio_clamps_minimum() {
-        let id = PaneId::new();
         let drag = DragState {
-            pane_id: id,
+            split_id: SplitId::new(),
             orientation: DividerOrientation::Vertical,
             split_dimension: 400.0,
             split_start: 0.0,
             start_cursor: 200.0,
             start_ratio: 0.5,
         };
-        // Drag far to the left — should clamp to MIN_PANE_SIZE / split_dimension
         let ratio = compute_ratio(&drag, -9999.0);
         let expected_min = MIN_PANE_SIZE / 400.0;
         assert!((ratio - expected_min).abs() < 1e-4);
@@ -270,16 +190,14 @@ mod tests {
 
     #[test]
     fn compute_ratio_clamps_maximum() {
-        let id = PaneId::new();
         let drag = DragState {
-            pane_id: id,
+            split_id: SplitId::new(),
             orientation: DividerOrientation::Vertical,
             split_dimension: 400.0,
             split_start: 0.0,
             start_cursor: 200.0,
             start_ratio: 0.5,
         };
-        // Drag far to the right — should clamp to 1 - MIN_PANE_SIZE / split_dimension
         let ratio = compute_ratio(&drag, 9999.0);
         let expected_max = 1.0 - MIN_PANE_SIZE / 400.0;
         assert!((ratio - expected_max).abs() < 1e-4);
@@ -287,17 +205,60 @@ mod tests {
 
     #[test]
     fn compute_ratio_no_movement() {
-        let id = PaneId::new();
         let drag = DragState {
-            pane_id: id,
+            split_id: SplitId::new(),
             orientation: DividerOrientation::Horizontal,
             split_dimension: 600.0,
             split_start: 0.0,
             start_cursor: 300.0,
             start_ratio: 0.5,
         };
-        // No drag delta — ratio stays at start_ratio
         let ratio = compute_ratio(&drag, 300.0);
         assert!((ratio - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn layout_divider_conversion() {
+        let ld = LayoutDivider {
+            direction: SplitDirection::Horizontal,
+            split_id: SplitId::new(),
+            position: 500.0,
+            start: 0.0,
+            end: 800.0,
+            split_start: 0.0,
+            split_dimension: 1000.0,
+            current_ratio: 0.5,
+        };
+        let div = Divider::from(ld);
+        assert_eq!(div.orientation, DividerOrientation::Vertical);
+        assert!((div.position - 500.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn compute_ratio_small_split_no_panic() {
+        // split_dimension < 2 * MIN_PANE_SIZE → min_ratio > max_ratio.
+        // Previously this would panic in f32::clamp.
+        let drag = DragState {
+            split_id: SplitId::new(),
+            orientation: DividerOrientation::Vertical,
+            split_dimension: 80.0, // < 2 * MIN_PANE_SIZE (100)
+            split_start: 0.0,
+            start_cursor: 40.0,
+            start_ratio: 0.5,
+        };
+        let ratio = compute_ratio(&drag, 60.0);
+        assert!((ratio - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn divider_orientation_from_split_direction() {
+        assert_eq!(
+            DividerOrientation::from_split_direction(SplitDirection::Horizontal),
+            DividerOrientation::Vertical
+        );
+        assert_eq!(
+            DividerOrientation::from_split_direction(SplitDirection::Vertical),
+            DividerOrientation::Horizontal
+        );
     }
 }

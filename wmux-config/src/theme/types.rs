@@ -85,9 +85,9 @@ pub struct UiChrome {
     // ── Text Hierarchy ────────────────────────────────────────────────
     /// Primary text — matches theme foreground (100% alpha).
     pub text_primary: [f32; 4],
-    /// Secondary text — foreground at 65% alpha.
+    /// Secondary text — boosted foreground at 88% alpha.
     pub text_secondary: [f32; 4],
-    /// Muted text — foreground at 53% alpha.
+    /// Muted text — boosted foreground at 75% alpha.
     pub text_muted: [f32; 4],
     /// Faint text — foreground at 40% alpha (decorative metadata only).
     pub text_faint: [f32; 4],

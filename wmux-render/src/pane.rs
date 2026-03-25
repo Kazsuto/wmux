@@ -94,29 +94,17 @@ impl PaneRenderer {
 
     /// Push focus indicator quads for every pane in `viewports`.
     ///
-    /// The focused pane receives a 3px accent stripe on the left edge plus
-    /// a Focus Glow (4 concentric quads forming a luminous halo).
+    /// Currently a no-op — the blue accent stripe was removed in favour of
+    /// uniform neutral dividers between all panes.
     pub fn render_pane_borders(
         &self,
-        quads: &mut QuadPipeline,
-        viewports: &[PaneViewport],
+        _quads: &mut QuadPipeline,
+        _viewports: &[PaneViewport],
         _theme_border_color: [f32; 4],
-        theme_accent_color: [f32; 4],
+        _theme_accent_color: [f32; 4],
     ) {
-        for vp in viewports {
-            if vp.focused {
-                let r = &vp.rect;
-                // Left accent stripe (rounded)
-                quads.push_rounded_quad(
-                    r.x,
-                    r.y + 4.0,
-                    FOCUS_STRIPE_WIDTH,
-                    r.height - 8.0,
-                    theme_accent_color,
-                    1.5,
-                );
-            }
-        }
+        // Intentionally empty — focus is indicated by the tab bar and
+        // inactive-pane dimming overlay, not by a coloured stripe.
     }
 
     /// Render the signature Focus Glow around the active pane (shader-based).

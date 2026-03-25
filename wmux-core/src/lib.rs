@@ -13,7 +13,6 @@ pub mod notification;
 pub mod pane_registry;
 pub mod pane_tree;
 pub mod port_scanner;
-pub mod process_detect;
 pub mod rect;
 pub mod remote;
 pub mod scrollback;
@@ -48,23 +47,19 @@ pub use notification::{
     NotificationState, NotificationStore,
 };
 pub use pane_registry::{PaneRegistry, PaneState};
-pub use pane_tree::PaneTree;
+pub use pane_tree::{LayoutDivider, PaneTree};
 pub use port_scanner::scan_listening_ports;
-pub use process_detect::{
-    encode_cwd_for_claude, list_recent_claude_sessions, query_claude_session_ids_from_cmdline,
-    ProcessSnapshot,
-};
 pub use rect::Rect;
 pub use remote::{ReconnectBackoff, RemoteConfig, RemoteConnectionState, RemoteError};
 pub use scrollback::Scrollback;
 pub use selection::{Selection, SelectionMode, SelectionPoint};
 pub use session::{
     build_session_state, first_leaf, load_session, save_session, session_file_path, FirstLeafData,
-    PaneTreeSnapshot, SessionState, WindowGeometry, CLAUDE_CONTINUE_MARKER, SESSION_VERSION,
+    PaneTreeSnapshot, SessionState, WindowGeometry, SESSION_VERSION,
 };
 pub use surface::{PanelKind, SplitDirection, SurfaceInfo};
 pub use surface_manager::{Surface, SurfaceManager};
 pub use terminal::Terminal;
-pub use types::{PaneId, SurfaceId, WindowId, WorkspaceId};
+pub use types::{PaneId, SplitId, SurfaceId, WindowId, WorkspaceId};
 pub use workspace::{Workspace, WorkspaceKind, WorkspaceMetadata};
 pub use workspace_manager::WorkspaceManager;

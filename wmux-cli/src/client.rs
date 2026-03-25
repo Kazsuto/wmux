@@ -27,7 +27,10 @@ impl IpcClient {
     /// Order:
     /// 1. `WMUX_SOCKET_PATH` environment variable (if set and valid)
     /// 2. `\\.\pipe\wmux-debug` (debug builds) or `\\.\pipe\wmux` (release builds)
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "utility for pipe discovery — will be used by CLI commands"
+    )]
     pub fn discover() -> String {
         wmux_ipc::pipe_name()
     }

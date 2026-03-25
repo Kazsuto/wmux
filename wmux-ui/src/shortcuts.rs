@@ -33,6 +33,8 @@ pub enum ShortcutAction {
     // Workspace
     /// Ctrl+N — create a new workspace.
     NewWorkspace,
+    /// Ctrl+Shift+W — close the active workspace.
+    CloseWorkspace,
     /// Ctrl+1–9 — switch to workspace by 1-based index.
     SwitchWorkspace(u8),
 
@@ -124,6 +126,7 @@ impl ShortcutMap {
 
                     // Workspace
                     (false, false, "n" | "N") => return Some(ShortcutAction::NewWorkspace),
+                    (true, false, "w" | "W") => return Some(ShortcutAction::CloseWorkspace),
 
                     // Surface/Tab
                     (false, false, "t" | "T") => return Some(ShortcutAction::NewSurface),

@@ -13,7 +13,7 @@ use crate::notification::Notification;
 use crate::pane_registry::PaneState;
 use crate::rect::Rect;
 use crate::surface::{PanelKind, SplitDirection};
-use crate::types::{PaneId, SurfaceId, WorkspaceId};
+use crate::types::{PaneId, SplitId, SurfaceId, WorkspaceId};
 
 // TODO(L2_16): route through i18n system when wmux-config i18n is implemented.
 pub(super) const PROCESS_EXITED_MSG: &str = "\r\n[Process exited]\r\n";
@@ -85,15 +85,11 @@ pub enum AppCommand {
     /// Mark a pane's process as exited.
     MarkExited { pane_id: PaneId, success: bool },
 
-    /// Store the child process PID for a pane (used for Claude Code detection).
-    /// Optionally sets an initial CWD if the pane was spawned with a known directory
-    /// (needed for restored panes that run Claude directly without a shell to emit OSC 7).
-    /// Optionally sets a known Claude session UUID (from `--resume` at restore time).
-    SetPanePid {
+    /// Set the initial CWD for a pane (used during session restore for panes
+    /// without a shell to emit OSC 7).
+    SetPaneInitialCwd {
         pane_id: PaneId,
-        pid: u32,
-        initial_cwd: Option<std::path::PathBuf>,
-        claude_session_id: Option<String>,
+        initial_cwd: std::path::PathBuf,
     },
 
     /// Extract selected text from a pane's grid using a Selection.
@@ -113,10 +109,17 @@ pub enum AppCommand {
     /// Swap two panes in the layout tree.
     SwapPanes { a: PaneId, b: PaneId },
 
-    /// Get the current layout as pane-rect pairs.
+    /// Get the current layout as pane-rect pairs with divider metadata.
+    #[expect(
+        clippy::type_complexity,
+        reason = "oneshot reply with (Vec, Vec) tuple — extracting a type alias adds indirection without clarity"
+    )]
     GetLayout {
         viewport: Rect,
-        reply: tokio::sync::oneshot::Sender<Vec<(PaneId, Rect)>>,
+        reply: tokio::sync::oneshot::Sender<(
+            Vec<(PaneId, Rect)>,
+            Vec<crate::pane_tree::LayoutDivider>,
+        )>,
     },
 
     // ─── Workspace commands ───────────────────────────────────────────────────
@@ -238,6 +241,9 @@ pub enum AppCommand {
 
     /// Resize a split by setting the ratio on a pane's parent split node.
     ResizeSplit { pane_id: PaneId, ratio: f32 },
+
+    /// Resize a specific split node by its `SplitId`.
+    ResizeSplitById { split_id: SplitId, ratio: f32 },
 
     // ─── Internal commands (sent by actor to itself) ───────────────────────
     /// Update git info for a workspace (sent by git detection task).
@@ -361,17 +367,13 @@ impl fmt::Debug for AppCommand {
                 .field("pane_id", pane_id)
                 .field("success", success)
                 .finish(),
-            Self::SetPanePid {
+            Self::SetPaneInitialCwd {
                 pane_id,
-                pid,
                 initial_cwd,
-                claude_session_id,
             } => f
-                .debug_struct("SetPanePid")
+                .debug_struct("SetPaneInitialCwd")
                 .field("pane_id", pane_id)
-                .field("pid", pid)
-                .field("has_cwd", &initial_cwd.is_some())
-                .field("has_claude_session", &claude_session_id.is_some())
+                .field("cwd", initial_cwd)
                 .finish(),
             Self::ExtractSelection { pane_id, .. } => f
                 .debug_struct("ExtractSelection")
@@ -511,6 +513,11 @@ impl fmt::Debug for AppCommand {
             Self::ResizeSplit { pane_id, ratio } => f
                 .debug_struct("ResizeSplit")
                 .field("pane_id", pane_id)
+                .field("ratio", ratio)
+                .finish(),
+            Self::ResizeSplitById { split_id, ratio } => f
+                .debug_struct("ResizeSplitById")
+                .field("split_id", split_id)
                 .field("ratio", ratio)
                 .finish(),
             Self::UpdateGitInfo {
@@ -661,6 +668,12 @@ pub struct WorkspaceSnapshot {
     pub unread_count: usize,
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// Detected listening ports for this workspace.
+    pub ports: Vec<u16>,
+    /// Whether the git index has uncommitted changes.
+    pub git_dirty: bool,
+    /// Text value of the first status entry (displayed as description in sidebar card).
+    pub status_text: Option<String>,
     /// Status entry icons set via IPC (`sidebar.status.set --icon <name>`).
     /// Each tuple is `(key, icon_name)` for entries that have an icon.
     pub status_icons: Vec<(String, String)>,

@@ -4,7 +4,9 @@ use super::types::{ColorPalette, ShadowDepth, UiChrome};
 ///
 /// Surface elevation is computed by increasing HSL lightness by 5 points per level.
 /// Accent is derived from ANSI blue (palette index 4) with saturation boosted to at
-/// least 80%. Text hierarchy uses 65%/53%/40% alpha steps for WCAG compliance.
+/// least 80%. Text base is boosted 70% toward white (dark themes) or black (light
+/// themes) for AAA contrast on chrome surfaces — terminal foreground stays unchanged.
+/// Text hierarchy uses 88%/75%/40% alpha steps.
 pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let (br, bg, bb) = palette.background;
     let bg_r = br as f32 / 255.0;
@@ -56,12 +58,13 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let accent_glow_core = [r, g, b, 0.60];
     let accent_tint = [r, g, b, 0.08];
 
-    // Text hierarchy from foreground (WCAG-compliant alphas)
+    // Text hierarchy — UI foreground boosted toward white (dark) or black (light)
+    // for WCAG AAA contrast on chrome surfaces. Terminal foreground stays unchanged.
     let (fr, fg_c, fb) = palette.foreground;
-    let text_primary = u8_to_f32_color(fr, fg_c, fb);
+    let text_primary = ui_text_base(fr, fg_c, fb, l);
     let tp = text_primary;
-    let text_secondary = [tp[0], tp[1], tp[2], 0.65];
-    let text_muted = [tp[0], tp[1], tp[2], 0.53];
+    let text_secondary = [tp[0], tp[1], tp[2], 0.88];
+    let text_muted = [tp[0], tp[1], tp[2], 0.75];
     let text_faint = [tp[0], tp[1], tp[2], 0.40];
     let text_inverse = [surface_base[0], surface_base[1], surface_base[2], 1.0];
 
@@ -232,6 +235,32 @@ fn u8_to_f32_color(r: u8, g: u8, b: u8) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
 }
 
+/// Compute the UI text base color by blending the theme foreground toward
+/// white (dark themes) or black (light themes) for AAA contrast on chrome surfaces.
+///
+/// `bg_lightness` is the HSL lightness of the theme background (0.0–1.0).
+fn ui_text_base(r: u8, g: u8, b: u8, bg_lightness: f32) -> [f32; 4] {
+    let (fr, fg, fb) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let boost = 0.70;
+    if bg_lightness < 0.5 {
+        // Dark theme: blend 70% toward white
+        [
+            fr + (1.0 - fr) * boost,
+            fg + (1.0 - fg) * boost,
+            fb + (1.0 - fb) * boost,
+            1.0,
+        ]
+    } else {
+        // Light theme: blend 70% toward black
+        [
+            fr * (1.0 - boost),
+            fg * (1.0 - boost),
+            fb * (1.0 - boost),
+            1.0,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,8 +385,8 @@ mod tests {
         let chrome = derive_ui_chrome(&palette);
 
         assert!((chrome.text_primary[3] - 1.0).abs() < f32::EPSILON);
-        assert!((chrome.text_secondary[3] - 0.65).abs() < f32::EPSILON);
-        assert!((chrome.text_muted[3] - 0.53).abs() < f32::EPSILON);
+        assert!((chrome.text_secondary[3] - 0.88).abs() < f32::EPSILON);
+        assert!((chrome.text_muted[3] - 0.75).abs() < f32::EPSILON);
         assert!((chrome.text_faint[3] - 0.40).abs() < f32::EPSILON);
         assert!((chrome.text_inverse[3] - 1.0).abs() < f32::EPSILON);
     }
@@ -407,16 +436,53 @@ mod tests {
                 "theme '{name}': surface_base doesn't match background"
             );
 
-            // Text primary must match foreground
+            // Text primary must be boosted (brighter than raw foreground for dark themes)
             let (r, g, b) = theme.palette.foreground;
-            let expected = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
-            assert!(
-                (chrome.text_primary[0] - expected[0]).abs() < 0.001
-                    && (chrome.text_primary[1] - expected[1]).abs() < 0.001
-                    && (chrome.text_primary[2] - expected[2]).abs() < 0.001,
-                "theme '{name}': text_primary doesn't match foreground"
+            let raw_lum = r as f32 + g as f32 + b as f32;
+            let chrome_lum =
+                chrome.text_primary[0] + chrome.text_primary[1] + chrome.text_primary[2];
+            let (_, _, bg_l) = super::rgb_to_hsl(
+                theme.palette.background.0 as f32 / 255.0,
+                theme.palette.background.1 as f32 / 255.0,
+                theme.palette.background.2 as f32 / 255.0,
             );
+            if bg_l < 0.5 {
+                assert!(
+                    chrome_lum * 255.0 >= raw_lum - 1.0,
+                    "theme '{name}': text_primary ({chrome_lum:.3}) must be >= foreground ({raw_lum:.0})"
+                );
+            } else {
+                assert!(
+                    chrome_lum * 255.0 <= raw_lum + 1.0,
+                    "theme '{name}': text_primary ({chrome_lum:.3}) must be <= foreground ({raw_lum:.0})"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn derive_ui_chrome_text_boost_math() {
+        // wmux-default: foreground #d4d4d4, bg L≈0.118 (dark)
+        let palette = ThemeEngine::default_theme().palette;
+        let chrome = derive_ui_chrome(&palette);
+
+        // Boosted: 0.831 + (1.0 - 0.831) * 0.70 ≈ 0.949
+        let fg = 0xd4 as f32 / 255.0;
+        let expected = fg + (1.0 - fg) * 0.70;
+        assert!(
+            (chrome.text_primary[0] - expected).abs() < 0.002,
+            "text_primary R={}, expected ~{expected}",
+            chrome.text_primary[0]
+        );
+        // Achromatic foreground → equal R/G/B
+        assert!(
+            (chrome.text_primary[0] - chrome.text_primary[1]).abs() < 0.001,
+            "achromatic foreground should produce equal R/G/B"
+        );
+        assert!(
+            (chrome.text_primary[1] - chrome.text_primary[2]).abs() < 0.001,
+            "achromatic foreground should produce equal R/G/B"
+        );
     }
 
     #[test]

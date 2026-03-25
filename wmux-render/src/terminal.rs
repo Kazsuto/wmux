@@ -28,6 +28,9 @@ const CURSOR_LINE_THICKNESS: f32 = 2.0;
 pub struct TerminalMetrics {
     pub cell_width: f32,
     pub cell_height: f32,
+    /// Effective font size (in physical pixels) used to compute these metrics.
+    /// Includes DPI scaling: `config_font_size * scale_factor`.
+    pub font_size: f32,
 }
 
 impl TerminalMetrics {
@@ -64,6 +67,7 @@ impl TerminalMetrics {
         Self {
             cell_width,
             cell_height: line_h,
+            font_size: size,
         }
     }
 }
@@ -438,6 +442,7 @@ impl TerminalRenderer {
                 buffer: buf,
                 left: x_off,
                 top: y_off + r as f32 * ch,
+                // 1.0 because font_size already includes DPI scaling (physical pixels).
                 scale: 1.0,
                 bounds: TextBounds {
                     left: bounds_left,
@@ -560,7 +565,7 @@ fn build_row_buffers(
     cols: u16,
     rows: u16,
 ) -> Vec<Buffer> {
-    let glyph_metrics = Metrics::new(FONT_SIZE, metrics.cell_height);
+    let glyph_metrics = Metrics::new(metrics.font_size, metrics.cell_height);
     let buf_width = cols as f32 * metrics.cell_width;
     (0..rows as usize)
         .map(|_| {

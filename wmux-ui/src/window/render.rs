@@ -75,11 +75,14 @@ impl UiState<'_> {
         // Sidebar separator is rendered by sidebar.render_quads() as a 1px border_glow line.
 
         // Get pane layout from the actor (blocks briefly — acceptable once per frame).
-        let layout = rt.block_on(app_state.get_layout(surface_viewport));
+        let (layout, layout_dividers) = rt.block_on(app_state.get_layout(surface_viewport));
         // Cache for non-blocking hit-testing on mouse clicks.
         self.last_layout.clone_from(&layout);
-        // Recompute dividers from the current layout.
-        self.dividers = divider::find_dividers(&layout);
+        // Convert tree-based dividers to UI dividers.
+        self.dividers = layout_dividers
+            .into_iter()
+            .map(crate::divider::Divider::from)
+            .collect();
 
         // Collect render data for all panes first (surface info needed for viewports).
         let mut render_data_map: HashMap<PaneId, PaneRenderData> =
@@ -138,29 +141,7 @@ impl UiState<'_> {
             })
             .collect();
 
-        // Draw Focus Glow behind the active pane (signature "Luminous Void" element).
         let pane_renderer = wmux_render::PaneRenderer::new();
-        for vp in &viewports {
-            if vp.focused {
-                wmux_render::PaneRenderer::render_focus_glow(
-                    &mut self.quads,
-                    &vp.rect,
-                    self.ui_chrome.accent_glow_core,
-                    self.ui_chrome.accent_glow,
-                    self.focus_glow_anim
-                        .and_then(|id| self.animation.get(id))
-                        .unwrap_or(1.0),
-                );
-            }
-        }
-
-        // Draw focus indicators (accent stripe) for all panes.
-        pane_renderer.render_pane_borders(
-            &mut self.quads,
-            &viewports,
-            self.ui_chrome.border_default,
-            self.ui_chrome.accent,
-        );
 
         // Draw tab bar for every pane (always visible, even with a single tab).
         for vp in &viewports {
@@ -179,7 +160,7 @@ impl UiState<'_> {
                 r.x,
                 r.y,
                 r.width,
-                wmux_render::pane::TAB_BAR_HEIGHT,
+                vp.tab_bar_height(),
                 0.0,
                 sd.sigma,
                 0.0,
@@ -195,12 +176,13 @@ impl UiState<'_> {
                         .and_then(|id| self.animation.get(id))
                         .unwrap_or(1.0);
                     let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, hover_idx);
-                    let pill_y = vp.rect.y + 4.0;
-                    let pill_h = wmux_render::pane::TAB_BAR_HEIGHT - 8.0;
+                    let s = self.scale_factor;
+                    let pill_y = vp.rect.y + 4.0 * s;
+                    let pill_h = vp.tab_bar_height() - 8.0 * s;
                     let s2 = self.ui_chrome.surface_2;
                     let hover_bg = [s2[0], s2[1], s2[2], s2[3] * 0.5 * alpha];
                     self.quads
-                        .push_rounded_quad(tx, pill_y, tw, pill_h, hover_bg, 4.0);
+                        .push_rounded_quad(tx, pill_y, tw, pill_h, hover_bg, 4.0 * s);
                 }
             }
 
@@ -232,8 +214,9 @@ impl UiState<'_> {
             {
                 if *edit_pane == vp.pane_id {
                     let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, *edit_idx);
-                    let pill_y = vp.rect.y + 4.0;
-                    let pill_h = wmux_render::pane::TAB_BAR_HEIGHT - 8.0;
+                    let s = self.scale_factor;
+                    let pill_y = vp.rect.y + 4.0 * s;
+                    let pill_h = vp.tab_bar_height() - 8.0 * s;
                     // Background fill.
                     self.quads.push_rounded_quad(
                         tx,
@@ -241,19 +224,25 @@ impl UiState<'_> {
                         tw,
                         pill_h,
                         self.ui_chrome.surface_base,
-                        6.0,
+                        6.0 * s,
                     );
                     // Accent border (top).
-                    self.quads
-                        .push_rounded_quad(tx, pill_y, tw, 1.0, self.ui_chrome.accent, 6.0);
+                    self.quads.push_rounded_quad(
+                        tx,
+                        pill_y,
+                        tw,
+                        1.0 * s,
+                        self.ui_chrome.accent,
+                        6.0 * s,
+                    );
                     // Accent border (bottom).
                     self.quads.push_rounded_quad(
                         tx,
-                        pill_y + pill_h - 1.0,
+                        pill_y + pill_h - 1.0 * s,
                         tw,
-                        1.0,
+                        1.0 * s,
                         self.ui_chrome.accent,
-                        6.0,
+                        6.0 * s,
                     );
                 }
             }
@@ -356,13 +345,8 @@ impl UiState<'_> {
                     self.ui_chrome.accent[2],
                     0.25,
                 ];
-                self.quads.push_quad(
-                    from_tx,
-                    vp.rect.y,
-                    from_tw,
-                    wmux_render::pane::TAB_BAR_HEIGHT,
-                    drag_color,
-                );
+                self.quads
+                    .push_quad(from_tx, vp.rect.y, from_tw, vp.tab_bar_height(), drag_color);
 
                 // Drop indicator: 2px vertical accent bar at the target position.
                 if to_index != *from_index {
@@ -377,7 +361,7 @@ impl UiState<'_> {
                         indicator_x,
                         vp.rect.y,
                         2.0,
-                        wmux_render::pane::TAB_BAR_HEIGHT,
+                        vp.tab_bar_height(),
                         self.ui_chrome.accent,
                     );
                 }
@@ -462,7 +446,7 @@ impl UiState<'_> {
                     pane_cols,
                     pane_rows,
                     Some(self.terminal_font_family.as_str()),
-                    Some(self.terminal_font_size),
+                    Some(self.terminal_font_size * self.scale_factor),
                 );
                 renderer.set_palette(
                     self.theme_ansi,
@@ -694,16 +678,13 @@ impl UiState<'_> {
         let cursor_y = self.cursor_pos.1 as f32;
         let hovered_div = match &self.drag_state {
             // During drag, keep the divider highlighted for the dragged one.
-            Some(ds) => self
-                .dividers
-                .iter()
-                .find(|d| d.pane_id == ds.pane_id && d.orientation == ds.orientation),
+            Some(ds) => self.dividers.iter().find(|d| d.split_id == ds.split_id),
             None => divider::hit_test(&self.dividers, cursor_x, cursor_y),
         };
         if let Some(div) = hovered_div {
             const DIV_HIGHLIGHT_THICKNESS: f32 = 2.0;
-            // Use border_glow (luminous accent separator) for hovered dividers.
-            let div_color = self.ui_chrome.border_glow;
+            // Use border_default (neutral) for hovered dividers.
+            let div_color = self.ui_chrome.border_default;
             match div.orientation {
                 DividerOrientation::Vertical => {
                     let x = div.position - DIV_HIGHLIGHT_THICKNESS / 2.0;
@@ -722,7 +703,7 @@ impl UiState<'_> {
             }
         }
 
-        // Permanent pane dividers — subtle 1px line between all pane pairs.
+        // Permanent pane dividers — subtle 1px line centred in the gap.
         for div in &self.dividers {
             match div.orientation {
                 DividerOrientation::Vertical => {
@@ -852,6 +833,67 @@ impl UiState<'_> {
             // Split direction icons rendered as SVG CustomGlyphs in the text area section.
         }
 
+        // Workspace context menu (renders on top of sidebar).
+        if let super::WorkspaceMenuState::Open { menu_x, menu_y, .. } = self.workspace_menu {
+            let item_h = 32.0;
+            let menu_w = 200.0;
+            let menu_items = super::WORKSPACE_MENU_ITEMS as f32;
+            let menu_h = item_h * menu_items + 8.0;
+            let menu_radius = 8.0;
+
+            // Shadow
+            let sd = &self.ui_chrome.shadow_md;
+            self.shadows.push_shadow(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                menu_radius,
+                sd.sigma,
+                0.0,
+                sd.offset_y,
+                self.ui_chrome.shadow,
+            );
+
+            // Background
+            self.quads.push_rounded_quad(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                self.ui_chrome.surface_2,
+                menu_radius,
+            );
+
+            // Border
+            self.quads.push_rounded_quad(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                [
+                    self.ui_chrome.border_subtle[0],
+                    self.ui_chrome.border_subtle[1],
+                    self.ui_chrome.border_subtle[2],
+                    0.3,
+                ],
+                menu_radius,
+            );
+
+            // Hover highlight
+            if let Some(hover_idx) = self.workspace_menu_hover {
+                let hy = menu_y + 4.0 + hover_idx as f32 * item_h;
+                let hover_bg = [
+                    self.ui_chrome.accent[0],
+                    self.ui_chrome.accent[1],
+                    self.ui_chrome.accent[2],
+                    0.15,
+                ];
+                self.quads
+                    .push_rounded_quad(menu_x + 4.0, hy, menu_w - 8.0, item_h, hover_bg, 4.0);
+            }
+        }
+
         // Upload GPU data.
         self.shadows.prepare(&self.gpu.queue);
         self.quads.prepare(&self.gpu.queue);
@@ -929,8 +971,7 @@ impl UiState<'_> {
                                         left: (tab_x + TAB_TEXT_PADDING) as i32,
                                         top: vp.rect.y as i32,
                                         right: (tab_x + tab_width - TAB_TEXT_PADDING) as i32,
-                                        bottom: (vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT)
-                                            as i32,
+                                        bottom: (vp.rect.y + vp.tab_bar_height()) as i32,
                                     },
                                     default_color: rgba_to_glyphon(self.ui_chrome.text_primary),
                                     custom_glyphs: &[],
@@ -979,7 +1020,7 @@ impl UiState<'_> {
                                     top: vp.rect.y as i32,
                                     right: (tab_x + tab_width - TAB_TEXT_PADDING - close_reserve)
                                         as i32,
-                                    bottom: (vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT) as i32,
+                                    bottom: (vp.rect.y + vp.tab_bar_height()) as i32,
                                 },
                                 default_color: text_color,
                                 custom_glyphs: &[],
@@ -1100,23 +1141,24 @@ impl UiState<'_> {
         }
 
         // Append sidebar text areas (workspace names + subtitles + icons).
-        // Pass empty buffer + pre-built CustomGlyph for sidebar workspace icon.
-        let sidebar_icon = Some((&self.icon_empty_buffer, self.cg_workspace.as_slice()));
-        let ws_status_icons: Vec<Vec<(String, String)>> = self
-            .workspace_cache
-            .iter()
-            .map(|ws| ws.status_icons.clone())
-            .collect();
-        all_text_areas.extend(self.sidebar.text_areas(
-            surface_w,
-            surface_h,
-            &self.ui_chrome,
-            self.scale_factor,
-            sidebar_icon,
-            &ws_status_icons,
-            &self.icon_empty_buffer,
-            &self.status_icon_cgs,
-        ));
+        if self.sidebar.visible {
+            let sidebar_icon = Some((&self.icon_empty_buffer, self.cg_workspace.as_slice()));
+            let ws_status_icons: Vec<Vec<(String, String)>> = self
+                .workspace_cache
+                .iter()
+                .map(|ws| ws.status_icons.clone())
+                .collect();
+            all_text_areas.extend(self.sidebar.text_areas(
+                surface_w,
+                surface_h,
+                &self.ui_chrome,
+                self.scale_factor,
+                sidebar_icon,
+                &ws_status_icons,
+                &self.icon_empty_buffer,
+                &self.status_icon_cgs,
+            ));
+        }
 
         // Append search bar text areas (icon + query + match count).
         if self.search.active {
@@ -1253,6 +1295,32 @@ impl UiState<'_> {
             }
         }
 
+        // Append workspace context menu text areas.
+        if let super::WorkspaceMenuState::Open { menu_x, menu_y, .. } = self.workspace_menu {
+            let item_h = 32.0;
+            let menu_w = 200.0;
+            let label_x = menu_x + 12.0;
+            let label_color = rgba_to_glyphon(self.ui_chrome.text_primary);
+            for i in 0..super::WORKSPACE_MENU_ITEMS {
+                let iy = menu_y + 4.0 + i as f32 * item_h;
+                let ty = iy + (item_h - 18.0) / 2.0;
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.workspace_menu_buffers[i],
+                    left: label_x,
+                    top: ty,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: label_x as i32,
+                        top: iy as i32,
+                        right: (menu_x + menu_w - 8.0) as i32,
+                        bottom: (iy + item_h) as i32,
+                    },
+                    default_color: label_color,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
         self.glyphon
             .prepare_text_areas(&self.gpu.device, &self.gpu.queue, all_text_areas)?;
 
@@ -1327,13 +1395,14 @@ impl UiState<'_> {
     /// full window surface.
     pub(super) fn cursor_cell(&self) -> (usize, usize) {
         // Use terminal content area (excluding tab bar) for coordinate mapping.
-        let tab_bar_h = wmux_render::pane::TAB_BAR_HEIGHT as f64;
+        let scaled_tbh = wmux_render::pane::TAB_BAR_HEIGHT * self.scale_factor;
+        let tab_bar_h = scaled_tbh as f64;
         let (origin_x, origin_y, pane_cols, pane_rows) = self
             .last_layout
             .iter()
             .find(|(id, _)| *id == self.focused_pane)
             .map(|(_, rect)| {
-                let content_height = (rect.height - wmux_render::pane::TAB_BAR_HEIGHT).max(0.0);
+                let content_height = (rect.height - scaled_tbh).max(0.0);
                 let cols = (rect.width / self.metrics.cell_width).floor().max(1.0) as usize;
                 let rows = (content_height / self.metrics.cell_height).floor().max(1.0) as usize;
                 (rect.x as f64, rect.y as f64 + tab_bar_h, cols, rows)

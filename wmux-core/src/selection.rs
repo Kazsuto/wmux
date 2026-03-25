@@ -199,7 +199,10 @@ mod tests {
         let cols = text_rows.iter().map(|r| r.len()).max().unwrap_or(10) as u16;
         let rows = text_rows.len() as u16;
         let mut grid = Grid::new(cols, rows);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test grids are small — row/col indices fit in u16"
+        )]
         for (r, text) in text_rows.iter().enumerate() {
             for (c, ch) in text.chars().enumerate() {
                 let mut cell = Cell::default();

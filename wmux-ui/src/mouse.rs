@@ -503,7 +503,10 @@ mod tests {
         for (i, ch) in "hello".chars().enumerate() {
             let mut cell = Cell::default();
             cell.grapheme = ch.to_string().into();
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test grid is 10 cols — index fits in u16"
+            )]
             grid.set_cell(i as u16, 0, cell);
         }
         let scrollback = Scrollback::new(100);

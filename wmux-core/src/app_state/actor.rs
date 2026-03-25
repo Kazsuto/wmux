@@ -53,11 +53,6 @@ pub(super) struct AppStateActor {
     port_scan_in_flight: bool,
     /// Per-pane current working directory (populated from OSC 7 events).
     pane_cwds: HashMap<PaneId, PathBuf>,
-    /// Per-pane child process PID (set after PTY spawn, used for Claude Code detection).
-    pane_pids: HashMap<PaneId, u32>,
-    /// Per-pane Claude Code session UUID (set at restore time from `--resume <uuid>`).
-    /// Used to preserve exact pane→session mapping across save/restore cycles.
-    pane_claude_sessions: HashMap<PaneId, String>,
     /// Sidebar width (pixels), sent from UI layer for session persistence.
     ui_sidebar_width: u16,
     /// Window geometry, sent from UI layer for session persistence.
@@ -80,8 +75,6 @@ pub(super) fn spawn_actor(event_tx: mpsc::Sender<AppEvent>) -> (AppStateHandle, 
         last_git_detect: HashMap::new(),
         port_scan_in_flight: false,
         pane_cwds: HashMap::new(),
-        pane_pids: HashMap::new(),
-        pane_claude_sessions: HashMap::new(),
         ui_sidebar_width: 0,
         ui_window_geometry: None,
         cmd_rx,
@@ -154,24 +147,22 @@ impl AppStateActor {
                 AppCommand::MarkExited { pane_id, success } => {
                     self.handle_exit(pane_id, success);
                 }
-                AppCommand::SetPanePid {
+                AppCommand::SetPaneInitialCwd {
                     pane_id,
-                    pid,
                     initial_cwd,
-                    claude_session_id,
                 } => {
-                    self.pane_pids.insert(pane_id, pid);
-                    // Set initial CWD for panes without a shell to emit OSC 7
-                    // (e.g., restored Claude Code panes spawned directly).
-                    if let Some(cwd) = initial_cwd {
-                        self.pane_cwds.entry(pane_id).or_insert(cwd);
-                    }
-                    // Track Claude session UUID: set from --resume, or clear when
-                    // the pane spawns a non-Claude process (user opened new tab).
-                    if let Some(id) = claude_session_id {
-                        self.pane_claude_sessions.insert(pane_id, id);
-                    } else {
-                        self.pane_claude_sessions.remove(&pane_id);
+                    // Set initial CWD for restored panes without a shell to emit OSC 7.
+                    self.pane_cwds
+                        .entry(pane_id)
+                        .or_insert_with(|| initial_cwd.clone());
+                    // Propagate to workspace metadata so sidebar shows correct
+                    // CWD immediately (before the shell emits OSC 7).
+                    if let Some(ws_id) = self.find_workspace_for_pane(pane_id) {
+                        if let Some(ws) = self.workspace_manager.by_id_mut(ws_id) {
+                            if ws.metadata.cwd.is_none() {
+                                ws.metadata.cwd = Some(initial_cwd);
+                            }
+                        }
                     }
                 }
                 AppCommand::ExtractSelection {
@@ -213,25 +204,25 @@ impl AppStateActor {
                     }
                 }
                 AppCommand::GetLayout { viewport, reply } => {
-                    let layout = if let Some(zoomed_id) = self.zoomed_pane {
+                    let (layout, dividers) = if let Some(zoomed_id) = self.zoomed_pane {
                         // Validate zoomed pane still exists in the registry.
                         if self.registry.get(zoomed_id).is_some() {
-                            vec![(zoomed_id, viewport)]
+                            (vec![(zoomed_id, viewport)], Vec::new())
                         } else {
                             // Stale zoom reference — clear it and fall through.
                             self.zoomed_pane = None;
                             if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
-                                tree.layout(viewport)
+                                tree.layout_with_dividers(viewport)
                             } else {
-                                Vec::new()
+                                (Vec::new(), Vec::new())
                             }
                         }
                     } else if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
-                        tree.layout(viewport)
+                        tree.layout_with_dividers(viewport)
                     } else {
-                        Vec::new()
+                        (Vec::new(), Vec::new())
                     };
-                    let _ = reply.send(layout);
+                    let _ = reply.send((layout, dividers));
                 }
 
                 AppCommand::ToggleZoom { pane_id } => {
@@ -370,8 +361,7 @@ impl AppStateActor {
                         if bpid != pane_id {
                             self.registry.remove(bpid);
                             self.pane_cwds.remove(&bpid);
-                            self.pane_pids.remove(&bpid);
-                            self.pane_claude_sessions.remove(&bpid);
+
                         }
                     }
 
@@ -499,6 +489,14 @@ impl AppStateActor {
                     if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
                         if let Err(e) = tree.resize_split(pane_id, ratio) {
                             tracing::warn!(error = %e, pane_id = %pane_id, "ResizeSplit failed");
+                        }
+                    }
+                }
+
+                AppCommand::ResizeSplitById { split_id, ratio } => {
+                    if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
+                        if let Err(e) = tree.resize_by_split_id(split_id, ratio) {
+                            tracing::warn!(error = %e, split_id = %split_id, "ResizeSplitById failed");
                         }
                     }
                 }
@@ -669,8 +667,6 @@ impl AppStateActor {
             &self.workspace_manager,
             &self.registry,
             &self.pane_cwds,
-            &self.pane_pids,
-            &self.pane_claude_sessions,
             self.ui_sidebar_width,
             self.ui_window_geometry.clone(),
         )
@@ -797,14 +793,10 @@ impl AppStateActor {
         for hid in &hidden_ids {
             self.registry.remove(*hid);
             self.pane_cwds.remove(hid);
-            self.pane_pids.remove(hid);
-            self.pane_claude_sessions.remove(hid);
         }
 
         self.registry.remove(pane_id);
         self.pane_cwds.remove(&pane_id);
-        self.pane_pids.remove(&pane_id);
-        self.pane_claude_sessions.remove(&pane_id);
         if self.zoomed_pane == Some(pane_id) {
             self.zoomed_pane = None;
         }
@@ -884,9 +876,6 @@ impl AppStateActor {
             pane.terminal.process(msg.as_bytes());
             tracing::info!(pane_id = %pane_id, success, "pane process exited");
         }
-        // Clear stale Claude session tracking — the process that was running
-        // Claude has exited, so the UUID is no longer valid for this pane.
-        self.pane_claude_sessions.remove(&pane_id);
         let _ = self
             .event_tx
             .try_send(AppEvent::PaneExited { pane_id, success });
@@ -1158,12 +1147,15 @@ impl AppStateActor {
     ) -> WorkspaceSnapshot {
         let pane_count = ws.pane_tree.as_ref().map_or(0, |t| t.pane_count());
         let meta = ws.metadata();
-        let status_icons = self
+        let (status_icons, status_text) = self
             .metadata_stores
             .get(&ws.id())
             .map(|store| {
-                store
-                    .list_status()
+                let mut statuses = store.list_status();
+                // Sort by key for deterministic ordering (HashMap has no guaranteed order).
+                statuses.sort_by(|a, b| a.key.cmp(&b.key));
+                let text = statuses.first().map(|e| e.value.clone());
+                let icons = statuses
                     .into_iter()
                     .filter_map(|entry| {
                         entry
@@ -1171,7 +1163,8 @@ impl AppStateActor {
                             .as_ref()
                             .map(|icon| (entry.key.clone(), icon.clone()))
                     })
-                    .collect()
+                    .collect();
+                (icons, text)
             })
             .unwrap_or_default();
         WorkspaceSnapshot {
@@ -1182,6 +1175,9 @@ impl AppStateActor {
             unread_count: self.notification_store.unread_count(ws.id()),
             cwd: meta.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
             git_branch: meta.git_branch.clone(),
+            ports: meta.ports.clone(),
+            git_dirty: meta.git_dirty,
+            status_text,
             status_icons,
         }
     }
@@ -1426,7 +1422,7 @@ mod tests {
 
         // Layout should return the pane in the active workspace.
         let viewport = crate::rect::Rect::new(0.0, 0.0, 800.0, 600.0);
-        let layout = handle.get_layout(viewport).await;
+        let (layout, _dividers) = handle.get_layout(viewport).await;
         assert_eq!(layout.len(), 1);
         assert_eq!(layout[0].0, pane_id);
 

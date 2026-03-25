@@ -78,6 +78,11 @@ define_id!(
     SurfaceId
 );
 
+define_id!(
+    /// Unique identifier for a split node in the pane tree.
+    SplitId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +144,7 @@ mod tests {
         _assert_sync::<PaneId>();
         _assert_send::<SurfaceId>();
         _assert_sync::<SurfaceId>();
+        _assert_send::<SplitId>();
+        _assert_sync::<SplitId>();
     }
 }

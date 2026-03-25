@@ -3,7 +3,32 @@ use serde::{Deserialize, Serialize};
 use crate::error::CoreError;
 use crate::rect::{Rect, DIVIDER_WIDTH};
 use crate::surface::SplitDirection;
-use crate::types::PaneId;
+use crate::types::{PaneId, SplitId};
+
+/// Divider metadata emitted during tree layout traversal.
+///
+/// Each `LayoutDivider` corresponds to exactly one `Split` node in the
+/// `PaneTree`. It carries the split's `SplitId` so the UI can resize the
+/// correct node when the user drags the divider.
+#[derive(Debug, Clone)]
+pub struct LayoutDivider {
+    /// Direction of the split that produced this divider.
+    pub direction: SplitDirection,
+    /// Unique identifier of the split node (for resize).
+    pub split_id: SplitId,
+    /// Divider center position (x for vertical bar, y for horizontal bar).
+    pub position: f32,
+    /// Range on the perpendicular axis (start coordinate).
+    pub start: f32,
+    /// Range on the perpendicular axis (end coordinate).
+    pub end: f32,
+    /// Offset of the split container's origin on the split axis.
+    pub split_start: f32,
+    /// Total dimension of the split container on the split axis.
+    pub split_dimension: f32,
+    /// Current ratio of the split node.
+    pub current_ratio: f32,
+}
 
 /// Binary tree representing pane layout within a workspace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +37,9 @@ pub enum PaneTree {
     Leaf(PaneId),
     /// A split node dividing space between two children.
     Split {
+        /// Unique identifier for this split node (for targeted resize).
+        #[serde(default = "SplitId::new")]
+        split_id: SplitId,
         direction: SplitDirection,
         /// Fraction of space allocated to the first child (0.0--1.0).
         ratio: f32,
@@ -46,6 +74,7 @@ impl PaneTree {
                 ratio,
                 first,
                 second,
+                ..
             } => {
                 let (first_rect, second_rect) = match direction {
                     SplitDirection::Horizontal => viewport.split_horizontal(*ratio, DIVIDER_WIDTH),
@@ -53,6 +82,78 @@ impl PaneTree {
                 };
                 first.layout_into(first_rect, out);
                 second.layout_into(second_rect, out);
+            }
+        }
+    }
+
+    /// Compute layout AND collect divider metadata from the tree structure.
+    ///
+    /// Unlike [`layout`] + flat-layout divider detection, this method
+    /// directly associates each divider with its originating `Split` node,
+    /// guaranteeing correct resize targeting in nested trees.
+    #[must_use]
+    pub fn layout_with_dividers(
+        &self,
+        viewport: Rect,
+    ) -> (Vec<(PaneId, Rect)>, Vec<LayoutDivider>) {
+        let n = self.pane_count();
+        let mut panes = Vec::with_capacity(n);
+        let mut dividers = Vec::with_capacity(n.saturating_sub(1));
+        self.layout_dividers_into(viewport, &mut panes, &mut dividers);
+        (panes, dividers)
+    }
+
+    fn layout_dividers_into(
+        &self,
+        viewport: Rect,
+        panes: &mut Vec<(PaneId, Rect)>,
+        dividers: &mut Vec<LayoutDivider>,
+    ) {
+        match self {
+            Self::Leaf(id) => panes.push((*id, viewport)),
+            Self::Split {
+                split_id,
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let (first_rect, second_rect) = match direction {
+                    SplitDirection::Horizontal => viewport.split_horizontal(*ratio, DIVIDER_WIDTH),
+                    SplitDirection::Vertical => viewport.split_vertical(*ratio, DIVIDER_WIDTH),
+                };
+
+                // Emit divider at the boundary between the two children.
+                let (position, start, end, split_start, split_dimension) = match direction {
+                    SplitDirection::Horizontal => (
+                        first_rect.x + first_rect.width + DIVIDER_WIDTH / 2.0,
+                        viewport.y,
+                        viewport.y + viewport.height,
+                        viewport.x,
+                        viewport.width,
+                    ),
+                    SplitDirection::Vertical => (
+                        first_rect.y + first_rect.height + DIVIDER_WIDTH / 2.0,
+                        viewport.x,
+                        viewport.x + viewport.width,
+                        viewport.y,
+                        viewport.height,
+                    ),
+                };
+
+                dividers.push(LayoutDivider {
+                    direction: *direction,
+                    split_id: *split_id,
+                    position,
+                    start,
+                    end,
+                    split_start,
+                    split_dimension,
+                    current_ratio: *ratio,
+                });
+
+                first.layout_dividers_into(first_rect, panes, dividers);
+                second.layout_dividers_into(second_rect, panes, dividers);
             }
         }
     }
@@ -92,6 +193,7 @@ impl PaneTree {
             Self::Leaf(id) if *id == target => {
                 let old = Self::Leaf(*id);
                 *self = Self::Split {
+                    split_id: SplitId::new(),
                     direction,
                     ratio: 0.5,
                     first: Box::new(old),
@@ -239,6 +341,38 @@ impl PaneTree {
         }
     }
 
+    /// Resize a specific split node by its `SplitId`.
+    ///
+    /// Unlike [`resize_split`] (which walks by pane ID and may hit the wrong
+    /// node in nested trees), this method targets the exact split node.
+    pub fn resize_by_split_id(&mut self, target: SplitId, new_ratio: f32) -> Result<(), CoreError> {
+        if self.resize_by_split_id_inner(target, new_ratio) {
+            Ok(())
+        } else {
+            Err(CoreError::CannotSplit("split node not found".to_string()))
+        }
+    }
+
+    fn resize_by_split_id_inner(&mut self, target: SplitId, new_ratio: f32) -> bool {
+        match self {
+            Self::Leaf(_) => false,
+            Self::Split {
+                split_id,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if *split_id == target {
+                    *ratio = new_ratio.clamp(0.1, 0.9);
+                    return true;
+                }
+                first.resize_by_split_id_inner(target, new_ratio)
+                    || second.resize_by_split_id_inner(target, new_ratio)
+            }
+        }
+    }
+
     /// Check whether a pane with the given ID exists in this tree.
     #[inline]
     #[must_use]
@@ -312,10 +446,12 @@ mod tests {
         assert_eq!(*id1, p1);
         assert_eq!(*id2, p2);
 
-        assert!((r1.width - 499.5).abs() < f32::EPSILON);
+        // 1000 * 0.5 - 2.0/2 = 499.0
+        assert!((r1.width - 499.0).abs() < f32::EPSILON);
         assert_eq!(r1.x, 0.0);
-        assert!((r2.x - 500.5).abs() < f32::EPSILON);
-        assert!((r2.width - 499.5).abs() < f32::EPSILON);
+        // 499.0 + 2.0 = 501.0
+        assert!((r2.x - 501.0).abs() < f32::EPSILON);
+        assert!((r2.width - 499.0).abs() < f32::EPSILON);
         assert!((r2.x - (r1.x + r1.width) - DIVIDER_WIDTH).abs() < f32::EPSILON);
     }
 
@@ -331,8 +467,10 @@ mod tests {
         let (_, r1) = &layout[0];
         let (_, r2) = &layout[1];
 
-        assert!((r1.height - 399.5).abs() < f32::EPSILON);
-        assert!((r2.y - 400.5).abs() < f32::EPSILON);
+        // 800 * 0.5 - 2.0/2 = 399.0
+        assert!((r1.height - 399.0).abs() < f32::EPSILON);
+        // 399.0 + 2.0 = 401.0
+        assert!((r2.y - 401.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -436,7 +574,8 @@ mod tests {
 
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 699.5).abs() < f32::EPSILON);
+        // 1000 * 0.7 - 2.0/2 = 699.0
+        assert!((r1.width - 699.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -556,12 +695,14 @@ mod tests {
         tree.resize_split(p1, 0.0).unwrap();
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 99.5).abs() < f32::EPSILON);
+        // 1000 * 0.1 - 2.0/2 = 99.0
+        assert!((r1.width - 99.0).abs() < f32::EPSILON);
 
         tree.resize_split(p1, 1.0).unwrap();
         let layout = tree.layout(viewport());
         let r1 = layout[0].1;
-        assert!((r1.width - 899.5).abs() < f32::EPSILON);
+        // 1000 * 0.9 - 2.0/2 = 899.0
+        assert!((r1.width - 899.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -569,6 +710,121 @@ mod tests {
         let p1 = PaneId::new();
         let mut tree = PaneTree::new(p1);
         let result = tree.resize_split(p1, 0.5);
+        assert!(result.is_err());
+    }
+
+    // ─── layout_with_dividers tests ───────────────────────────────────────
+
+    #[test]
+    fn layout_with_dividers_single_pane_no_dividers() {
+        let p1 = PaneId::new();
+        let tree = PaneTree::new(p1);
+        let (panes, dividers) = tree.layout_with_dividers(viewport());
+        assert_eq!(panes.len(), 1);
+        assert!(dividers.is_empty());
+    }
+
+    #[test]
+    fn layout_with_dividers_two_panes_one_divider() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+
+        let (panes, dividers) = tree.layout_with_dividers(viewport());
+        assert_eq!(panes.len(), 2);
+        assert_eq!(dividers.len(), 1);
+
+        let div = &dividers[0];
+        assert_eq!(div.direction, SplitDirection::Horizontal);
+        // Divider position: at the boundary between p1 and p2
+        let find = |id: PaneId| panes.iter().find(|(pid, _)| *pid == id).unwrap().1;
+        let r1 = find(p1);
+        let r2 = find(p2);
+        assert!(div.position > r1.x);
+        assert!(div.position < r2.x + r2.width);
+    }
+
+    #[test]
+    fn layout_with_dividers_nested_produces_two_dividers() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let _p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+        let _p3 = tree.split_pane(p1, SplitDirection::Vertical).unwrap();
+
+        let (panes, dividers) = tree.layout_with_dividers(viewport());
+        assert_eq!(panes.len(), 3);
+        assert_eq!(dividers.len(), 2);
+
+        // Each divider should have a distinct split_id.
+        assert_ne!(dividers[0].split_id, dividers[1].split_id);
+    }
+
+    #[test]
+    fn layout_with_dividers_matches_layout() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+
+        let plain = tree.layout(viewport());
+        let (with_div, _) = tree.layout_with_dividers(viewport());
+
+        // Same panes, same rects.
+        assert_eq!(plain.len(), with_div.len());
+        for (a, b) in plain.iter().zip(with_div.iter()) {
+            assert_eq!(a.0, b.0);
+            assert_eq!(a.1, b.1);
+        }
+        let _ = p2;
+    }
+
+    // ─── resize_by_split_id tests ─────────────────────────────────────────
+
+    #[test]
+    fn resize_by_split_id_changes_ratio() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let _p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+
+        let (_, dividers) = tree.layout_with_dividers(viewport());
+        let split_id = dividers[0].split_id;
+
+        tree.resize_by_split_id(split_id, 0.7).unwrap();
+
+        let layout = tree.layout(viewport());
+        let r1 = layout[0].1;
+        // 1000 * 0.7 - 2.0/2 = 699.0
+        assert!((r1.width - 699.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resize_by_split_id_clamps() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let _p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+
+        let (_, dividers) = tree.layout_with_dividers(viewport());
+        let split_id = dividers[0].split_id;
+
+        // Extreme values should be clamped to 0.1..0.9.
+        tree.resize_by_split_id(split_id, 0.0).unwrap();
+        let layout = tree.layout(viewport());
+        let r1 = layout[0].1;
+        assert!((r1.width - 99.0).abs() < f32::EPSILON); // 1000 * 0.1 - 1.0
+
+        tree.resize_by_split_id(split_id, 1.0).unwrap();
+        let layout = tree.layout(viewport());
+        let r1 = layout[0].1;
+        assert!((r1.width - 899.0).abs() < f32::EPSILON); // 1000 * 0.9 - 1.0
+    }
+
+    #[test]
+    fn resize_by_split_id_not_found() {
+        let p1 = PaneId::new();
+        let mut tree = PaneTree::new(p1);
+        let _p2 = tree.split_pane(p1, SplitDirection::Horizontal).unwrap();
+
+        let bad_id = SplitId::new();
+        let result = tree.resize_by_split_id(bad_id, 0.5);
         assert!(result.is_err());
     }
 }

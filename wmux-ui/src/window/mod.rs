@@ -140,6 +140,14 @@ pub(crate) struct UiState<'window> {
     /// Which split menu item is currently hovered (0–3), if any.
     pub(crate) split_menu_hover: Option<usize>,
 
+    // Workspace context menu
+    /// State of the workspace context menu (right-click on sidebar).
+    pub(crate) workspace_menu: WorkspaceMenuState,
+    /// Glyphon text buffers for workspace context menu items.
+    pub(crate) workspace_menu_buffers: [glyphon::Buffer; WORKSPACE_MENU_ITEMS],
+    /// Which workspace menu item is currently hovered, if any.
+    pub(crate) workspace_menu_hover: Option<usize>,
+
     // Animation
     pub(crate) animation: crate::animation::AnimationEngine,
     /// Animation ID for focus glow fade-in on the newly focused pane.
@@ -238,6 +246,25 @@ pub(crate) enum SplitMenuState {
         menu_y: f32,
     },
 }
+
+/// State for the workspace context menu (right-click on sidebar row).
+#[derive(Debug, Clone, Default)]
+pub(crate) enum WorkspaceMenuState {
+    /// Menu is closed.
+    #[default]
+    Closed,
+    /// Menu is open for a specific workspace row.
+    Open {
+        /// Index of the workspace in the cache.
+        workspace_index: usize,
+        /// Top-left corner of the menu popup in logical pixels.
+        menu_x: f32,
+        menu_y: f32,
+    },
+}
+
+/// Number of items in the workspace context menu.
+pub(crate) const WORKSPACE_MENU_ITEMS: usize = 2;
 
 /// Tab drag-and-drop state machine.
 #[derive(Debug, Clone)]

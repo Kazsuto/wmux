@@ -87,10 +87,24 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let mut glyphon = wmux_render::GlyphonRenderer::new(&gpu.device, &gpu.queue, gpu.format);
         glyphon.resize(&gpu.queue, gpu.width(), gpu.height());
 
-        // Compute terminal dimensions from window size and font metrics.
-        // Font family/size from config will be applied when renderers are lazily
-        // created in render(). Initial metrics use defaults for cols/rows calculation.
-        let metrics = wmux_render::TerminalMetrics::new(glyphon.font_system(), None, None);
+        // Load config early so font metrics use the configured font size.
+        // Config::load() uses std::fs which is fine here — one-time init on the UI thread.
+        let config = wmux_config::Config::load().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to load config, using defaults");
+            wmux_config::Config::default()
+        });
+
+        // Capture DPI scale factor for physical pixel calculations.
+        let initial_scale_factor = window.scale_factor() as f32;
+
+        // Compute terminal dimensions from window size and DPI-scaled font metrics.
+        // The font size is multiplied by the OS scale factor so cell dimensions
+        // are in physical pixels — matching the wgpu surface coordinate space.
+        let metrics = wmux_render::TerminalMetrics::new(
+            glyphon.font_system(),
+            Some(config.font_family.as_str()),
+            Some(config.font_size * initial_scale_factor),
+        );
         let cols = ((gpu.width() as f32) / metrics.cell_width).floor().max(1.0) as u32;
         let rows = ((gpu.height() as f32) / metrics.cell_height)
             .floor()
@@ -207,12 +221,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             });
         }
 
-        // Load config from disk (wmux config > Ghostty config > defaults).
-        // Config::load() uses std::fs which is fine here — one-time init on the UI thread.
-        let config = wmux_config::Config::load().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to load config, using defaults");
-            wmux_config::Config::default()
-        });
+        // Config was already loaded earlier (before metrics computation).
         let mut theme_engine = wmux_config::ThemeEngine::new();
         if let Err(e) = theme_engine.set_theme(&config.theme) {
             tracing::warn!(theme = %config.theme, error = %e, "failed to load configured theme, using default");
@@ -272,7 +281,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             "terminal initialized (actor pattern)",
         );
 
-        let initial_scale_factor = window.scale_factor() as f32;
+        // initial_scale_factor was captured earlier (before metrics computation).
 
         // Empty buffer for SVG CustomGlyph TextAreas (no text, only custom_glyphs).
         let icon_empty_buffer = {
@@ -322,6 +331,22 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             b.shape_until_scroll(glyphon.font_system(), false);
             b
         });
+        let ws_menu_labels = ["Rename Workspace", "Close Workspace"];
+        let ws_menu_buffers: [glyphon::Buffer; super::WORKSPACE_MENU_ITEMS] =
+            std::array::from_fn(|i| {
+                let mut b = glyphon::Buffer::new(glyphon.font_system(), menu_m);
+                b.set_size(glyphon.font_system(), Some(180.0), Some(28.0));
+                b.set_text(
+                    glyphon.font_system(),
+                    ws_menu_labels[i],
+                    &menu_attrs,
+                    glyphon::Shaping::Advanced,
+                    None,
+                );
+                b.shape_until_scroll(glyphon.font_system(), false);
+                b
+            });
+
         let split_menu_hint_buffers = std::array::from_fn(|i| {
             let mut b = glyphon::Buffer::new(glyphon.font_system(), menu_m);
             b.set_size(glyphon.font_system(), Some(120.0), Some(28.0));
@@ -396,6 +421,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             split_menu_buffers,
             split_menu_hint_buffers,
             split_menu_hover: None,
+            workspace_menu: super::WorkspaceMenuState::default(),
+            workspace_menu_buffers: ws_menu_buffers,
+            workspace_menu_hover: None,
             animation: crate::animation::AnimationEngine::default(),
             focus_glow_anim: None,
             tab_hover: None,
@@ -541,6 +569,38 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 }
             }
 
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let new_scale = scale_factor as f32;
+                // Guard against degenerate values from drivers/platform quirks.
+                if !new_scale.is_finite() || new_scale < 0.1 {
+                    tracing::warn!(scale_factor = new_scale, "ignoring invalid scale factor");
+                } else if (new_scale - state.scale_factor).abs() > 1e-4 {
+                    tracing::info!(
+                        old = state.scale_factor,
+                        new = new_scale,
+                        "DPI scale factor changed"
+                    );
+                    state.scale_factor = new_scale;
+                    // Recompute cell metrics with the updated DPI scale.
+                    state.metrics = wmux_render::TerminalMetrics::new(
+                        state.glyphon.font_system(),
+                        Some(state.terminal_font_family.as_str()),
+                        Some(state.terminal_font_size * new_scale),
+                    );
+                    // Recalculate global cols/rows from the new metrics in case no
+                    // Resized event follows (e.g., same physical size, different DPI).
+                    let w = state.gpu.width();
+                    let h = state.gpu.height();
+                    let new_cols = ((w as f32) / state.metrics.cell_width).floor().max(1.0) as u32;
+                    let new_rows = ((h as f32) / state.metrics.cell_height).floor().max(1.0) as u32;
+                    state.cols = new_cols.min(u16::MAX as u32) as u16;
+                    state.rows = new_rows.min(u16::MAX as u32) as u16;
+                    // Force all per-pane renderers to be recreated with new font size.
+                    state.renderers.clear();
+                    state.window.request_redraw();
+                }
+            }
+
             WindowEvent::RedrawRequested => match state.render(&self.app_state, &self.rt_handle) {
                 Ok(()) => {}
                 Err(UiError::Surface(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
@@ -569,9 +629,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
                 // Close split menu on any keypress.
                 if matches!(state.split_menu, super::SplitMenuState::Open { .. }) {
-                    // Escape just closes the menu, other keys close + continue.
                     state.split_menu = super::SplitMenuState::Closed;
                     state.split_menu_hover = None;
+                    if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                        state.window.request_redraw();
+                        return;
+                    }
+                }
+
+                // Close workspace context menu on any keypress.
+                if matches!(state.workspace_menu, super::WorkspaceMenuState::Open { .. }) {
+                    state.workspace_menu = super::WorkspaceMenuState::Closed;
+                    state.workspace_menu_hover = None;
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                         state.window.request_redraw();
                         return;
@@ -706,8 +775,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             && py >= menu_y
                             && py < menu_y + menu_h
                         {
-                            // Determine which item was clicked.
-                            let item_idx = ((py - menu_y - 4.0) / item_h).floor() as usize;
+                            // Determine which item was clicked (skip 4px top padding).
+                            let raw = py - menu_y - 4.0;
+                            if raw < 0.0 {
+                                // Click in top padding — not on any item.
+                                state.split_menu = super::SplitMenuState::Closed;
+                                state.split_menu_hover = None;
+                                state.window.request_redraw();
+                                return;
+                            }
+                            let item_idx = (raw / item_h).floor() as usize;
                             if item_idx < 4 {
                                 let action = match item_idx {
                                     0 => ShortcutAction::SplitRight,
@@ -739,6 +816,78 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         state.split_menu_hover = None;
                         state.window.request_redraw();
                         // Don't return — let the click propagate to other handlers.
+                    }
+                }
+
+                // Workspace context menu click handling — highest priority when open.
+                if let super::WorkspaceMenuState::Open {
+                    workspace_index,
+                    menu_x,
+                    menu_y,
+                } = state.workspace_menu
+                {
+                    let item_h = 32.0;
+                    let menu_w = 200.0;
+                    let menu_items = super::WORKSPACE_MENU_ITEMS;
+                    let menu_h = item_h * menu_items as f32 + 8.0;
+
+                    if elem_state == ElementState::Pressed
+                        && button == winit::event::MouseButton::Left
+                    {
+                        if px >= menu_x
+                            && px < menu_x + menu_w
+                            && py >= menu_y
+                            && py < menu_y + menu_h
+                        {
+                            let raw = py - menu_y - 4.0;
+                            if raw < 0.0 {
+                                state.workspace_menu = super::WorkspaceMenuState::Closed;
+                                state.workspace_menu_hover = None;
+                                state.window.request_redraw();
+                                return;
+                            }
+                            let item_idx = (raw / item_h).floor() as usize;
+                            if item_idx < menu_items {
+                                state.workspace_menu = super::WorkspaceMenuState::Closed;
+                                state.workspace_menu_hover = None;
+                                match item_idx {
+                                    0 => {
+                                        // Rename Workspace — start inline editing.
+                                        if let Some(ws) = state.workspace_cache.get(workspace_index)
+                                        {
+                                            let name = ws.name.clone();
+                                            let cursor = name.chars().count();
+                                            state.sidebar.interaction =
+                                                SidebarInteraction::Editing {
+                                                    index: workspace_index,
+                                                    text: name,
+                                                    cursor,
+                                                };
+                                        }
+                                    }
+                                    1 => {
+                                        // Close Workspace.
+                                        if let Some(ws) = state.workspace_cache.get(workspace_index)
+                                        {
+                                            let ws_id = ws.id;
+                                            self.app_state.close_workspace(ws_id);
+                                            tracing::info!(
+                                                workspace_id = %ws_id,
+                                                "workspace closed via context menu"
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        // Click outside menu — close it.
+                        state.workspace_menu = super::WorkspaceMenuState::Closed;
+                        state.workspace_menu_hover = None;
+                        state.window.request_redraw();
+                        // Don't return — let click propagate.
                     }
                 }
 
@@ -873,6 +1022,23 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         }
                     }
 
+                    // Right-click on sidebar row — open workspace context menu.
+                    if elem_state == ElementState::Pressed
+                        && button == winit::event::MouseButton::Right
+                    {
+                        if let Some(row_index) =
+                            state.sidebar.hit_test_row(py, state.workspace_cache.len())
+                        {
+                            state.workspace_menu = super::WorkspaceMenuState::Open {
+                                workspace_index: row_index,
+                                menu_x: px,
+                                menu_y: py,
+                            };
+                            state.workspace_menu_hover = None;
+                            tracing::debug!(row_index, "sidebar: opened workspace context menu");
+                        }
+                    }
+
                     state.window.request_redraw();
                     return;
                 }
@@ -898,7 +1064,6 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 {
                     if let Some(div) = divider::hit_test(&state.dividers, px, py) {
                         // Detect double-click via the mouse handler's click count.
-                        // We call handle_mouse_press so it tracks timing; then inspect count.
                         let mouse_mode =
                             state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
                         let shift = state.modifiers.shift_key();
@@ -914,82 +1079,29 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         if state.mouse.click_count() >= 2 {
                             // Double-click: reset split ratio to equal halves.
                             tracing::debug!(
-                                pane_id = %div.pane_id,
+                                split_id = %div.split_id,
                                 "divider double-click — resetting ratio to 0.5"
                             );
-                            self.app_state.resize_split(div.pane_id, 0.5);
+                            self.app_state.resize_split_by_id(div.split_id, 0.5);
                             state.window.request_redraw();
                         } else {
                             // Single press: start drag.
-                            // Compute actual container dimension from adjacent pane rects
-                            // for correct ratio calculation in multi-level splits.
-                            let (split_start, split_dimension) = {
-                                let pos = div.position;
-                                let layout = &state.last_layout;
-                                match div.orientation {
-                                    DividerOrientation::Vertical => {
-                                        // Find panes immediately left and right of divider
-                                        let left = layout.iter().find(|(_, r)| {
-                                            (r.x + r.width - pos).abs() < 4.0
-                                                && r.y < div.end
-                                                && (r.y + r.height) > div.start
-                                        });
-                                        let right = layout.iter().find(|(_, r)| {
-                                            (r.x - pos).abs() < 4.0
-                                                && r.y < div.end
-                                                && (r.y + r.height) > div.start
-                                        });
-                                        match (left, right) {
-                                            (Some((_, l)), Some((_, r))) => {
-                                                (l.x, l.width + r.width)
-                                            }
-                                            _ => {
-                                                let sw = state.sidebar.effective_width();
-                                                (sw, state.gpu.width() as f32 - sw)
-                                            }
-                                        }
-                                    }
-                                    DividerOrientation::Horizontal => {
-                                        let above = layout.iter().find(|(_, r)| {
-                                            (r.y + r.height - pos).abs() < 4.0
-                                                && r.x < div.end
-                                                && (r.x + r.width) > div.start
-                                        });
-                                        let below = layout.iter().find(|(_, r)| {
-                                            (r.y - pos).abs() < 4.0
-                                                && r.x < div.end
-                                                && (r.x + r.width) > div.start
-                                        });
-                                        match (above, below) {
-                                            (Some((_, a)), Some((_, b))) => {
-                                                (a.y, a.height + b.height)
-                                            }
-                                            _ => (0.0, state.gpu.height() as f32),
-                                        }
-                                    }
-                                }
-                            };
+                            // Split metadata comes directly from the tree-based divider.
                             let start_cursor = match div.orientation {
                                 DividerOrientation::Vertical => px,
                                 DividerOrientation::Horizontal => py,
                             };
-                            // Derive start_ratio from current divider position.
-                            let start_ratio = if split_dimension > 0.0 {
-                                (div.position - split_start) / split_dimension
-                            } else {
-                                0.5
-                            };
                             state.drag_state = Some(crate::divider::DragState {
-                                pane_id: div.pane_id,
+                                split_id: div.split_id,
                                 orientation: div.orientation,
-                                split_dimension,
-                                split_start,
+                                split_dimension: div.split_dimension,
+                                split_start: div.split_start,
                                 start_cursor,
-                                start_ratio,
+                                start_ratio: div.current_ratio,
                             });
                             tracing::debug!(
-                                pane_id = %div.pane_id,
-                                start_ratio,
+                                split_id = %div.split_id,
+                                start_ratio = div.current_ratio,
                                 "divider drag started"
                             );
                         }
@@ -1036,6 +1148,14 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 {
                     tracing::debug!("divider drag ended");
                     state.drag_state = None;
+                    // Clear mouse state so the stale press doesn't trigger
+                    // selection on subsequent mouse moves.
+                    let (col, row) = state.cursor_cell();
+                    let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
+                    let _ =
+                        state
+                            .mouse
+                            .handle_mouse_release(col, row, MouseButton::Left, mouse_mode);
                     state.window.request_redraw();
                     return;
                 }
@@ -1047,7 +1167,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     // Clone viewports to avoid borrow issues with state.
                     let viewports = state.last_viewports.clone();
                     for vp in &viewports {
-                        let tab_bar_bottom = vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT;
+                        let tab_bar_bottom = vp.rect.y + vp.tab_bar_height();
                         if px >= vp.rect.x
                             && px < vp.rect.x + vp.rect.width
                             && py >= vp.rect.y
@@ -1261,9 +1381,14 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         && py >= menu_y
                         && py < menu_y + menu_h
                     {
-                        let idx = ((py - menu_y - 4.0) / item_h).floor() as usize;
-                        if idx < 4 {
-                            Some(idx)
+                        let raw = py - menu_y - 4.0;
+                        if raw >= 0.0 {
+                            let idx = (raw / item_h).floor() as usize;
+                            if idx < 4 {
+                                Some(idx)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -1272,6 +1397,38 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     };
                     if new_hover != state.split_menu_hover {
                         state.split_menu_hover = new_hover;
+                        state.window.request_redraw();
+                    }
+                }
+
+                // Workspace context menu hover tracking.
+                if let super::WorkspaceMenuState::Open { menu_x, menu_y, .. } = state.workspace_menu
+                {
+                    let item_h = 32.0;
+                    let menu_w = 200.0;
+                    let menu_items = super::WORKSPACE_MENU_ITEMS;
+                    let menu_h = item_h * menu_items as f32 + 8.0;
+                    let new_hover = if px >= menu_x
+                        && px < menu_x + menu_w
+                        && py >= menu_y
+                        && py < menu_y + menu_h
+                    {
+                        let raw = py - menu_y - 4.0;
+                        if raw >= 0.0 {
+                            let idx = (raw / item_h).floor() as usize;
+                            if idx < menu_items {
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if new_hover != state.workspace_menu_hover {
+                        state.workspace_menu_hover = new_hover;
                         state.window.request_redraw();
                     }
                 }
@@ -1309,7 +1466,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         if vp.tab_count <= 1 {
                             continue;
                         }
-                        let tab_bar_bottom = vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT;
+                        let tab_bar_bottom = vp.rect.y + vp.tab_bar_height();
                         if px >= vp.rect.x
                             && px < vp.rect.x + vp.rect.width
                             && py >= vp.rect.y
@@ -1338,7 +1495,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 {
                     let mut new_tab_hover = None;
                     for vp in &state.last_viewports {
-                        let tab_bar_bottom = vp.rect.y + wmux_render::pane::TAB_BAR_HEIGHT;
+                        let tab_bar_bottom = vp.rect.y + vp.tab_bar_height();
                         if px >= vp.rect.x
                             && px < vp.rect.x + vp.rect.width
                             && py >= vp.rect.y
@@ -1478,7 +1635,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         DividerOrientation::Horizontal => py,
                     };
                     let new_ratio = divider::compute_ratio(drag, cursor);
-                    self.app_state.resize_split(drag.pane_id, new_ratio);
+                    self.app_state.resize_split_by_id(drag.split_id, new_ratio);
                     state.window.request_redraw();
                     return;
                 }
@@ -1631,7 +1788,6 @@ fn restore_pane_tree(
         rows,
         leaf_data.cwd,
         leaf_data.scrollback_text,
-        leaf_data.claude_session_id,
         app_state,
         rt_handle,
     );
@@ -1703,7 +1859,6 @@ fn fill_second(
         PaneTreeSnapshot::Leaf {
             cwd,
             scrollback_text,
-            claude_session_id,
             ..
         } => {
             handlers::spawn_pane_pty_for_restore(
@@ -1712,7 +1867,6 @@ fn fill_second(
                 rows,
                 cwd.as_deref(),
                 scrollback_text.as_deref(),
-                claude_session_id.as_deref(),
                 app_state,
                 rt_handle,
             );
@@ -1726,7 +1880,6 @@ fn fill_second(
                 rows,
                 leaf_data.cwd,
                 leaf_data.scrollback_text,
-                leaf_data.claude_session_id,
                 app_state,
                 rt_handle,
             );

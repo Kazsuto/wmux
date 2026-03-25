@@ -1,7 +1,47 @@
 # Changelog
 
+## 2026-03-25
+
+FIX: Prevent panic in compute_ratio when split dimension < 2*MIN_PANE_SIZE (f32::clamp precondition violation)
+FIX: Update focused_pane after CloseWorkspace to prevent stale focus (input lost, no cursor)
+FIX: Guard menu item index against negative values in top padding click (4 locations)
+FIX: Remove dead pid parameter from SetPanePid — renamed to SetPaneInitialCwd with clean API
+REFACTOR: Compute pane_count() once in layout_with_dividers instead of traversing tree twice per frame
+REFACTOR: Gate sidebar text_areas and status_icons clone behind sidebar.visible check
+REFACTOR: Remove no-op render_pane_borders call from render loop
+REFACTOR: Apply clean code improvements — #[allow] → #[expect] with reason (4 lints), remove unused import
+FEATURE: Add 8 tests for layout_with_dividers and resize_by_split_id (nested trees, clamping, error cases)
+FIX: Correct divider drag-to-resize in nested pane trees — add SplitId to PaneTree Split nodes, compute dividers from tree traversal instead of flat layout comparison, resize by split ID to target the correct split node
+FIX: Clear mouse state on divider drag release to prevent stale selection activation
+REFACTOR: Remove blue focus stripe and glow from focused panes — uniform neutral dividers between all panes
+REFACTOR: Replace blue sidebar separator with subtle neutral border_subtle line
+FEATURE: Refined pane dividers (2px gap, 1px border_subtle line, 2px border_default hover highlight)
+REFACTOR: Remove Claude Code session persistence — delete process_detect module, strip claude_session_id from session schema, remove Claude --resume/--continue restore logic (align with CMX behavior)
+FEATURE: Close workspace shortcut (Ctrl+Shift+W) — closes the active workspace and switches to adjacent
+FEATURE: Sidebar right-click context menu — "Rename Workspace" and "Close Workspace" items with hover highlight, shadow, rounded popup (follows SplitMenu pattern)
+FIX: PowerShell shell integration hook injection — use env var `WMUX_SHELL_HOOK` to pass hook path, avoiding quote_arg mangling that prevented OSC 7 emission after `cd`
+FIX: Boost UI chrome text toward white for dark themes — blend foreground 70% toward #ffffff in derive_ui_chrome() (text_primary #d4d4d4→#f2f2f2), terminal foreground unchanged
+FIX: Propagate initial pane CWD to workspace metadata — sidebar now shows correct project directory immediately instead of stale home dir
+FIX: Use accent_muted (30% alpha) for active workspace card background — visible like CMX instead of nearly invisible accent_tint (8%)
+FEATURE: Card-based sidebar design — rounded card backgrounds per workspace (8px radius), accent_muted for active, surface_0 for inactive, surface_2 hover
+FEATURE: Display IPC status text in sidebar cards — first StatusEntry value shown as description below workspace name
+FEATURE: Display environment info in sidebar cards — git branch, dirty indicator, truncated CWD, and listening ports
+REFACTOR: Remove pane count from sidebar info text — workspace cards show only relevant metadata
+REFACTOR: Adjust sidebar layout for card margins (6px horizontal, 4px gap) and ROW_HEIGHT 110px
+REFACTOR: Position all sidebar elements relative to card geometry (text, icons, badge, edit cursor)
+REFACTOR: Extend WorkspaceSnapshot with status_text, ports, and git_dirty fields
+FIX: Align edit cursor with workspace icon reserve offset (28px)
+FIX: Sort status entries by key for deterministic status_text display in sidebar cards
+FIX: Use theme cursor_alpha instead of hardcoded 0.85 for edit cursor color
+FIX: Match edit buffer width to card-relative edit box dimensions
+
 ## 2026-03-23
 
+FIX: Scale TAB_BAR_HEIGHT by DPI factor in all hit-testing and UI rendering — tab clicks, hover highlights, drag/drop overlays, text bounds, cursor-cell mapping, shadow, and edit pill now use vp.tab_bar_height() or TAB_BAR_HEIGHT * scale_factor instead of the raw 40px constant
+FIX: Apply DPI scaling to terminal font metrics — font_size * scale_factor gives physical pixel dimensions, fixing wrong column/row count and garbled TUI display (Claude Code) on high-DPI screens
+FIX: Use configured font size for initial terminal metrics — was using hardcoded 20pt instead of config value (default 16pt), causing cell dimension mismatch between layout calculation and actual rendering
+FIX: Align build_row_buffers glyph size with metrics — was using hardcoded FONT_SIZE constant instead of the metrics' actual font_size, causing glyph/cell size mismatch
+FEATURE: Handle ScaleFactorChanged event — update font metrics, recalculate grid dimensions, and recreate renderers when window moves between monitors with different DPI
 FIX: Invalidate stale Claude session UUIDs — clear `pane_claude_sessions` on process exit and when new non-Claude process spawns, prevents saving old UUID when user switches to a different Claude session
 FIX: Exact pane→session mapping via WMI command-line query — read `--resume <uuid>` from each Claude process to correlate PIDs to sessions, eliminates wrong-panel assignment
 FIX: Remove 5-minute cutoff on session file resolution — active sessions are always the most recently modified, cutoff was too aggressive and caused all UUIDs to resolve as `__continue__`

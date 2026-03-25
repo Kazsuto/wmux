@@ -121,21 +121,12 @@ impl AppStateHandle {
         }
     }
 
-    /// Store the child process PID for a pane (used for Claude Code detection at save time).
-    /// Optionally sets an initial CWD and/or a known Claude session UUID.
+    /// Set the initial CWD for a pane (used during session restore).
     /// Fire-and-forget.
-    pub fn set_pane_pid(
-        &self,
-        pane_id: PaneId,
-        pid: u32,
-        initial_cwd: Option<std::path::PathBuf>,
-        claude_session_id: Option<String>,
-    ) {
-        let _ = self.cmd_tx.try_send(AppCommand::SetPanePid {
+    pub fn set_pane_initial_cwd(&self, pane_id: PaneId, cwd: std::path::PathBuf) {
+        let _ = self.cmd_tx.try_send(AppCommand::SetPaneInitialCwd {
             pane_id,
-            pid,
-            initial_cwd,
-            claude_session_id,
+            initial_cwd: cwd,
         });
     }
 
@@ -198,8 +189,11 @@ impl AppStateHandle {
         }
     }
 
-    /// Get the current layout as pane-rect pairs.
-    pub async fn get_layout(&self, viewport: Rect) -> Vec<(PaneId, Rect)> {
+    /// Get the current layout as pane-rect pairs with divider metadata.
+    pub async fn get_layout(
+        &self,
+        viewport: Rect,
+    ) -> (Vec<(PaneId, Rect)>, Vec<crate::pane_tree::LayoutDivider>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if self
             .cmd_tx
@@ -210,7 +204,7 @@ impl AppStateHandle {
             .await
             .is_err()
         {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         rx.await.unwrap_or_default()
     }
@@ -499,6 +493,13 @@ impl AppStateHandle {
         let _ = self
             .cmd_tx
             .try_send(AppCommand::ResizeSplit { pane_id, ratio });
+    }
+
+    /// Resize a specific split node by its `SplitId`. Fire-and-forget.
+    pub fn resize_split_by_id(&self, split_id: crate::types::SplitId, ratio: f32) {
+        let _ = self
+            .cmd_tx
+            .try_send(AppCommand::ResizeSplitById { split_id, ratio });
     }
 
     // ─── Sidebar metadata handle methods ────────────────────────────────────
