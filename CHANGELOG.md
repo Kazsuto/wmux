@@ -2,6 +2,14 @@
 
 ## 2026-03-25
 
+FEATURE: Add globe button in tab bar to open browser surface (clickable icon, WebView2 availability-gated)
+FIX: Use owned popup HWND (WS_POPUP) for WebView2 panels instead of child HWND — DXGI flip swap chains occlude child windows, popup is a separate DWM visual
+FIX: Skip wgpu terminal rendering for browser-active panes — don't render background quad, grid text, or cursor where WebView2 child HWND occupies the area
+FIX: Skip pane dimming overlay for browser-active panes (overlay would occlude the WebView2 popup)
+FIX: Convert client→screen coordinates in BrowserPanel::set_bounds for popup window positioning
+FIX: Use actual pane viewport rect for browser panel creation instead of hardcoded 100x100+800x600
+FIX: Skip terminal keyboard input when focused surface is a browser (WebView2 handles its own input)
+FIX: Give WebView2 keyboard focus (MoveFocus) when browser surface is active in focused pane
 FIX: Prevent panic in compute_ratio when split dimension < 2*MIN_PANE_SIZE (f32::clamp precondition violation)
 FIX: Update focused_pane after CloseWorkspace to prevent stale focus (input lost, no cursor)
 FIX: Guard menu item index against negative values in top padding click (4 locations)

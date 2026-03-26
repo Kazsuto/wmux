@@ -119,6 +119,8 @@ pub(crate) struct UiState<'window> {
     pub(crate) browser_manager: Option<wmux_browser::BrowserManager>,
     /// The main window HWND — needed as parent for WebView2 child HWNDs.
     pub(crate) main_hwnd: windows::Win32::Foundation::HWND,
+    /// Kind of the active surface in the focused pane — used to route keyboard input.
+    pub(crate) focused_surface_kind: wmux_core::PanelKind,
 
     // Status bar
     pub(crate) status_bar: crate::status_bar::StatusBar,

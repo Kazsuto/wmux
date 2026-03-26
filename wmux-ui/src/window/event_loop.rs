@@ -413,6 +413,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             status_icon_cgs,
             browser_manager,
             main_hwnd,
+            focused_surface_kind: wmux_core::PanelKind::Terminal,
             status_bar,
             status_bar_data,
             start_instant: std::time::Instant::now(),
@@ -496,11 +497,28 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 tracing::info!(surface_id = %surface_id, url = %url, "CreateBrowserPanel event received");
                 if let Some(state) = self.state.as_mut() {
                     if let Some(ref mut mgr) = state.browser_manager {
-                        let rect = wmux_core::rect::Rect::new(100.0, 100.0, 800.0, 600.0);
+                        // Use the actual pane viewport if available, else a reasonable fallback.
+                        let rect = state
+                            .last_viewports
+                            .iter()
+                            .find(|vp| vp.surface_ids.contains(&surface_id))
+                            .map(wmux_render::PaneRenderer::terminal_viewport)
+                            .unwrap_or_else(|| {
+                                // Fallback: use the focused pane's viewport, or a default.
+                                state
+                                    .last_viewports
+                                    .iter()
+                                    .find(|vp| vp.focused)
+                                    .map(wmux_render::PaneRenderer::terminal_viewport)
+                                    .unwrap_or_else(|| {
+                                        wmux_core::rect::Rect::new(0.0, 0.0, 800.0, 600.0)
+                                    })
+                            });
                         match mgr.create_panel(surface_id, state.main_hwnd, &rect) {
                             Ok(_) => {
                                 if let Some(panel) = mgr.get_panel(surface_id) {
                                     let _ = panel.navigate(&url);
+                                    let _ = panel.focus_webview();
                                 }
                                 tracing::info!(
                                     surface_id = %surface_id,
@@ -732,6 +750,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
                 // Don't send input to a dead process.
                 if state.process_exited {
+                    return;
+                }
+
+                // Skip terminal input when a browser surface has focus —
+                // WebView2 receives keyboard events via its own child HWND.
+                if state.focused_surface_kind == wmux_core::PanelKind::Browser {
                     return;
                 }
 
@@ -1200,6 +1224,30 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                     state.window.request_redraw();
                                     tab_clicked = true;
                                     break;
+                                }
+                            }
+
+                            // Globe button hit-test — open new browser surface.
+                            if state.browser_manager.is_some() {
+                                if let Some((gbx, gby, gbw, gbh)) =
+                                    wmux_render::pane::PaneRenderer::globe_button_rect(vp)
+                                {
+                                    if px >= gbx && px < gbx + gbw && py >= gby && py < gby + gbh {
+                                        if vp.pane_id != state.focused_pane {
+                                            state.set_focused_pane(vp.pane_id);
+                                            self.app_state.focus_pane(vp.pane_id);
+                                        }
+                                        // Create a new browser surface (same as Ctrl+Shift+L).
+                                        handlers::handle_shortcut(
+                                            ShortcutAction::NewBrowserSurface,
+                                            state,
+                                            &self.app_state,
+                                            &self.rt_handle,
+                                            &self.proxy,
+                                        );
+                                        tab_clicked = true;
+                                        break;
+                                    }
                                 }
                             }
 

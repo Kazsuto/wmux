@@ -7,7 +7,15 @@ use webview2_com::{
         COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     },
 };
+use windows::core::w;
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, SetWindowPos, ShowWindow,
+    CS_HREDRAW, CS_VREDRAW, HWND_TOP, SWP_NOACTIVATE, SWP_NOCOPYBITS, SW_HIDE, SW_SHOW,
+    WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+};
 use wmux_core::types::SurfaceId;
 
 use crate::{automation, BrowserError};
@@ -15,12 +23,19 @@ use crate::{automation, BrowserError};
 /// A hosted WebView2 browser panel.
 ///
 /// Wraps an `ICoreWebView2Controller` and its associated `ICoreWebView2`
-/// view. The controller is attached to a child `HWND` (never the wgpu
-/// surface) and managed via the standard WebView2 COM lifecycle.
+/// view. The controller lives in a dedicated owned popup `HWND` (separate
+/// from the wgpu surface) so DWM composites WebView2 above the DirectX
+/// swap chain as an independent top-level visual.
 pub struct BrowserPanel {
     surface_id: SurfaceId,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
+    /// Owned popup HWND that hosts the WebView2 controller.
+    /// Uses WS_POPUP (not WS_CHILD) so DWM composites it as a separate
+    /// top-level visual, immune to DXGI flip swap chain occlusion.
+    host_hwnd: Option<HWND>,
+    /// Parent (owner) HWND — needed to convert client coords to screen coords.
+    parent_hwnd: HWND,
     has_focus: bool,
 }
 
@@ -30,6 +45,7 @@ impl std::fmt::Debug for BrowserPanel {
             .field("surface_id", &self.surface_id)
             .field("has_controller", &self.controller.is_some())
             .field("has_webview", &self.webview.is_some())
+            .field("has_host_hwnd", &self.host_hwnd.is_some())
             .field("has_focus", &self.has_focus)
             .finish()
     }
@@ -45,6 +61,8 @@ impl BrowserPanel {
             surface_id,
             controller: None,
             webview: None,
+            host_hwnd: None,
+            parent_hwnd: HWND::default(),
             has_focus: false,
         }
     }
@@ -75,15 +93,25 @@ impl BrowserPanel {
             .ok_or(BrowserError::ControllerNotAvailable)
     }
 
-    /// Attach the panel to a host window by creating a WebView2 controller.
+    /// Attach the panel to a parent window by creating a dedicated owned popup
+    /// HWND and then creating the WebView2 controller inside it.
     ///
-    /// This is a blocking COM operation. Call from a dedicated UI thread
-    /// (or `spawn_blocking` in async contexts).
+    /// The popup HWND is a separate top-level window (WS_POPUP) owned by
+    /// `parent_hwnd`. DWM composites it as an independent visual, immune to
+    /// DXGI flip swap chain occlusion on the parent. This is a blocking
+    /// COM operation — call from the UI/STA thread.
     pub fn attach(
         &mut self,
         environment: &ICoreWebView2Environment,
-        hwnd: HWND,
+        parent_hwnd: HWND,
     ) -> Result<(), BrowserError> {
+        // Create an owned popup HWND to host the WebView2 controller.
+        // Using WS_POPUP (not WS_CHILD) ensures DWM composites the WebView2
+        // as a separate top-level visual, unaffected by the wgpu swap chain.
+        let host = create_host_hwnd(parent_hwnd).map_err(|e| {
+            BrowserError::General(format!("failed to create WebView2 host HWND: {e}"))
+        })?;
+
         let (tx, rx) = mpsc::sync_channel(1);
 
         // Clone the COM interface so it can be moved into the 'static closure.
@@ -94,7 +122,8 @@ impl BrowserPanel {
                 // SAFETY: CreateCoreWebView2Controller takes a valid HWND and a
                 // COM callback handler. Both are valid for the duration of the call.
                 // `environment` is a cloned COM reference with its own ref-count.
-                unsafe { environment.CreateCoreWebView2Controller(hwnd, &handler) }
+                // `host` is a valid child HWND just created above.
+                unsafe { environment.CreateCoreWebView2Controller(host, &handler) }
                     .map_err(webview2_com::Error::WindowsError)
             }),
             Box::new(move |error_code, controller| {
@@ -122,6 +151,8 @@ impl BrowserPanel {
 
         tracing::info!(surface_id = %self.surface_id, "BrowserPanel attached to HWND");
 
+        self.host_hwnd = Some(host);
+        self.parent_hwnd = parent_hwnd;
         self.controller = Some(controller);
         self.webview = Some(webview);
         Ok(())
@@ -139,24 +170,55 @@ impl BrowserPanel {
         self.webview.as_ref()
     }
 
-    /// Set the position and size of the browser panel within its host window.
+    /// Set the position and size of the browser panel within the parent window.
+    ///
+    /// Coordinates `(x, y)` are in the parent's **client** coordinate space.
+    /// Since the host is a popup (top-level) window, we convert to screen
+    /// coordinates before calling `SetWindowPos`.
     pub fn set_bounds(&self, x: i32, y: i32, width: i32, height: i32) -> Result<(), BrowserError> {
         let controller = self.require_controller()?;
 
-        let rect = RECT {
-            left: x,
-            top: y,
-            right: x + width,
-            bottom: y + height,
-        };
+        // Convert parent-client coords → screen coords for the popup window.
+        let mut pt = windows::Win32::Foundation::POINT { x, y };
+        // SAFETY: ClientToScreen converts a POINT from client to screen space.
+        // parent_hwnd is the valid main window we received in attach().
+        let _ = unsafe { ClientToScreen(self.parent_hwnd, &mut pt) };
 
         tracing::debug!(
-            x = x,
-            y = y,
+            client_x = x,
+            client_y = y,
+            screen_x = pt.x,
+            screen_y = pt.y,
             width = width,
             height = height,
             "setting panel bounds"
         );
+
+        // Reposition the popup HWND at the computed screen coordinates.
+        if let Some(host) = self.host_hwnd {
+            // SAFETY: SetWindowPos repositions a valid HWND. The host is an
+            // owned popup window we created. HWND_TOP keeps it above the owner.
+            unsafe {
+                SetWindowPos(
+                    host,
+                    Some(HWND_TOP),
+                    pt.x,
+                    pt.y,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOCOPYBITS,
+                )
+            }
+            .map_err(|e| BrowserError::General(format!("SetWindowPos host: {e}")))?;
+        }
+
+        // Controller bounds are relative to the host HWND → always (0, 0, w, h).
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
 
         // SAFETY: SetBounds takes a RECT by value. `rect` is fully initialized
         // on the stack and valid for this COM call.
@@ -164,11 +226,20 @@ impl BrowserPanel {
             .map_err(|e| BrowserError::General(format!("SetBounds: {e}")))
     }
 
-    /// Show or hide the browser panel.
+    /// Show or hide the browser panel (host HWND + WebView2 controller).
     pub fn set_visible(&self, visible: bool) -> Result<(), BrowserError> {
         let controller = self.require_controller()?;
 
         tracing::debug!(visible = visible, "setting panel visibility");
+
+        // Show/hide the popup host HWND.
+        if let Some(host) = self.host_hwnd {
+            let cmd = if visible { SW_SHOW } else { SW_HIDE };
+            // SAFETY: ShowWindow toggles visibility of a valid HWND we own.
+            unsafe {
+                let _ = ShowWindow(host, cmd);
+            }
+        }
 
         // SAFETY: SetIsVisible takes a plain bool — no pointer concerns.
         unsafe { controller.SetIsVisible(visible) }
@@ -373,7 +444,83 @@ impl Drop for BrowserPanel {
             let _ = unsafe { controller.Close() };
             tracing::debug!(surface_id = %self.surface_id, "BrowserPanel controller closed");
         }
+        if let Some(host) = self.host_hwnd.take() {
+            // SAFETY: DestroyWindow destroys a valid HWND we own. Must be
+            // called after Close() so WebView2 releases its child windows first.
+            let _ = unsafe { DestroyWindow(host) };
+            tracing::debug!(surface_id = %self.surface_id, "host HWND destroyed");
+        }
     }
+}
+
+/// Default window procedure forwarding for the host popup HWND.
+///
+/// All messages are passed through to `DefWindowProcW` — the host HWND
+/// exists solely as a container for WebView2's own child windows.
+unsafe extern "system" fn host_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// Create an owned popup HWND to host a WebView2 controller.
+///
+/// Uses `WS_POPUP` (not `WS_CHILD`) so the host is a separate top-level
+/// window in DWM's visual tree. This avoids the known issue where DXGI
+/// flip-model swap chains occlude child HWNDs on the same parent.
+///
+/// `WS_EX_TOOLWINDOW` prevents a taskbar entry. `WS_EX_NOACTIVATE` prevents
+/// stealing focus from the main window on click.
+///
+/// The popup is **owned** by `parent` (via the `hwndParent` parameter), so
+/// DWM keeps it above the owner and hides/shows it when the owner is
+/// minimized/restored.
+fn create_host_hwnd(parent: HWND) -> Result<HWND, windows::core::Error> {
+    // SAFETY: GetModuleHandleW(None) returns the current executable's HINSTANCE.
+    let hinstance = unsafe { GetModuleHandleW(None)? };
+
+    let class_name = w!("WmuxWebView2Host");
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(host_wndproc),
+        hInstance: hinstance.into(),
+        lpszClassName: class_name,
+        style: CS_HREDRAW | CS_VREDRAW,
+        ..Default::default()
+    };
+    // RegisterClassExW is idempotent — returns 0 if class already exists, which is fine.
+    // SAFETY: wc is fully initialized with valid function pointer and class name.
+    unsafe {
+        RegisterClassExW(&wc);
+    }
+
+    // SAFETY: CreateWindowExW with WS_POPUP creates a top-level popup window
+    // owned by `parent`. WS_EX_TOOLWINDOW prevents a taskbar button.
+    // WS_EX_NOACTIVATE prevents focus theft on click (WebView2 manages its
+    // own focus via MoveFocus). The popup is created hidden at (0,0,0,0) —
+    // the caller sets position via `set_bounds`.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            class_name,
+            w!(""),
+            WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0,
+            0,
+            0,
+            0,
+            Some(parent),
+            None,
+            Some(hinstance.into()),
+            None,
+        )?
+    };
+
+    tracing::debug!("WebView2 host popup HWND created");
+    Ok(hwnd)
 }
 
 impl Default for BrowserPanel {
@@ -413,6 +560,7 @@ mod tests {
         assert!(debug_str.contains("BrowserPanel"));
         assert!(debug_str.contains("has_controller: false"));
         assert!(debug_str.contains("has_webview: false"));
+        assert!(debug_str.contains("has_host_hwnd: false"));
         assert!(debug_str.contains("has_focus: false"));
     }
 

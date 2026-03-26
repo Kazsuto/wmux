@@ -387,6 +387,12 @@ impl UiState<'_> {
                             let terminal_rect = wmux_render::PaneRenderer::terminal_viewport(vp);
                             let _ = mgr.resize_panel(sid, &terminal_rect);
                             let _ = mgr.show_panel(sid);
+                            // Give WebView2 keyboard focus when its pane is focused.
+                            if vp.focused {
+                                if let Some(panel) = mgr.get_panel(sid) {
+                                    let _ = panel.focus_webview();
+                                }
+                            }
                         }
                     }
                 }
@@ -400,6 +406,19 @@ impl UiState<'_> {
             }
         }
 
+        // Track the focused pane's active surface kind for keyboard routing.
+        if let Some(focused_vp) = viewports.iter().find(|vp| vp.focused) {
+            let kind = focused_vp
+                .surface_types
+                .get(focused_vp.active_tab)
+                .copied()
+                .unwrap_or(wmux_render::SurfaceType::Terminal);
+            self.focused_surface_kind = match kind {
+                wmux_render::SurfaceType::Browser => wmux_core::PanelKind::Browser,
+                wmux_render::SurfaceType::Terminal => wmux_core::PanelKind::Terminal,
+            };
+        }
+
         // Determine the focused pane's terminal content area (excludes tab bar).
         let focused_rect = viewports
             .iter()
@@ -411,13 +430,39 @@ impl UiState<'_> {
         let mut deferred_cursors: Vec<(PaneId, wmux_core::cursor::CursorState, (f32, f32))> =
             Vec::with_capacity(layout.len());
 
-        // Render terminal content for ALL panes.
+        // Render terminal content for each pane (skip browser-active panes).
         for (pane_id, pane_rect) in &layout {
             // Always exclude the tab bar from terminal area (tab bar is always visible).
             let viewport = viewports.iter().find(|vp| vp.pane_id == *pane_id);
             let terminal_rect = viewport
                 .map(wmux_render::PaneRenderer::terminal_viewport)
                 .unwrap_or(*pane_rect);
+
+            // Check if the active surface is a browser — skip wgpu rendering
+            // in this area so the WebView2 child HWND is visible through the
+            // transparent swap chain region.
+            let active_is_browser = viewport
+                .map(|vp| {
+                    vp.surface_types
+                        .get(vp.active_tab)
+                        .copied()
+                        .unwrap_or(wmux_render::SurfaceType::Terminal)
+                        == wmux_render::SurfaceType::Browser
+                })
+                .unwrap_or(false);
+
+            if active_is_browser {
+                // Still consume render data to update focused pane metadata,
+                // but don't render any wgpu content (no background, no text,
+                // no cursor) — the WebView2 child HWND occupies this area.
+                if let Some(data) = render_data_map.remove(pane_id) {
+                    if *pane_id == self.focused_pane {
+                        self.process_exited = data.process_exited;
+                        self.terminal_modes = data.modes;
+                    }
+                }
+                continue;
+            }
 
             // Opaque background quad for the terminal area — one level
             // lighter than the sidebar/chrome for visual hierarchy.
@@ -501,6 +546,17 @@ impl UiState<'_> {
             let dim_color = [sb[0], sb[1], sb[2], dim_alpha];
             for vp in &viewports {
                 if !vp.focused {
+                    // Skip dimming for browser-active panes — the WebView2 child
+                    // HWND manages its own visibility; drawing over it occludes it.
+                    let is_browser = vp
+                        .surface_types
+                        .get(vp.active_tab)
+                        .copied()
+                        .unwrap_or(wmux_render::SurfaceType::Terminal)
+                        == wmux_render::SurfaceType::Browser;
+                    if is_browser {
+                        continue;
+                    }
                     let r = &vp.rect;
                     self.quads.push_quad(r.x, r.y, r.width, r.height, dim_color);
                 }
@@ -1137,6 +1193,28 @@ impl UiState<'_> {
                     default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
                     custom_glyphs: &self.cg_split,
                 });
+            }
+
+            // Globe button — open a new browser surface (only when WebView2 is available).
+            if self.browser_manager.is_some() {
+                if let Some((gx, gy, gw, gh)) =
+                    wmux_render::pane::PaneRenderer::globe_button_rect(vp)
+                {
+                    all_text_areas.push(glyphon::TextArea {
+                        buffer: &self.icon_empty_buffer,
+                        left: gx + (gw - 16.0) / 2.0,
+                        top: gy + (gh - 16.0) / 2.0,
+                        scale: self.scale_factor,
+                        bounds: glyphon::TextBounds {
+                            left: gx as i32,
+                            top: gy as i32,
+                            right: (gx + gw) as i32,
+                            bottom: (gy + gh) as i32,
+                        },
+                        default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                        custom_glyphs: &self.cg_globe,
+                    });
+                }
             }
         }
 

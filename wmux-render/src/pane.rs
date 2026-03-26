@@ -38,6 +38,15 @@ const SPLIT_BUTTON_HEIGHT: f32 = 28.0;
 /// Gap between the "+" button and the split button.
 const SPLIT_BUTTON_GAP: f32 = 4.0;
 
+/// Width of the globe (new browser) button in the tab bar.
+const GLOBE_BUTTON_WIDTH: f32 = 32.0;
+
+/// Height of the globe (new browser) button (matches pill height).
+const GLOBE_BUTTON_HEIGHT: f32 = 28.0;
+
+/// Gap between the split button and the globe button.
+const GLOBE_BUTTON_GAP: f32 = 4.0;
+
 /// Type of surface (Terminal or Browser) for a tab indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceType {
@@ -290,8 +299,12 @@ impl PaneRenderer {
         let tab_index = tab_index.min(viewport.tab_count - 1);
         let n = viewport.tab_count as f32;
         let gap = TAB_GAP * s;
-        let buttons_reserve =
-            PLUS_BUTTON_WIDTH * s + gap + SPLIT_BUTTON_WIDTH * s + SPLIT_BUTTON_GAP * s;
+        let buttons_reserve = PLUS_BUTTON_WIDTH * s
+            + gap
+            + SPLIT_BUTTON_WIDTH * s
+            + SPLIT_BUTTON_GAP * s
+            + GLOBE_BUTTON_WIDTH * s
+            + GLOBE_BUTTON_GAP * s;
         let total_gaps = gap * (n - 1.0) + gap * 2.0;
         let mut tab_width = ((viewport.rect.width - total_gaps - buttons_reserve) / n).max(1.0);
         tab_width = tab_width.min(MAX_TAB_WIDTH * s);
@@ -362,6 +375,23 @@ impl PaneRenderer {
             return None;
         }
         Some((split_x, plus_y, sw, sh))
+    }
+
+    /// Return the globe (new browser) button rect `(x, y, width, height)`.
+    ///
+    /// Positioned after the split button with a small gap.
+    #[must_use]
+    pub fn globe_button_rect(viewport: &PaneViewport) -> Option<(f32, f32, f32, f32)> {
+        let (split_x, split_y, split_w, _split_h) = Self::split_button_rect(viewport)?;
+        let s = viewport.scale;
+        let gap = GLOBE_BUTTON_GAP * s;
+        let gw = GLOBE_BUTTON_WIDTH * s;
+        let gh = GLOBE_BUTTON_HEIGHT * s;
+        let globe_x = split_x + split_w + gap;
+        if globe_x + gw > viewport.rect.x + viewport.rect.width {
+            return None;
+        }
+        Some((globe_x, split_y, gw, gh))
     }
 
     /// Return position information for rendering a tab type indicator.
