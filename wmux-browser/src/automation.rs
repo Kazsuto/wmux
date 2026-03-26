@@ -147,7 +147,7 @@ pub fn eval(webview: &ICoreWebView2, js: &str) -> Result<serde_json::Value, Brow
         Box::new(move |error_code, result_pcwstr| {
             error_code?;
             let result = result_pcwstr;
-            tx.send(result).expect("send JS result over mpsc channel");
+            let _ = tx.send(result);
             Ok(())
         }),
     )
@@ -181,8 +181,7 @@ pub fn add_init_script(webview: &ICoreWebView2, js: &str) -> Result<(), BrowserE
         }),
         Box::new(move |error_code, _id_pcwstr| {
             error_code?;
-            tx.send(())
-                .expect("send init script result over mpsc channel");
+            let _ = tx.send(());
             Ok(())
         }),
     )

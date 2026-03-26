@@ -74,6 +74,19 @@ impl UiState<'_> {
 
         // Sidebar separator is rendered by sidebar.render_quads() as a 1px border_glow line.
 
+        // Opaque fill for the content area — ensures pane gaps are dark even when
+        // Mica/Acrylic makes the clear color transparent.
+        {
+            let sb = self.ui_chrome.surface_base;
+            self.quads.push_quad(
+                surface_viewport.x,
+                surface_viewport.y,
+                surface_viewport.width,
+                surface_viewport.height,
+                [sb[0], sb[1], sb[2], 1.0],
+            );
+        }
+
         // Get pane layout from the actor (blocks briefly — acceptable once per frame).
         let (layout, layout_dividers) = rt.block_on(app_state.get_layout(surface_viewport));
         // Cache for non-blocking hit-testing on mouse clicks.
@@ -563,6 +576,23 @@ impl UiState<'_> {
             }
         }
 
+        // Focus Glow — halo around the active pane.
+        // Rendered AFTER pane backgrounds + dimming so the outer glow is visible
+        // on top of adjacent panes (not hidden underneath their opaque backgrounds).
+        if let Some(focused_vp) = viewports.iter().find(|vp| vp.focused) {
+            let glow_alpha = self
+                .focus_glow_anim
+                .and_then(|id| self.animation.get(id))
+                .unwrap_or(1.0);
+            wmux_render::PaneRenderer::render_focus_glow(
+                &mut self.quads,
+                &focused_vp.rect,
+                self.ui_chrome.accent_glow_core,
+                self.ui_chrome.accent_glow,
+                glow_alpha,
+            );
+        }
+
         // Selection highlight overlay on the focused pane only.
         if let Some(sel) = self.mouse.selection() {
             let (start, end) = sel.normalized();
@@ -759,29 +789,8 @@ impl UiState<'_> {
             }
         }
 
-        // Permanent pane dividers — subtle 1px line centred in the gap.
-        for div in &self.dividers {
-            match div.orientation {
-                DividerOrientation::Vertical => {
-                    self.quads.push_quad(
-                        div.position - 0.5,
-                        div.start,
-                        1.0,
-                        div.end - div.start,
-                        self.ui_chrome.border_subtle,
-                    );
-                }
-                DividerOrientation::Horizontal => {
-                    self.quads.push_quad(
-                        div.start,
-                        div.position - 0.5,
-                        div.end - div.start,
-                        1.0,
-                        self.ui_chrome.border_subtle,
-                    );
-                }
-            }
-        }
+        // Pane dividers: no permanent lines — gaps show surface_base.
+        // Dividers only appear on hover (above) for resize affordance.
 
         // Status bar at the bottom (full window width).
         let sb_y = surface_height as f32 - status_bar_height;
@@ -947,6 +956,237 @@ impl UiState<'_> {
                 ];
                 self.quads
                     .push_rounded_quad(menu_x + 4.0, hy, menu_w - 8.0, item_h, hover_bg, 4.0);
+            }
+        }
+
+        // Command palette overlay (fullscreen dim + palette chrome + text buffers).
+        //
+        // Step 1: Pre-compute search results + update result_count BEFORE render_quads
+        // so the palette height includes the result rows on the very first frame.
+        // Step 2: Render background/border/highlight quads.
+        // Step 3: Update text buffers + push text cursor quad.
+        {
+            use crate::command_palette::{
+                PaletteAction, PaletteFilter, INPUT_HEIGHT, INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS,
+                RESULT_HEIGHT, SHORTCUT_COL_WIDTH,
+            };
+
+            if self.command_palette.open {
+                let sw = surface_width as f32;
+                let sh = surface_height as f32;
+
+                // Dirty check: skip expensive search + buffer updates when unchanged.
+                let palette_dirty = self.palette_last_query != self.command_palette.query
+                    || self.palette_last_filter != self.command_palette.filter;
+
+                if palette_dirty {
+                    self.palette_last_query
+                        .clone_from(&self.command_palette.query);
+                    self.palette_last_filter = self.command_palette.filter;
+
+                    let ly_tmp = crate::command_palette::PaletteLayout::compute(sw, sh, 0);
+                    let input_w = ly_tmp.input_w;
+
+                    let ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+                    let query = &self.command_palette.query;
+                    let filter = self.command_palette.filter;
+                    let query_lower = self.command_palette.query.to_lowercase();
+
+                    // --- Step 1: Build result rows + actions based on filter ---
+                    // Each row: (name, shortcut_hint, action)
+                    let mut rows: Vec<(String, String, PaletteAction)> = Vec::new();
+
+                    match filter {
+                        PaletteFilter::Commands => {
+                            for r in self.command_registry.search(query) {
+                                rows.push((
+                                    r.entry.name.clone(),
+                                    r.entry.shortcut.clone().unwrap_or_default(),
+                                    PaletteAction::Command(r.entry.id.clone()),
+                                ));
+                            }
+                        }
+                        PaletteFilter::Workspaces => {
+                            for (i, ws) in self.workspace_cache.iter().enumerate() {
+                                if query.is_empty() || ws.name.to_lowercase().contains(&query_lower)
+                                {
+                                    let hint = if i < 9 {
+                                        format!("Ctrl+{}", i + 1)
+                                    } else {
+                                        String::new()
+                                    };
+                                    rows.push((
+                                        ws.name.clone(),
+                                        hint,
+                                        PaletteAction::SwitchWorkspace((i + 1) as u8),
+                                    ));
+                                }
+                            }
+                        }
+                        PaletteFilter::Surfaces => {
+                            for vp in &viewports {
+                                for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
+                                    let display = if title.is_empty() {
+                                        format!("Surface {}", tab_idx + 1)
+                                    } else {
+                                        title.clone()
+                                    };
+                                    if query.is_empty()
+                                        || display.to_lowercase().contains(&query_lower)
+                                    {
+                                        rows.push((
+                                            display,
+                                            String::new(),
+                                            PaletteAction::FocusSurface(vp.pane_id, tab_idx),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        PaletteFilter::All => {
+                            // Commands first, then workspaces, then surfaces.
+                            for r in self.command_registry.search(query) {
+                                rows.push((
+                                    r.entry.name.clone(),
+                                    r.entry.shortcut.clone().unwrap_or_default(),
+                                    PaletteAction::Command(r.entry.id.clone()),
+                                ));
+                            }
+                            for (i, ws) in self.workspace_cache.iter().enumerate() {
+                                if query.is_empty() || ws.name.to_lowercase().contains(&query_lower)
+                                {
+                                    let hint = if i < 9 {
+                                        format!("Ctrl+{}", i + 1)
+                                    } else {
+                                        String::new()
+                                    };
+                                    rows.push((
+                                        ws.name.clone(),
+                                        hint,
+                                        PaletteAction::SwitchWorkspace((i + 1) as u8),
+                                    ));
+                                }
+                            }
+                            for vp in &viewports {
+                                for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
+                                    let display = if title.is_empty() {
+                                        format!("Surface {}", tab_idx + 1)
+                                    } else {
+                                        title.clone()
+                                    };
+                                    if query.is_empty()
+                                        || display.to_lowercase().contains(&query_lower)
+                                    {
+                                        rows.push((
+                                            display,
+                                            String::new(),
+                                            PaletteAction::FocusSurface(vp.pane_id, tab_idx),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let visible = rows.len().min(MAX_VISIBLE_RESULTS);
+                    self.command_palette.set_result_count(visible);
+
+                    // Store actions for the Enter handler.
+                    self.palette_actions.clear();
+                    self.palette_actions
+                        .extend(rows.iter().take(visible).map(|(_, _, a)| a.clone()));
+
+                    // Update text buffers (only when dirty).
+                    // TODO(i18n): palette.search_placeholder
+                    let query_display = if self.command_palette.query.is_empty() {
+                        "Type a command\u{2026}"
+                    } else {
+                        &self.command_palette.query
+                    };
+                    let query_w = (input_w - INPUT_TEXT_PAD * 2.0).max(1.0);
+                    self.palette_query_buffer.set_size(
+                        self.glyphon.font_system(),
+                        Some(query_w),
+                        Some(INPUT_HEIGHT),
+                    );
+                    self.palette_query_buffer.set_text(
+                        self.glyphon.font_system(),
+                        query_display,
+                        &ui_attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    self.palette_query_buffer
+                        .shape_until_scroll(self.glyphon.font_system(), false);
+
+                    let hint_attrs = glyphon::Attrs::new()
+                        .family(glyphon::Family::Name("Segoe UI"))
+                        .weight(glyphon::Weight::LIGHT);
+                    for (i, (name, shortcut, _)) in rows.iter().enumerate().take(visible) {
+                        self.palette_result_buffers[i].set_size(
+                            self.glyphon.font_system(),
+                            Some((input_w - SHORTCUT_COL_WIDTH).max(1.0)),
+                            Some(RESULT_HEIGHT),
+                        );
+                        self.palette_result_buffers[i].set_text(
+                            self.glyphon.font_system(),
+                            name,
+                            &ui_attrs,
+                            glyphon::Shaping::Advanced,
+                            None,
+                        );
+                        self.palette_result_buffers[i]
+                            .shape_until_scroll(self.glyphon.font_system(), false);
+
+                        self.palette_shortcut_buffers[i].set_size(
+                            self.glyphon.font_system(),
+                            Some(SHORTCUT_COL_WIDTH),
+                            Some(RESULT_HEIGHT),
+                        );
+                        self.palette_shortcut_buffers[i].set_text(
+                            self.glyphon.font_system(),
+                            shortcut,
+                            &hint_attrs,
+                            glyphon::Shaping::Advanced,
+                            None,
+                        );
+                        self.palette_shortcut_buffers[i]
+                            .shape_until_scroll(self.glyphon.font_system(), false);
+                    }
+                } // end dirty check
+
+                // Render quads every frame (uses cached result_count).
+                self.command_palette
+                    .render_quads(&mut self.quads, sw, sh, &self.ui_chrome);
+
+                // Text cursor in the input field (every frame).
+                let ly = crate::command_palette::PaletteLayout::compute(
+                    sw,
+                    sh,
+                    self.command_palette.result_count.min(MAX_VISIBLE_RESULTS),
+                );
+                {
+                    let text_w = if self.command_palette.query.is_empty() {
+                        0.0
+                    } else {
+                        self.palette_query_buffer
+                            .layout_runs()
+                            .next()
+                            .map_or(0.0, |run| run.line_w)
+                    };
+                    let cursor_x = ly.input_x + INPUT_TEXT_PAD + text_w;
+                    let cursor_y_pos = ly.input_y + (INPUT_HEIGHT - SEARCH_LINE_HEIGHT) / 2.0;
+                    self.quads.push_quad(
+                        cursor_x,
+                        cursor_y_pos,
+                        1.5,
+                        SEARCH_LINE_HEIGHT,
+                        self.ui_chrome.text_primary,
+                    );
+                }
+            } else {
+                // Palette closed — no overlay to render.
+                self.palette_actions.clear();
             }
         }
 
@@ -1394,6 +1634,126 @@ impl UiState<'_> {
                         bottom: (iy + item_h) as i32,
                     },
                     default_color: label_color,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
+        // Append command palette text areas (query + filter tabs + results + shortcuts).
+        if self.command_palette.open {
+            use crate::command_palette::{
+                PaletteFilter, PaletteLayout, FILTER_ROW_HEIGHT, FILTER_TAB_GAP, FILTER_TAB_PAD_X,
+                FILTER_TAB_PAD_Y, INPUT_HEIGHT, INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS, RESULT_HEIGHT,
+                SHORTCUT_COL_PAD, SHORTCUT_COL_WIDTH,
+            };
+
+            let sw = surface_w as f32;
+            let sh = surface_h as f32;
+            let ly = PaletteLayout::compute(
+                sw,
+                sh,
+                self.command_palette.result_count.min(MAX_VISIBLE_RESULTS),
+            );
+
+            let caption_lh = typography::CAPTION_LINE_HEIGHT;
+
+            // Query text area (inside the input field).
+            let query_text_x = ly.input_x + INPUT_TEXT_PAD;
+            let query_text_y = ly.input_y + (INPUT_HEIGHT - caption_lh) / 2.0;
+            let query_color = if self.command_palette.query.is_empty() {
+                rgba_to_glyphon(self.ui_chrome.text_muted)
+            } else {
+                rgba_to_glyphon(self.ui_chrome.text_primary)
+            };
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.palette_query_buffer,
+                left: query_text_x,
+                top: query_text_y,
+                scale: self.scale_factor,
+                bounds: glyphon::TextBounds {
+                    left: query_text_x as i32,
+                    top: ly.input_y as i32,
+                    right: (ly.input_x + ly.input_w - INPUT_TEXT_PAD) as i32,
+                    bottom: (ly.input_y + INPUT_HEIGHT) as i32,
+                },
+                default_color: query_color,
+                custom_glyphs: &[],
+            });
+
+            // Filter tab labels.
+            let mut tab_x = ly.input_x;
+            for (i, variant) in PaletteFilter::ALL.iter().enumerate() {
+                let pill_w = self.command_palette.measured_pill_width(*variant);
+                let pill_h = FILTER_ROW_HEIGHT - 2.0 * FILTER_TAB_PAD_Y;
+                let pill_y = ly.filter_y + FILTER_TAB_PAD_Y;
+
+                // Center text inside the pill.
+                let text_x = tab_x + FILTER_TAB_PAD_X;
+                let text_y = pill_y + (pill_h - caption_lh) / 2.0;
+
+                let tab_color = if *variant == self.command_palette.filter {
+                    // Active tab: inverse text on accent background.
+                    rgba_to_glyphon(self.ui_chrome.text_inverse)
+                } else {
+                    rgba_to_glyphon(self.ui_chrome.text_secondary)
+                };
+
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.palette_filter_buffers[i],
+                    left: text_x,
+                    top: text_y,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: tab_x as i32,
+                        top: pill_y as i32,
+                        right: (tab_x + pill_w) as i32,
+                        bottom: (pill_y + pill_h) as i32,
+                    },
+                    default_color: tab_color,
+                    custom_glyphs: &[],
+                });
+
+                tab_x += pill_w + FILTER_TAB_GAP;
+            }
+
+            // Result names + shortcut badges.
+            let visible = self.command_palette.result_count.min(MAX_VISIBLE_RESULTS);
+            let name_color = rgba_to_glyphon(self.ui_chrome.text_primary);
+            let shortcut_color = rgba_to_glyphon(self.ui_chrome.text_muted);
+            for i in 0..visible {
+                let row_y = ly.results_y + i as f32 * RESULT_HEIGHT;
+                let text_y = row_y + (RESULT_HEIGHT - caption_lh) / 2.0;
+
+                // Command name (left-aligned).
+                let shortcut_start = ly.input_x + ly.input_w - SHORTCUT_COL_WIDTH;
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.palette_result_buffers[i],
+                    left: ly.input_x + INPUT_TEXT_PAD,
+                    top: text_y,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: ly.input_x as i32,
+                        top: row_y as i32,
+                        right: shortcut_start as i32,
+                        bottom: (row_y + RESULT_HEIGHT) as i32,
+                    },
+                    default_color: name_color,
+                    custom_glyphs: &[],
+                });
+
+                // Shortcut badge (right-aligned).
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.palette_shortcut_buffers[i],
+                    left: shortcut_start + SHORTCUT_COL_PAD,
+                    top: text_y,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: shortcut_start as i32,
+                        top: row_y as i32,
+                        right: (ly.input_x + ly.input_w) as i32,
+                        bottom: (row_y + RESULT_HEIGHT) as i32,
+                    },
+                    default_color: shortcut_color,
                     custom_glyphs: &[],
                 });
             }

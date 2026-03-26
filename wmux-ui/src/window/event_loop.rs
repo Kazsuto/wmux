@@ -250,6 +250,19 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let theme_cursor = palette.cursor;
         let theme_foreground = palette.foreground;
 
+        {
+            let (br, bg, bb) = palette.background;
+            let (r1, g1, b1) = palette.ansi[1];
+            let (cr, cg, cb) = palette.cursor;
+            tracing::info!(
+                theme = %theme_engine.current_theme().name,
+                bg = format_args!("#{br:02x}{bg:02x}{bb:02x}"),
+                ansi_red = format_args!("#{r1:02x}{g1:02x}{b1:02x}"),
+                cursor = format_args!("#{cr:02x}{cg:02x}{cb:02x}"),
+                "theme loaded"
+            );
+        }
+
         let dark_mode = wmux_config::ThemeEngine::is_dark_mode();
         let title_colors = crate::effects::TitleBarColors {
             background: palette.background,
@@ -270,6 +283,48 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         );
         let search_query_buffer = glyphon::Buffer::new(glyphon.font_system(), search_text_metrics);
         let search_count_buffer = glyphon::Buffer::new(glyphon.font_system(), search_text_metrics);
+
+        // Pre-allocate command palette text buffers.
+        let palette_text_metrics = glyphon::Metrics::new(
+            crate::typography::CAPTION_FONT_SIZE,
+            crate::typography::CAPTION_LINE_HEIGHT,
+        );
+        let palette_query_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics);
+        let palette_filter_labels = ["All", "Commands", "Workspaces", "Surfaces"];
+        let palette_ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+        let pill_h = crate::command_palette::FILTER_ROW_HEIGHT
+            - 2.0 * crate::command_palette::FILTER_TAB_PAD_Y;
+        // Shape filter labels with generous buffer width, then measure actual text widths.
+        let mut measured_filter_widths = [0.0f32; 4];
+        let palette_filter_buffers: [glyphon::Buffer; 4] = std::array::from_fn(|i| {
+            let mut b = glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics);
+            // Use generous buffer width for shaping — we'll measure actual width after.
+            b.set_size(glyphon.font_system(), Some(300.0), Some(pill_h));
+            b.set_text(
+                glyphon.font_system(),
+                palette_filter_labels[i],
+                &palette_ui_attrs,
+                glyphon::Shaping::Advanced,
+                None,
+            );
+            b.shape_until_scroll(glyphon.font_system(), false);
+            // Measure actual rendered text width from glyphon layout.
+            // line_w is in buffer coordinates (unscaled) — multiply by scale_factor
+            // to get physical pixel width, since all quad/bounds positions use physical pixels.
+            let text_w = b.layout_runs().next().map_or(0.0, |run| run.line_w);
+            measured_filter_widths[i] =
+                text_w * initial_scale_factor + 2.0 * crate::command_palette::FILTER_TAB_PAD_X;
+            b
+        });
+        let palette_result_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics))
+            .collect();
+        let palette_shortcut_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics))
+            .collect();
 
         tracing::info!(
             cols,
@@ -385,6 +440,19 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             process_exited: false,
             terminal_modes: TerminalMode::empty(),
             last_layout: Vec::new(),
+            command_palette: {
+                let mut cp = crate::command_palette::CommandPalette::new();
+                cp.filter_pill_widths = measured_filter_widths;
+                cp
+            },
+            command_registry: wmux_core::CommandRegistry::with_defaults(),
+            palette_query_buffer,
+            palette_filter_buffers,
+            palette_result_buffers,
+            palette_shortcut_buffers,
+            palette_actions: Vec::new(),
+            palette_last_query: String::new(),
+            palette_last_filter: crate::command_palette::PaletteFilter::All,
             search: crate::search::SearchState::new(),
             last_search_rows: Vec::new(),
             last_total_visible_rows: 0,
@@ -736,6 +804,21 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             &self.proxy,
                         );
                     }
+                    return;
+                }
+
+                // Priority 1.25: command palette input — consumes all keys when open.
+                // Must be after shortcuts (so Ctrl+Shift+P toggles) but before
+                // search and terminal input.
+                if state.command_palette.open {
+                    handlers::handle_palette_key(
+                        state,
+                        &event,
+                        &self.app_state,
+                        &self.rt_handle,
+                        &self.proxy,
+                    );
+                    state.window.request_redraw();
                     return;
                 }
 

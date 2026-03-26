@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-03-26
+
+FIX: Fix filter tab text clipping — multiply measured line_w by scale_factor (DPI) when computing pill widths, since glyphon layout_runs() returns buffer-coordinate widths but quads/bounds use physical pixels
+REFACTOR: Extract PaletteLayout struct — single source of truth for palette position/size math, replaces 3 duplicated inline computations across render_quads/render.rs
+REFACTOR: Add dirty tracking for palette search — skip expensive search/set_text/shape_until_scroll when query+filter unchanged between frames (eliminates ~100 per-frame allocations)
+FIX: Use text_inverse from UiChrome for active filter tab text instead of hardcoded white — compliant with visual-integrity rules
+FIX: Store host HWND immediately after creation in BrowserPanel::attach() — prevents HWND leak if subsequent COM operations fail
+FIX: Add tracing::warn when command_id_to_action returns None — unhandled command IDs no longer silently swallowed
+REFACTOR: Restrict command_palette module visibility to pub(crate) — internal UI types no longer leak into wmux-ui public API
+REFACTOR: Extract SHORTCUT_COL_WIDTH and SHORTCUT_COL_PAD constants from hardcoded magic numbers (120/110/108/100) in palette render code
+FEATURE: Wire complete command palette — Ctrl+Shift+P opens overlay with search input, filter tabs, result list with shortcut badges, keyboard navigation (arrows, Tab, Enter, Escape), and command execution via ShortcutAction dispatch
+FIX: Eliminate 1-frame palette rendering delay — pre-compute search results and result_count before render_quads so palette height is correct on the first frame
+FEATURE: Populate Workspaces and Surfaces filter tabs — Workspaces tab shows workspace names (Enter switches workspace), Surfaces tab shows surface/tab titles (Enter focuses pane + surface), All tab combines commands + workspaces + surfaces
+REFACTOR: Replace re-search in Enter handler with palette_actions cache — render path stores PaletteAction per result row, handler reads cached actions instead of re-searching
+REFACTOR: Replace .expect() with non-panicking send in COM callbacks (wmux-browser) — prevents potential panic inside STA COM handlers if channel receiver is dropped
+FEATURE: Wire focus glow into render loop — active pane now displays animated blue halo (accent_glow from theme, cross-fade via AnimationEngine)
+FIX: Render focus glow after pane dimming (z-order 10) instead of before backgrounds (z-order 3) — glow was invisible because adjacent pane backgrounds painted over it
+FIX: Focus glow uses transparent inner fill + outer-only halo — inner_color was tinting the entire pane area blue instead of showing just the edge glow per Stitch maquette
+FEATURE: Increase pane divider gap 2→8px for focus glow breathing room, add 2px solid accent border on focused pane (matches Stitch maquette)
+REFACTOR: Pane tree layout tests use DIVIDER_WIDTH constant instead of hardcoded values
+FIX: Add opaque surface_base fill for content area — pane gaps were transparent with Mica, showing light desktop backdrop instead of dark background
+REFACTOR: Remove permanent pane divider lines — gaps now show clean dark surface_base, dividers appear only on hover for resize affordance
+FIX: Boost focus glow visibility — outer glow alpha 0.30→0.55, border alpha 0.40→0.85, border width 2→3px to match Stitch maquette vivid blue
+FEATURE: Add "Stitch Blue" theme — vivid saturated blue accent (#0979d5) with warm orange warnings (#dd8b00), derived from Google Stitch UI redesign maquettes
+FEATURE: Add filter tabs (All/Commands/Workspaces/Surfaces) to command palette with pill-style toggles and keyboard cycling
+FEATURE: Enhance focus glow — increase radius 10→18px, boost outer alpha 8%→21%, add visible inner ring for stronger active pane indication
+REFACTOR: Widen notification panel severity stripe 2→4px, increase item height 72→82px for better visual hierarchy
+FEATURE: Add "Digital Obsidian" theme — deep dark glass aesthetic (#131313 base) with electric accent signals, set as new default
+REFACTOR: Adapt surface elevation step to base darkness — formula `(L*0.45).clamp(0.030, 0.055)` gives tighter tonal layering for very dark themes while preserving existing theme appearance
+
 ## 2026-03-25
 
 FEATURE: Add globe button in tab bar to open browser surface (clickable icon, WebView2 availability-gated)

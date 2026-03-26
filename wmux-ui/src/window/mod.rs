@@ -74,6 +74,24 @@ pub(crate) struct UiState<'window> {
     /// mouse clicks without blocking on the actor.
     pub(crate) last_layout: Vec<(PaneId, wmux_core::rect::Rect)>,
 
+    // Command palette
+    pub(crate) command_palette: crate::command_palette::CommandPalette,
+    pub(crate) command_registry: wmux_core::CommandRegistry,
+    /// Glyphon text buffer for the palette query / placeholder display.
+    pub(crate) palette_query_buffer: glyphon::Buffer,
+    /// Glyphon text buffers for the 4 filter tab labels (static text).
+    pub(crate) palette_filter_buffers: [glyphon::Buffer; 4],
+    /// Pool of glyphon text buffers for result command names (up to 20).
+    pub(crate) palette_result_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon text buffers for result shortcut badges (up to 20).
+    pub(crate) palette_shortcut_buffers: Vec<glyphon::Buffer>,
+    /// Actions for the currently visible palette results (set during render, read by Enter handler).
+    pub(crate) palette_actions: Vec<crate::command_palette::PaletteAction>,
+    /// Last query used for palette search — dirty tracking to skip re-search when unchanged.
+    pub(crate) palette_last_query: String,
+    /// Last filter used for palette search — dirty tracking.
+    pub(crate) palette_last_filter: crate::command_palette::PaletteFilter,
+
     // Search overlay
     pub(crate) search: SearchState,
     /// Cached visible rows (scrollback + grid) for the focused pane, used by search.

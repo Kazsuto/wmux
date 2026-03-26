@@ -128,10 +128,9 @@ impl BrowserManager {
             }),
             Box::new(move |error_code, environment| {
                 error_code?;
-                tx.send(environment.ok_or_else(|| {
+                let _ = tx.send(environment.ok_or_else(|| {
                     windows::core::Error::from(windows::Win32::Foundation::E_POINTER)
-                }))
-                .expect("send over mpsc channel");
+                }));
                 Ok(())
             }),
         )

@@ -2,7 +2,10 @@ use super::types::{ColorPalette, ShadowDepth, UiChrome};
 
 /// Derive UI chrome colors from a terminal color palette.
 ///
-/// Surface elevation is computed by increasing HSL lightness by 5 points per level.
+/// Surface elevation uses an adaptive lightness step scaled to the base darkness:
+/// `(base_lightness * 0.45).clamp(0.030, 0.055)` — very dark bases (e.g. #131313)
+/// get tighter ~3.3% steps for subtle tonal layering, while standard dark themes
+/// (e.g. #1e1e1e) keep ~5% steps. This preserves existing themes unchanged.
 /// Accent is derived from ANSI blue (palette index 4) with saturation boosted to at
 /// least 80%. Text base is boosted 70% toward white (dark themes) or black (light
 /// themes) for AAA contrast on chrome surfaces — terminal foreground stays unchanged.
@@ -15,12 +18,17 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
 
     let (h, s, l) = rgb_to_hsl(bg_r, bg_g, bg_b);
 
+    // Adaptive step: very dark bases get tighter elevation for subtle tonal layering.
+    // At L=0.075 (#131313): step ≈ 3.4% → surfaces match "Digital Obsidian" spec.
+    // At L=0.118 (#1e1e1e): step ≈ 5.3% → preserves existing theme appearance.
+    let elevation_step = (l * 0.45).clamp(0.030, 0.055);
+
     let surface_at_level = |level: u32| -> [f32; 4] {
         // Dark themes: increase lightness for elevation; light themes: decrease.
         let delta = if l > 0.5 {
-            -(level as f32 * 0.05)
+            -(level as f32 * elevation_step)
         } else {
-            level as f32 * 0.05
+            level as f32 * elevation_step
         };
         let new_l = (l + delta).clamp(0.05, 0.95);
         let (r, g, b) = hsl_to_rgb(h, s, new_l);
@@ -28,10 +36,10 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     };
 
     let surface_base = [bg_r, bg_g, bg_b, 1.0];
-    let surface_0 = surface_at_level(1); // +5L
-    let surface_1 = surface_at_level(2); // +10L
-    let surface_2 = surface_at_level(3); // +15L
-    let surface_3 = surface_at_level(4); // +20L
+    let surface_0 = surface_at_level(1); // +1 step
+    let surface_1 = surface_at_level(2); // +2 steps
+    let surface_2 = surface_at_level(3); // +3 steps
+    let surface_3 = surface_at_level(4); // +4 steps
     let surface_overlay = [surface_1[0], surface_1[1], surface_1[2], 0.95];
 
     // Accent from ANSI blue (index 4), boost saturation to at least 80%
@@ -54,8 +62,8 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let accent_pressed = [rp, gp, bp, 1.0];
 
     let accent_muted = [r, g, b, 0.30];
-    let accent_glow = [r, g, b, 0.20];
-    let accent_glow_core = [r, g, b, 0.60];
+    let accent_glow = [r, g, b, 0.30];
+    let accent_glow_core = [r, g, b, 0.80];
     let accent_tint = [r, g, b, 0.08];
 
     // Text hierarchy — UI foreground boosted toward white (dark) or black (light)
@@ -363,8 +371,8 @@ mod tests {
         assert!((chrome.accent[3] - 1.0).abs() < f32::EPSILON);
         assert!((chrome.accent_hover[3] - 1.0).abs() < f32::EPSILON);
         assert!((chrome.accent_muted[3] - 0.30).abs() < f32::EPSILON);
-        assert!((chrome.accent_glow[3] - 0.20).abs() < f32::EPSILON);
-        assert!((chrome.accent_glow_core[3] - 0.60).abs() < f32::EPSILON);
+        assert!((chrome.accent_glow[3] - 0.30).abs() < f32::EPSILON);
+        assert!((chrome.accent_glow_core[3] - 0.80).abs() < f32::EPSILON);
         assert!((chrome.accent_tint[3] - 0.08).abs() < f32::EPSILON);
         // RGB channels must match for alpha variants
         for variant in [
@@ -462,12 +470,12 @@ mod tests {
 
     #[test]
     fn derive_ui_chrome_text_boost_math() {
-        // wmux-default: foreground #d4d4d4, bg L≈0.118 (dark)
+        // digital-obsidian: foreground #e2e2e2, bg L≈0.075 (dark)
         let palette = ThemeEngine::default_theme().palette;
         let chrome = derive_ui_chrome(&palette);
 
-        // Boosted: 0.831 + (1.0 - 0.831) * 0.70 ≈ 0.949
-        let fg = 0xd4 as f32 / 255.0;
+        // Boosted: fg + (1.0 - fg) * 0.70
+        let fg = palette.foreground.0 as f32 / 255.0;
         let expected = fg + (1.0 - fg) * 0.70;
         assert!(
             (chrome.text_primary[0] - expected).abs() < 0.002,

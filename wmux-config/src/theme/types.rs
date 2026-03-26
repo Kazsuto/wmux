@@ -52,16 +52,16 @@ pub struct ShadowDepth {
 /// Design system: "Luminous Void" — refined-dark with Focus Glow signature.
 #[derive(Debug, Clone, Copy)]
 pub struct UiChrome {
-    // ── Surface Elevation (5L steps) ──────────────────────────────────
+    // ── Surface Elevation (adaptive steps) ─────────────────────────────
     /// Base surface — matches theme background (used as clear color).
     pub surface_base: [f32; 4],
-    /// Elevation 0 — subtle lift (+5L from base).
+    /// Elevation 0 — subtle lift (+1 step from base).
     pub surface_0: [f32; 4],
-    /// Elevation 1 — sidebar bg, tab bar bg (+10L from base).
+    /// Elevation 1 — sidebar bg, tab bar bg (+2 steps from base).
     pub surface_1: [f32; 4],
-    /// Elevation 2 — hover, active, selections (+15L from base).
+    /// Elevation 2 — hover, active, selections (+3 steps from base).
     pub surface_2: [f32; 4],
-    /// Elevation 3 — borders, dividers (+20L from base).
+    /// Elevation 3 — borders, dividers (+4 steps from base).
     pub surface_3: [f32; 4],
     /// Overlay surface — surface_1 at 95% alpha (palette bg, notification panel bg).
     pub surface_overlay: [f32; 4],
@@ -73,7 +73,7 @@ pub struct UiChrome {
     pub accent_hover: [f32; 4],
     /// Muted accent — accent at 30% alpha.
     pub accent_muted: [f32; 4],
-    /// Glow outer — accent at 25% alpha (Focus Glow halo).
+    /// Glow outer — accent at 20% alpha (Focus Glow halo).
     pub accent_glow: [f32; 4],
     /// Glow inner — accent at 60% alpha (Focus Glow 1px ring).
     pub accent_glow_core: [f32; 4],
@@ -137,9 +137,9 @@ pub struct UiChrome {
     pub search_match_active: [f32; 4],
     /// Drop shadow color — black at 25% alpha (dark themes).
     pub shadow: [f32; 4],
-    /// Shadow small — sigma=2, offset_y=1 (tab bar, status bar).
+    /// Shadow small — sigma=3, offset_y=1 (tab bar, status bar).
     pub shadow_sm: ShadowDepth,
-    /// Shadow medium — sigma=4, offset_y=2 (sidebar, panels).
+    /// Shadow medium — sigma=5, offset_y=2 (sidebar, panels).
     pub shadow_md: ShadowDepth,
     /// Shadow large — sigma=8, offset_y=4 (overlays, command palette).
     pub shadow_lg: ShadowDepth,

@@ -27,7 +27,7 @@ impl Default for Config {
         Self {
             font_family: "Cascadia Code".to_string(),
             font_size: 16.0,
-            theme: "wmux-default".to_string(),
+            theme: "digital-obsidian".to_string(),
             background: None,
             foreground: None,
             palette: std::array::from_fn(|_| None),
@@ -242,7 +242,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.font_family, "Cascadia Code");
         assert_eq!(c.font_size, 16.0);
-        assert_eq!(c.theme, "wmux-default");
+        assert_eq!(c.theme, "digital-obsidian");
         assert!(c.background.is_none());
         assert!(c.foreground.is_none());
         assert_eq!(c.scrollback_limit, 4000);
@@ -273,7 +273,7 @@ mod tests {
     fn from_str_comments_only_gives_defaults() {
         let c = "# just a comment\n# another\n".parse::<Config>().unwrap();
         assert_eq!(c.font_size, 16.0);
-        assert_eq!(c.theme, "wmux-default");
+        assert_eq!(c.theme, "digital-obsidian");
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(merged.font_family, "Consolas");
         assert_eq!(merged.font_size, 16.0);
         // Untouched fields keep base values
-        assert_eq!(merged.theme, "wmux-default");
+        assert_eq!(merged.theme, "digital-obsidian");
         assert_eq!(merged.scrollback_limit, 4000);
     }
 

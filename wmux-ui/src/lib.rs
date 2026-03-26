@@ -1,5 +1,5 @@
 pub mod animation;
-pub mod command_palette;
+pub(crate) mod command_palette;
 pub mod divider;
 pub mod effects;
 pub mod error;

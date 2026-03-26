@@ -363,6 +363,87 @@ pub(super) fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
     }
 }
 
+/// Handle keyboard input when the command palette is open.
+pub(super) fn handle_palette_key(
+    state: &mut UiState<'_>,
+    event: &KeyEvent,
+    app_state: &AppStateHandle,
+    rt_handle: &tokio::runtime::Handle,
+    proxy: &winit::event_loop::EventLoopProxy<crate::event::WmuxEvent>,
+) {
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            state.command_palette.close();
+        }
+        Key::Named(NamedKey::Backspace) => {
+            state.command_palette.query.pop();
+            state.command_palette.selected = 0;
+        }
+        Key::Named(NamedKey::ArrowDown) => {
+            state.command_palette.select_next();
+        }
+        Key::Named(NamedKey::ArrowUp) => {
+            state.command_palette.select_prev();
+        }
+        Key::Named(NamedKey::Tab) => {
+            if state.modifiers.shift_key() {
+                state.command_palette.prev_filter();
+            } else {
+                state.command_palette.next_filter();
+            }
+        }
+        Key::Named(NamedKey::Enter) => {
+            // Use palette_actions populated during the last render frame.
+            if let Some(idx) = state.command_palette.selected_index() {
+                if let Some(action) = state.palette_actions.get(idx).cloned() {
+                    state.command_palette.close();
+                    match action {
+                        crate::command_palette::PaletteAction::Command(ref id) => {
+                            if let Some(sa) = crate::command_palette::command_id_to_action(id) {
+                                handle_shortcut(sa, state, app_state, rt_handle, proxy);
+                            } else {
+                                tracing::warn!(command_id = %id, "unhandled command ID from palette — missing mapping in command_id_to_action");
+                            }
+                        }
+                        crate::command_palette::PaletteAction::SwitchWorkspace(n) => {
+                            handle_shortcut(
+                                ShortcutAction::SwitchWorkspace(n),
+                                state,
+                                app_state,
+                                rt_handle,
+                                proxy,
+                            );
+                        }
+                        crate::command_palette::PaletteAction::FocusSurface(pane_id, tab_idx) => {
+                            app_state.cycle_surface_to_index(pane_id, tab_idx);
+                            state.set_focused_pane(pane_id);
+                            state.window.request_redraw();
+                        }
+                    }
+                } else {
+                    state.command_palette.close();
+                }
+            } else {
+                state.command_palette.close();
+            }
+        }
+        Key::Named(NamedKey::Space) => {
+            state.command_palette.query.push(' ');
+            state.command_palette.selected = 0;
+        }
+        Key::Character(ch) => {
+            let s = ch.as_str();
+            if s.chars().all(|c| !c.is_control()) {
+                state.command_palette.query.push_str(s);
+                state.command_palette.selected = 0;
+            }
+        }
+        _ => {
+            // All other keys consumed silently (don't leak to terminal).
+        }
+    }
+}
+
 /// Spawn a new split pane. When `before` is true, the new pane is placed
 /// before the original (left for horizontal, above for vertical) by swapping
 /// the two panes after the split.
@@ -669,9 +750,22 @@ pub(super) fn handle_shortcut(
 
         // Placeholders for future tasks.
         ShortcutAction::CommandPalette => {
-            tracing::debug!("CommandPalette shortcut (placeholder — Task L4_01)");
+            if state.command_palette.open {
+                state.command_palette.close();
+            } else {
+                // Close search if active — only one overlay at a time.
+                if state.search.active {
+                    state.search.close();
+                }
+                state.command_palette.open();
+            }
+            state.window.request_redraw();
         }
         ShortcutAction::Find => {
+            // Close palette if open — only one overlay at a time.
+            if state.command_palette.open {
+                state.command_palette.close();
+            }
             if state.search.active {
                 state.search.close();
                 tracing::debug!("search closed via Ctrl+F toggle");

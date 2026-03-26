@@ -133,32 +133,62 @@ impl PaneRenderer {
             return;
         }
 
-        const GLOW_RADIUS: f32 = 10.0;
+        const GLOW_RADIUS: f32 = 18.0;
 
-        // Subtle outer glow halo
+        // Vivid outer glow — use accent RGB at high alpha for visibility on dark gaps.
         let glow_color = [
             accent_glow[0],
             accent_glow[1],
             accent_glow[2],
-            accent_glow[3] * glow_alpha * 0.4,
+            0.55 * glow_alpha,
         ];
-        // Transparent inner (no fill, glow only)
-        let inner_color = [
+        // Solid accent border at pane edge — clearly visible like Stitch maquette.
+        let border_color = [
             accent_glow_core[0],
             accent_glow_core[1],
             accent_glow_core[2],
-            0.0,
+            0.85 * glow_alpha,
         ];
 
+        // Outer glow halo (expands outward by GLOW_RADIUS).
         quads.push_glow_quad(
             rect.x,
             rect.y,
             rect.width,
             rect.height,
-            inner_color,
-            0.0, // no border_radius on inner
+            [0.0, 0.0, 0.0, 0.0], // transparent inside
+            0.0,
             GLOW_RADIUS,
             glow_color,
+        );
+
+        // 3px accent border for crisp edge definition (matches Stitch maquette).
+        let bw = 3.0;
+        // Top
+        quads.push_quad(rect.x, rect.y, rect.width, bw, border_color);
+        // Bottom
+        quads.push_quad(
+            rect.x,
+            rect.y + rect.height - bw,
+            rect.width,
+            bw,
+            border_color,
+        );
+        // Left
+        quads.push_quad(
+            rect.x,
+            rect.y + bw,
+            bw,
+            rect.height - 2.0 * bw,
+            border_color,
+        );
+        // Right
+        quads.push_quad(
+            rect.x + rect.width - bw,
+            rect.y + bw,
+            bw,
+            rect.height - 2.0 * bw,
+            border_color,
         );
     }
 

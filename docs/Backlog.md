@@ -1,200 +1,227 @@
-# Fonctionnalités codées mais non fonctionnelles
+# Backlog wmux
 
-## 1. Command Palette (Ctrl+Shift+P) — NON BRANCHÉ
+Référence visuelle : `docs/stitch/` (6 maquettes Google Stitch).
+Règle : chaque tâche est **complète** ou **pas commencée**.
+Dernière mise à jour : 2026-03-26 (audit `code-explorer`).
 
-**Fichiers concernés:**
-- `wmux-ui/src/command_palette.rs` — Module complet avec state, rendu des quads, hit-testing
-- `wmux-core/src/command_registry.rs` — Registre de 16 commandes avec recherche fuzzy
-- `wmux-ui/src/window/handlers.rs` ligne 652-653
+## Déjà implémenté
 
-**Problème:** Le raccourci Ctrl+Shift+P est détecté et matche `ShortcutAction::CommandPalette`, mais le handler ne fait qu'un `tracing::debug!("CommandPalette shortcut (placeholder - Task L4_01)")`. Le `CommandPalette` struct et le `CommandRegistry` sont entièrement implémentés avec rendu, navigation, recherche fuzzy, mais aucun n'est instancié dans `UiState` ni appelé dans le pipeline de rendu. Il n'y a pas de champ `command_palette` dans `UiState`.
-
-**À faire:**
-- Ajouter un champ `CommandPalette` et `CommandRegistry` dans `UiState`
-- Brancher le shortcut pour ouvrir/fermer la palette
-- Intercepter les touches quand la palette est ouverte (query input, navigation haut/bas, Enter pour exécuter)
-- Appeler `command_palette.render_quads()` dans le pipeline de rendu
-- Ajouter les TextAreas glyphon pour le texte de la palette
-- Exécuter la commande sélectionnée via mapping command_id -> ShortcutAction
-
----
-
-## 2. Notification Panel (Ctrl+Shift+I) — NON BRANCHÉ
-
-**Fichiers concernés:**
-- `wmux-ui/src/notification_panel.rs` — Module complet avec state, quads, scroll, hit-test, text areas
-- `wmux-ui/src/window/handlers.rs` lignes 668-672
-
-**Problème:** Le raccourci Ctrl+Shift+I est détecté comme `ShortcutAction::NotificationPanelToggle` mais le handler ne fait qu'un `tracing::debug!("NotificationPanelToggle shortcut (placeholder - L3_09 UI wiring)")`. Le `NotificationPanel` struct est entièrement implémenté avec rendu, scroll, hover, mais il n'est pas instancié dans `UiState` et jamais rendu. Même chose pour `JumpLastUnread` (Ctrl+Shift+U).
-
-**À faire:**
-- Ajouter un champ `NotificationPanel` dans `UiState`
-- Brancher le shortcut `NotificationPanelToggle` pour toggle le panel
-- Brancher `JumpLastUnread` pour naviguer à la dernière notification
-- Appeler `notification_panel.render_quads()` dans le pipeline de rendu
-- Ajouter les TextAreas pour le contenu des notifications
-- Alimenter le panel avec les notifications du `NotificationStore` (qui existe déjà dans l'actor)
+| Changement | Vérification |
+|------------|-------------|
+| Thème `stitch-blue` (accent `#0979d5`, warning `#dd8b00`) | Config `theme = stitch-blue` → couleurs changent |
+| Focus glow paramètres (radius 18px, alpha boost) | **Dead code** tant que #1 n'est pas fait |
+| Notification stripe 4px + items 82px | **Dead code** tant que #2 n'est pas fait |
+| Filter tabs quads (PaletteFilter enum + pills) | **Dead code** tant que #2 n'est pas fait |
+| SystemHandler IPC | Déjà enregistré via `Router::new()` — `wmux-cli system ping` fonctionne |
+| Port scanner → sidebar texte | Complet — ports affichés en texte dans l'info workspace |
+| Search overlay | Complet — Ctrl+F ouvre la recherche in-pane |
+| Session restore | Complet — les workspaces/panes sont restaurés au redémarrage |
 
 ---
 
-## 3. Auto-Updater — NON BRANCHÉ
+## Séquence d'implémentation
 
-**Fichiers concernés:**
-- `wmux-app/src/updater.rs` — Module complet avec check GitHub, download, apply
+### #1 — Focus Glow : câbler l'appel dans le render loop
 
-**Problème:** Le fichier commence par le commentaire explicite: `// Module is declared but not yet wired into the main application loop.` et `#![allow(dead_code)]`. Aucune fonction de `updater.rs` n'est appelée depuis `main.rs`. Le module `UpdateChecker` peut vérifier les mises à jour, télécharger et appliquer, mais rien n'est connecté.
+**Réf.** `wmux_terminal_dashboard_main_view.png` (halo bleu autour du pane actif)
+**Prérequis :** aucun
+**Effort :** faible — la fonction existe, il manque l'appel
 
-**À faire:**
-- Appeler `UpdateChecker::new()` au démarrage dans `main.rs`
-- Spawner une tâche async pour `check_for_update()` périodiquement (ou au démarrage)
-- Notifier l'utilisateur via le système de notifications ou la status bar quand une MAJ est dispo
-- Gérer le flow download + apply (avec confirmation utilisateur)
+`render_focus_glow()` est implémentée (`pane.rs:125-163`) mais **jamais appelée** depuis `render.rs`. L'animation `focus_glow_anim` tourne dans le vide — son alpha n'est jamais lu.
 
----
+**Scope :**
+- Dans `render.rs`, après le rendu des sidebar/pane backgrounds et avant les tab bars : appeler `PaneRenderer::render_focus_glow()` avec le rect du pane focusé
+- Lire `animation.get(focus_glow_anim)` pour obtenir l'alpha de cross-fade
+- Passer `accent_glow_core` et `accent_glow` depuis `UiChrome`
 
-## 4. System IPC Handler — NON ENREGISTRÉ
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. Créer un split (`Ctrl+D`) → 2 panes
+3. Cliquer sur un pane → un halo bleu lumineux apparaît autour du pane actif
+4. Cliquer sur l'autre pane → le halo se déplace avec une animation de transition
+5. Le pane inactif n'a pas de halo
 
-**Fichiers concernés:**
-- `wmux-ipc/src/handlers/system.rs` — Handler fonctionnel (ping, capabilities, identify)
-- `wmux-app/src/main.rs` lignes 42-65
-
-**Problème:** Dans `main.rs`, le router enregistre `workspace`, `surface`, `browser`, et `sidebar`, mais **pas `system`**. Le `SystemHandler` est complètement implémenté et testé, mais les méthodes `system.ping`, `system.capabilities` et `system.identify` sont inaccessibles via IPC car le handler n'est pas enregistré.
-
-**À faire:**
-- Ajouter `router.register("system", std::sync::Arc::new(wmux_ipc::handlers::system::SystemHandler::new()));` dans `main.rs`
+**Fichiers :** `wmux-ui/src/window/render.rs`
 
 ---
 
-## 5. CLI Notify Commands — STUB
+### #2 — Command Palette complète
 
-**Fichiers concernés:**
-- `wmux-cli/src/commands/notify.rs`
+**Réf.** `wmux_command_palette_overlay.png`
+**Prérequis :** aucun
+**Inclut :** câblage UiState + rendu quads + texte COMPLET (input, filter tabs, résultats, raccourcis) + interactions clavier
 
-**Problème:** Les commandes `wmux notify create`, `wmux notify list` et `wmux notify clear` existent dans le CLI, mais elles retournent toutes un message d'erreur hardcodé: `"not yet implemented (pending Task L3_08)"`. Aucun appel IPC n'est effectué.
+`CommandPalette` et `CommandRegistry` existent mais ne sont pas dans `UiState`. Les filter tabs ont des quads mais pas de texte. Aucun glyphon `Buffer` n'existe pour le contenu de la palette.
 
-**À faire:**
-- Implémenter les appels IPC correspondants (`notify.create`, `notify.list`, `notify.clear`)
-- Créer un handler IPC `NotifyHandler` côté serveur
-- Connecter au `NotificationStore` de l'actor
+**Scope :**
+- Ajouter `CommandPalette` + `CommandRegistry` dans `UiState`
+- Câbler `Ctrl+Shift+P` → ouvre/ferme la palette (remplacer le placeholder `handlers.rs:671`)
+- Intercepter le clavier quand ouvert (saisie query, flèches, Enter, Escape, Tab pour filter)
+- Créer les glyphon `Buffer` pour : placeholder "Type a command...", query saisie, labels filter tabs ("All", "Commands", "Workspaces", "Surfaces"), noms de commandes, badges raccourcis
+- Appeler `render_quads()` et les text areas dans le render loop
+- Filtrer les résultats selon le tab actif
+- Exécuter la commande sélectionnée (mapping → ShortcutAction)
 
----
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. `Ctrl+Shift+P` → overlay sombre + palette centrée
+3. On voit "Type a command..." dans le champ de saisie
+4. Les 4 filter tabs affichent leur texte ("All" surligné bleu, les autres gris)
+5. Taper "split" → résultats filtrés avec noms + raccourcis
+6. Flèche bas → sélection descend
+7. Enter → commande exécutée
+8. Escape → palette fermée
 
-## 6. CLI SSH Commands — STUB
-
-**Fichiers concernés:**
-- `wmux-cli/src/commands/ssh.rs`
-- `wmux-core/src/remote.rs` — `RemoteConfig`, `ReconnectBackoff`, `RemoteConnectionState`
-
-**Problème:** Les commandes `wmux ssh connect` et `wmux ssh disconnect` existent mais affichent juste: `"SSH remote connection to '...' is not yet fully implemented"`. Le module `remote.rs` dans wmux-core est entièrement implémenté (parsing SSH target, validation, backoff, ssh_args), mais le daemon Go (wmuxd-remote) et le tunnel SSH ne sont pas intégrés.
-
-**À faire:**
-- Intégrer le daemon Go wmuxd-remote
-- Implémenter le tunnel SSH avec le remote workspace model
-- Brancher les commandes CLI aux opérations réelles
-
----
-
-## 7. Toggle Dev Tools (F12) — STUB
-
-**Fichiers concernés:**
-- `wmux-ui/src/window/handlers.rs` ligne 665-666
-
-**Problème:** Le raccourci F12 est détecté comme `ShortcutAction::ToggleDevTools` mais le handler ne fait qu'un `tracing::debug!("ToggleDevTools shortcut (placeholder)")`. Aucune action n'est exécutée.
-
-**À faire:**
-- Définir ce que "dev tools" signifie pour wmux (inspecteur de debug? performance overlay? WebView2 devtools?)
-- Implémenter l'action correspondante
+**Fichiers :** `wmux-ui/src/command_palette.rs`, `wmux-ui/src/window/mod.rs`, `wmux-ui/src/window/handlers.rs`, `wmux-ui/src/window/render.rs`
 
 ---
 
-## 8. Sidebar progress bar et activity log — DONNÉES NON RENDUES
+### #3 — Notification Panel complet
 
-**Fichiers concernés:**
-- `wmux-core/src/metadata_store.rs` — `ProgressState`, `LogEntry`, `MetadataStore` complets
-- `wmux-core/src/app_state/mod.rs` — Commandes `SidebarSetProgress`, `SidebarAddLog`, etc.
-- `wmux-ipc/src/handlers/sidebar.rs` — Handlers IPC fonctionnels
+**Réf.** `wmux_notification_panel_slide_out.png`
+**Prérequis :** aucun
+**Inclut :** câblage UiState + header + texte items + badge count
 
-**Problème:** Les données de progress bar et activity log sont correctement stockées dans `MetadataStore` et accessibles via IPC (`sidebar.set_progress`, `sidebar.log`, etc.), mais la sidebar UI (`sidebar.rs`) ne rend que les noms de workspace, les badges d'unread, et les status icons. Il n'y a **aucun rendu visuel** de la progress bar ni du log d'activité dans la sidebar.
+`NotificationPanel` existe mais pas dans `UiState`. `text_areas()` retourne un Vec vide quand il y a des notifications (`notification_panel.rs:219`). Le badge sidebar rend un cercle mais pas le chiffre.
 
-**À faire:**
-- Ajouter le rendu de la progress bar dans `SidebarState::render_quads()`
-- Ajouter le rendu du log d'activité (derniers entries) dans la sidebar
-- Récupérer les données de `MetadataSnapshot` dans le render loop
+**Scope :**
+- Ajouter `NotificationPanel` dans `UiState`
+- Câbler `Ctrl+Shift+I` → toggle (remplacer placeholder `handlers.rs:687`)
+- Câbler `Ctrl+Shift+U` → jump to last unread (remplacer placeholder `handlers.rs:691`)
+- Alimenter avec `NotificationStore` via le snapshot de l'actor
+- Créer les glyphon `Buffer` pour :
+  - Header : titre "Notifications" (title font bold), "Clear all" (text_muted), icône X
+  - Par item : label catégorie coloré ("Build success" vert, "Warning" jaune), titre bold, description secondary, timestamp faint
+- Corriger `text_areas()` : ne plus retourner vide quand `!notifications.is_empty()`
+- Ajouter texte du chiffre dans le badge sidebar (`sidebar.rs:387-398`)
+- Scroll molette, hover highlight, clic notification → focus workspace source
 
----
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. Générer une notification (via OSC escape sequence ou IPC)
+3. La sidebar montre un badge cercle avec le **chiffre** "1" à l'intérieur
+4. `Ctrl+Shift+I` → panel glisse depuis la droite
+5. Header "Notifications" visible + "Clear all" + bouton X
+6. Chaque notification : label catégorie coloré + titre + description + timestamp
+7. Stripe gauche colorée par sévérité
+8. Scroll molette fonctionne
+9. `Ctrl+Shift+I` → panel se ferme
 
-## 9. Certaines browser.* IPC methods — NON IMPLÉMENTÉES
-
-**Fichiers concernés:**
-- `wmux-ui/src/window/event_loop.rs` ligne 1888
-- `wmux-browser/src/automation.rs`
-
-**Problème:** Le handler browser supporte `open`, `navigate`, `back`, `forward`, `reload`, `url`, `eval`, `close`, et `identify`. Mais environ 25 méthodes listées dans `BROWSER_METHODS` (click, dblclick, hover, fill, type, press, select, check, scroll, snapshot, screenshot, get, is, find, highlight, wait, console, errors, cookies, storage, state, tab, addinitscript, open-split) retournent `"browser.{method} not yet implemented"`. Le module `automation.rs` dans wmux-browser a une implémentation partielle pour certaines de ces méthodes, mais la majorité ne sont pas branchées dans `handle_browser_command`.
-
-**À faire:**
-- Brancher les méthodes d'automation implémentées dans `automation.rs` au handler `handle_browser_command`
-- Implémenter les méthodes manquantes dans `automation.rs`
-- Ajouter screenshot via CapturePreview de WebView2
-
----
-
-## 10. Port scanning — DONNÉES NON EXPLOITÉES VISUELLEMENT
-
-**Fichiers concernés:**
-- `wmux-core/src/port_scanner.rs` — Scanner netstat fonctionnel
-- `wmux-core/src/app_state/actor.rs` — Scan périodique (15s) via `port_scan_interval`
-
-**Problème:** L'actor scanne les ports en écoute toutes les 15 secondes et stocke le résultat dans `Workspace::ports` via `AppCommand::UpdatePorts`. Les données sont collectées, mais **jamais affichées** à l'utilisateur — ni dans la sidebar, ni dans la status bar, ni ailleurs dans l'UI.
-
-**À faire:**
-- Afficher les ports en écoute dans la sidebar (section metadata par workspace)
-- Ou dans la status bar du workspace actif
-- Ou dans un tooltip au hover d'un workspace
+**Fichiers :** `wmux-ui/src/notification_panel.rs`, `wmux-ui/src/sidebar.rs`, `wmux-ui/src/window/mod.rs`, `wmux-ui/src/window/handlers.rs`, `wmux-ui/src/window/render.rs`
 
 ---
 
-## 11. i18n — SYSTÈME CHARGÉ MAIS NON UTILISÉ
+### #4 — Sidebar port badges colorés
 
-**Fichiers concernés:**
-- `wmux-config/src/locale.rs` — Système i18n complet (en + fr)
-- `resources/locales/en.toml`, `fr.toml`
+**Réf.** `wmux_sidebar_workspace_details_view.png`
+**Prérequis :** aucun
 
-**Problème:** Le système de localisation est entièrement implémenté avec détection de la langue système, chargement TOML, lookup par clé en dot-notation. Cependant, **aucune chaîne utilisateur dans l'UI n'utilise ce système**. Toutes les chaînes sont hardcodées en anglais: `"New Workspace"`, `"WORKSPACES"`, `"No matches"`, `"Split Right"`, etc. Les multiples `TODO(L2_16)` dans le code le confirment.
+Ports actuellement en texte plain. Maquette = pills colorés avec fond + texte.
 
-**À faire:**
-- Instancier `Locale` au démarrage (depuis la config `language`)
-- Passer la locale dans `UiState`
-- Remplacer toutes les chaînes hardcodées par des appels `locale.t("key")`
+**Scope :**
+- Retirer les ports de `build_info_text()`
+- Ajouter des quads pill arrondis + créer glyphon `Buffer` par port visible **dans la même implémentation**
+- Couleurs cyclées : accent, success, warning, dot_purple, dot_cyan (fond à 15% alpha)
+- Texte du port (":3000") centré dans le pill
 
----
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. Lancer `python -m http.server 3000`
+3. Attendre ~15s (scan ports)
+4. La sidebar montre un badge pill coloré `:3000` avec fond bleu translucide et texte blanc
 
-## 12. Config keybindings — CHARGÉ MAIS NON UTILISÉ
-
-**Fichiers concernés:**
-- `wmux-config/src/config.rs` — Champ `keybindings: HashMap<String, String>`
-
-**Problème:** Le config supporte un champ `keybindings` pour personnaliser les raccourcis, mais `ShortcutMap` utilise des bindings hardcodés. Le HashMap est chargé depuis le fichier config mais jamais lu par `ShortcutMap::match_shortcut()`.
-
-**À faire:**
-- Passer la config keybindings à `ShortcutMap`
-- Implémenter le parsing des keybindings customisés
-- Appliquer les overrides sur les bindings par défaut
+**Fichiers :** `wmux-ui/src/sidebar.rs`
 
 ---
 
-## Résumé — Liste des tâches prioritaires
+### #5 — Sidebar mode collapsed (icon-only)
 
-| # | Feature | Effort | Impact |
-|---|---------|--------|--------|
-| 1 | **Enregistrer SystemHandler dans le router IPC** | Trivial (1 ligne) | Les commandes system.ping/capabilities/identify deviennent accessibles |
-| 2 | **Brancher le NotificationPanel** | Moyen | Le panel de notifications (déjà codé) devient visible et fonctionnel |
-| 3 | **Brancher le CommandPalette** | Moyen-haut | La palette de commandes (déjà codée) devient visible et fonctionnelle |
-| 4 | **Rendre la progress bar + logs sidebar** | Moyen | Les données déjà collectées via IPC deviennent visibles |
-| 5 | **Afficher les ports scannés** | Faible | Les ports en écoute (déjà détectés) deviennent visibles |
-| 6 | **Brancher les browser automation methods** | Moyen | Les 25+ méthodes déjà listées dans le handler deviennent fonctionnelles |
-| 7 | **Brancher l'auto-updater** | Moyen | Les utilisateurs sont notifiés des nouvelles versions |
-| 8 | **Brancher i18n dans l'UI** | Moyen-haut | L'application supporte le français et autres langues |
-| 9 | **Implémenter les CLI notify commands** | Moyen | Les commandes notify create/list/clear fonctionnent |
-| 10 | **Brancher les config keybindings** | Moyen | Les utilisateurs peuvent personnaliser les raccourcis |
-| 11 | **Implémenter ToggleDevTools** | Faible | Le raccourci F12 fait quelque chose |
-| 12 | **Implémenter SSH remote** | Haut | Les workspaces distants fonctionnent (dépend du daemon Go) |
+**Réf.** `wmux_multi_pane_layout_with_browser_preview.png`
+**Prérequis :** #4 (badges doivent se masquer en collapsed)
+
+**Scope :**
+- Ajouter `collapsed: bool` à `SidebarState`
+- Collapsed = 48px, icônes workspace centrées, aucun texte ni badge
+- Raccourci `Ctrl+B` pour toggle
+- Viewport s'adapte (sidebar width = 48)
+
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. `Ctrl+B` → sidebar réduite à une colonne d'icônes (~48px)
+3. Noms, branches, ports disparaissent
+4. Contenu des panes s'élargit
+5. `Ctrl+B` → sidebar pleine largeur
+6. Clic sur icône en collapsed → switch de workspace
+
+**Fichiers :** `wmux-ui/src/sidebar.rs`, `wmux-ui/src/shortcuts.rs`, `wmux-ui/src/window/render.rs`
+
+---
+
+### #6 — Tab bar : style toggle shell/browser
+
+**Réf.** `wmux_terminal_dashboard_main_view.png`
+**Prérequis :** aucun
+
+**Scope :**
+- Toggle 2 segments "shell | browser" quand le pane a 1 terminal + 1 browser
+- Sinon : pills individuelles avec icônes terminal/globe améliorées
+
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. Ouvrir un browser dans un pane (bouton globe)
+3. Tab bar montre "shell | browser" en toggle
+4. Cliquer "browser" → panel browser
+5. Cliquer "shell" → retour terminal
+
+**Fichiers :** `wmux-render/src/pane.rs`, `wmux-ui/src/window/render.rs`
+
+---
+
+### #7 — Custom title bar
+
+**Réf.** `wmux_command_palette_overlay.png`
+**Prérequis :** #1 à #6 terminés (stabiliser avant de toucher au window chrome)
+
+**Scope :**
+- `WM_NCCALCSIZE` pour supprimer la barre standard
+- `WM_NCHITTEST` pour drag, close, min, max
+- Rendu wgpu : fond + texte "wmux" centré + boutons Codicons
+- Snap Windows (bords/haut)
+- Fallback vers barre standard si erreur
+
+**Vérification :**
+1. `cargo run -p wmux-app`
+2. Barre titre custom avec "wmux" centré
+3. Drag → fenêtre se déplace
+4. Boutons close/min/max fonctionnent
+5. Double-clic → maximize/restore
+6. Drag vers haut → snap maximize
+
+**Fichiers :** `wmux-ui/src/effects.rs`, `wmux-ui/src/window/event_loop.rs`, `wmux-ui/src/window/render.rs`
+
+---
+
+### #8 — Typographie Inter (optionnel)
+
+**Prérequis :** aucun
+
+**Scope :** Bundler Inter Regular + Bold, charger pour UI chrome.
+
+**Vérification :** Comparer visuellement avant/après.
+
+**Fichiers :** `wmux-render/src/`, `wmux-ui/src/typography.rs`
+
+---
+
+## Non-Stitch (priorité basse)
+
+| # | Feature | Effort | Vérification |
+|---|---------|--------|-------------|
+| 9 | Sidebar progress bar + activity log | Moyen | IPC `sidebar.set_progress` → barre visible |
+| 10 | Auto-updater | Moyen | Au démarrage → notification si MAJ dispo |
+| 11 | i18n dans l'UI | Haut | Config `language = fr` → UI en français |
+| 12 | Config keybindings custom | Moyen | Config `keybind = ctrl+k=split_right` → raccourci fonctionne |
+| 13 | CLI notify commands | Moyen | `wmux notify create` → notification dans le panel (requiert #3) |
+| 14 | CLI SSH + daemon Go | Haut | `wmux ssh connect user@host` → workspace distant |
+| 15 | Browser automation (25+ méthodes) | Haut | `wmux-cli browser click "#btn"` → clic WebView2 |
+| 16 | ToggleDevTools (F12) | Faible | F12 → WebView2 devtools ou debug overlay |

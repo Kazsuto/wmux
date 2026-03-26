@@ -48,6 +48,7 @@ Detailed rules in `.claude/rules/` (10 path-scoped files, loaded automatically).
 ### Rendering
 - **NEVER** use iced/egui for terminal grid — custom wgpu renderer only
 - **NEVER** place WebView2 inside the wgpu surface — separate child HWND always
+- **NEVER** ship a visual feature that requires multiple render layers (quads + text + icons) without implementing ALL layers — a background quad without its text label is a visual artifact, not a feature. Implement complete or don't implement at all.
 - wgpu 28 + glyphon 0.10 have breaking API changes from prior versions — **read `.claude/rules/rendering.md` before touching render code**
 
 ### Architecture

@@ -28,6 +28,10 @@ pub enum ThemeError {
 // Static theme content embedded at compile time.
 const BUNDLED_THEMES: &[(&str, &str)] = &[
     (
+        "digital-obsidian",
+        include_str!("../../../resources/themes/digital-obsidian.conf"),
+    ),
+    (
         "wmux-default",
         include_str!("../../../resources/themes/wmux-default.conf"),
     ),
@@ -47,6 +51,10 @@ const BUNDLED_THEMES: &[(&str, &str)] = &[
     (
         "one-dark",
         include_str!("../../../resources/themes/one-dark.conf"),
+    ),
+    (
+        "stitch-blue",
+        include_str!("../../../resources/themes/stitch-blue.conf"),
     ),
 ];
 
@@ -68,9 +76,9 @@ impl ThemeEngine {
         }
     }
 
-    /// Return the wmux-default dark theme.
+    /// Return the default dark theme (Digital Obsidian).
     pub fn default_theme() -> Theme {
-        parse_theme_content("wmux-default", BUNDLED_THEMES[0].1)
+        parse_theme_content(BUNDLED_THEMES[0].0, BUNDLED_THEMES[0].1)
     }
 
     /// Load a theme by name from bundled themes or the user themes directory.
@@ -351,14 +359,14 @@ mod tests {
     #[test]
     fn default_theme_has_all_16_colors() {
         let theme = ThemeEngine::default_theme();
-        assert_eq!(theme.name, "wmux-default");
+        assert_eq!(theme.name, "digital-obsidian");
         // All 16 ANSI slots must be non-default-zero after parse
-        // (wmux-default.conf explicitly sets all 16)
+        // (digital-obsidian.conf explicitly sets all 16)
         for (i, &color) in theme.palette.ansi.iter().enumerate() {
             assert_ne!(
                 color,
                 (0u8, 0u8, 0u8),
-                "ANSI color {i} is zero — wmux-default.conf must set all 16 palette entries"
+                "ANSI color {i} is zero — digital-obsidian.conf must set all 16 palette entries"
             );
         }
     }
@@ -367,6 +375,7 @@ mod tests {
     fn list_themes_contains_bundled() {
         let engine = ThemeEngine::new();
         let themes = engine.list_themes();
+        assert!(themes.contains(&"digital-obsidian".to_string()));
         assert!(themes.contains(&"wmux-default".to_string()));
         assert!(themes.contains(&"catppuccin-mocha".to_string()));
         assert!(themes.contains(&"dracula".to_string()));
@@ -404,7 +413,7 @@ mod tests {
         let result = engine.set_theme("no-such-theme");
         assert!(result.is_err());
         // Current theme must remain unchanged
-        assert_eq!(engine.current_theme().name, "wmux-default");
+        assert_eq!(engine.current_theme().name, "digital-obsidian");
     }
 
     #[test]
@@ -426,6 +435,6 @@ mod tests {
     #[test]
     fn new_engine_uses_default_theme() {
         let engine = ThemeEngine::new();
-        assert_eq!(engine.current_theme().name, "wmux-default");
+        assert_eq!(engine.current_theme().name, "digital-obsidian");
     }
 }

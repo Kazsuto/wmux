@@ -9,7 +9,10 @@ use crate::f32_to_glyphon_color;
 const PANEL_WIDTH: f32 = 360.0;
 
 /// Height of each notification item in the panel.
-const ITEM_HEIGHT: f32 = 72.0;
+const ITEM_HEIGHT: f32 = 82.0;
+
+/// Width of the severity indicator stripe on the left edge.
+const SEVERITY_STRIPE_WIDTH: f32 = 4.0;
 
 /// Padding inside each notification item.
 const ITEM_PADDING: f32 = 8.0;
@@ -142,8 +145,14 @@ impl NotificationPanel {
                 }
             };
 
-            // Left severity stripe (2px)
-            quads.push_quad(panel_x, item_y, 2.0, ITEM_HEIGHT, stripe_color);
+            // Left severity stripe
+            quads.push_quad(
+                panel_x,
+                item_y,
+                SEVERITY_STRIPE_WIDTH,
+                ITEM_HEIGHT,
+                stripe_color,
+            );
 
             // Severity background tint (subtle muted background)
             quads.push_rounded_quad(

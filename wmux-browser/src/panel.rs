@@ -111,6 +111,9 @@ impl BrowserPanel {
         let host = create_host_hwnd(parent_hwnd).map_err(|e| {
             BrowserError::General(format!("failed to create WebView2 host HWND: {e}"))
         })?;
+        // Store the host HWND immediately so Drop cleans it up on error paths.
+        self.host_hwnd = Some(host);
+        self.parent_hwnd = parent_hwnd;
 
         let (tx, rx) = mpsc::sync_channel(1);
 
@@ -128,8 +131,7 @@ impl BrowserPanel {
             }),
             Box::new(move |error_code, controller| {
                 error_code?;
-                tx.send(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)))
-                    .expect("send controller over mpsc channel");
+                let _ = tx.send(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
                 Ok(())
             }),
         )
@@ -151,8 +153,6 @@ impl BrowserPanel {
 
         tracing::info!(surface_id = %self.surface_id, "BrowserPanel attached to HWND");
 
-        self.host_hwnd = Some(host);
-        self.parent_hwnd = parent_hwnd;
         self.controller = Some(controller);
         self.webview = Some(webview);
         Ok(())
