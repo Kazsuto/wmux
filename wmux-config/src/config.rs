@@ -20,6 +20,7 @@ pub struct Config {
     pub sidebar_width: u16,
     pub language: String,
     pub inactive_pane_opacity: f32,
+    pub browser_default_url: String,
 }
 
 impl Default for Config {
@@ -37,6 +38,7 @@ impl Default for Config {
             sidebar_width: 260,
             language: "en".to_string(),
             inactive_pane_opacity: 0.7,
+            browser_default_url: "https://duckduckgo.com".to_string(),
         }
     }
 }
@@ -179,6 +181,7 @@ fn apply_values(config: &mut Config, values: &[(String, String)]) {
                 ),
             },
             "language" => config.language = value.clone(),
+            "browser-default-url" => config.browser_default_url = value.clone(),
             "inactive-pane-opacity" => match value.parse::<f32>() {
                 Ok(v) if v.is_finite() && (0.0..=1.0).contains(&v) => {
                     config.inactive_pane_opacity = v;
@@ -251,6 +254,7 @@ mod tests {
         assert_eq!(c.language, "en");
         assert!(c.keybindings.is_empty());
         assert!(c.palette.iter().all(|p| p.is_none()));
+        assert_eq!(c.browser_default_url, "https://duckduckgo.com");
     }
 
     #[test]
@@ -381,6 +385,13 @@ mod tests {
         assert_eq!(c.keybindings.get("ctrl+n"), Some(&"new_workspace".into()));
         assert_eq!(c.keybindings.get("ctrl+t"), Some(&"new_tab".into()));
         assert_eq!(c.keybindings.get("ctrl+w"), Some(&"close".into()));
+    }
+
+    #[test]
+    fn browser_default_url_parsing() {
+        let content = "browser-default-url = https://startpage.com\n";
+        let c = content.parse::<Config>().unwrap();
+        assert_eq!(c.browser_default_url, "https://startpage.com");
     }
 
     #[test]

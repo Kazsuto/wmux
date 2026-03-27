@@ -69,18 +69,12 @@ pub struct UiChrome {
     // ── Accent System ─────────────────────────────────────────────────
     /// Primary accent — ANSI blue (palette index 4) with S>=80%.
     pub accent: [f32; 4],
-    /// Hover accent — accent + 8L lightness.
-    pub accent_hover: [f32; 4],
     /// Muted accent — accent at 30% alpha.
     pub accent_muted: [f32; 4],
     /// Glow outer — accent at 20% alpha (Focus Glow halo).
     pub accent_glow: [f32; 4],
     /// Glow inner — accent at 60% alpha (Focus Glow 1px ring).
     pub accent_glow_core: [f32; 4],
-    /// Tint — accent at 8% alpha (overlay ambient coloring).
-    pub accent_tint: [f32; 4],
-    /// Pressed accent — accent darkened by 10% lightness.
-    pub accent_pressed: [f32; 4],
 
     // ── Text Hierarchy ────────────────────────────────────────────────
     /// Primary text — matches theme foreground (100% alpha).
@@ -99,13 +93,11 @@ pub struct UiChrome {
     pub border_subtle: [f32; 4],
     /// Default border — surface_3 at 60% alpha.
     pub border_default: [f32; 4],
-    /// Strong border — surface_3 at 80% alpha.
-    pub border_strong: [f32; 4],
     /// Glow border — accent at 45% alpha (luminous separators).
     pub border_glow: [f32; 4],
 
     // ── Overlays ──────────────────────────────────────────────────────
-    /// Dim overlay — black at 50% alpha (command palette backdrop).
+    /// Dim overlay — background-tinted at 50% alpha (command palette backdrop).
     pub overlay_dim: [f32; 4],
     /// Tint overlay — accent at 8% alpha (layered on overlay_dim).
     pub overlay_tint: [f32; 4],
@@ -123,8 +115,6 @@ pub struct UiChrome {
     pub warning: [f32; 4],
     /// Warning muted — warning at 12% alpha.
     pub warning_muted: [f32; 4],
-    /// Info — same as accent.
-    pub info: [f32; 4],
     /// Info muted — accent at 12% alpha.
     pub info_muted: [f32; 4],
 
@@ -135,7 +125,7 @@ pub struct UiChrome {
     pub search_match: [f32; 4],
     /// Active search match highlight — warning color at 50% alpha.
     pub search_match_active: [f32; 4],
-    /// Drop shadow color — black at 25% alpha (dark themes).
+    /// Drop shadow color — background-tinted at 20-30% alpha.
     pub shadow: [f32; 4],
     /// Shadow small — sigma=3, offset_y=1 (tab bar, status bar).
     pub shadow_sm: ShadowDepth,

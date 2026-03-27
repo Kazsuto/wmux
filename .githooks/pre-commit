@@ -1,0 +1,19 @@
+#!/bin/bash
+# Pre-commit hook — runs clippy, fmt check, and tests before every commit.
+# Blocks the commit if any step fails.
+
+set -e
+
+echo "=== pre-commit: cargo fmt --all -- --check ==="
+cargo fmt --all -- --check
+# --check = vérifie sans modifier. Si le code n'est pas formaté, le commit échoue.
+# Tu dois lancer "cargo fmt --all" toi-même avant de recommiter.
+
+echo "=== pre-commit: cargo clippy --workspace -- -W clippy::all -D warnings ==="
+cargo clippy --workspace -- -W clippy::all -D warnings
+# -D warnings = traite les warnings comme des erreurs → bloque le commit.
+
+echo "=== pre-commit: cargo test --workspace ==="
+cargo test --workspace
+
+echo "=== pre-commit: all checks passed ==="

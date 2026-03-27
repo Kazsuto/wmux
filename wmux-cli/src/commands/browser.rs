@@ -8,8 +8,8 @@ use crate::output::format_response;
 pub enum BrowserCommands {
     /// Open a browser tab in the focused pane
     Open {
-        /// URL to navigate to (default: about:blank)
-        #[arg(long, default_value = "about:blank")]
+        /// URL to navigate to (default: https://duckduckgo.com)
+        #[arg(long, default_value = "https://duckduckgo.com")]
         url: String,
     },
     /// Navigate an existing browser panel to a URL

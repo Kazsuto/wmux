@@ -6,8 +6,11 @@
 pub enum WmuxEvent {
     /// A pane has new content — request a redraw to fetch fresh render data.
     PtyOutput,
-    /// The shell process exited.
-    PtyExited { success: bool },
+    /// The shell process in a specific pane exited.
+    PtyExited {
+        pane_id: wmux_core::PaneId,
+        success: bool,
+    },
     /// A notification should be shown as a Windows Toast.
     ShowToast(Box<wmux_core::Notification>),
     /// Focus moved to a new pane (e.g., after a split). UI must update `focused_pane`.

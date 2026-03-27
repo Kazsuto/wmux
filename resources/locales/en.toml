@@ -14,10 +14,18 @@ recent = "Recent"
 commands = "Commands"
 
 [notification]
-clear_all = "Clear All"
+clear_all = "Clear all"
 mark_read = "Mark as Read"
 notifications = "Notifications"
 no_notifications = "No notifications"
+severity_info = "Info"
+severity_warning = "Warning"
+severity_error = "Error"
+severity_success = "Success"
+time_just_now = "just now"
+time_minutes_ago = "{n} min ago"
+time_hours_ago = "{n}h ago"
+time_days_ago = "{n}d ago"
 
 [terminal]
 copy = "Copy"
@@ -68,7 +76,14 @@ reload = "Reload"
 back = "Back"
 forward = "Forward"
 address_bar = "Address"
+address_placeholder = "Enter URL or search..."
 stop = "Stop"
+
+[tab]
+shell = "Shell"
+browser = "Browser"
+close_tab = "Close Tab"
+rename_tab = "Rename Tab"
 
 [settings]
 font = "Font"

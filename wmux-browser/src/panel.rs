@@ -223,7 +223,13 @@ impl BrowserPanel {
         // SAFETY: SetBounds takes a RECT by value. `rect` is fully initialized
         // on the stack and valid for this COM call.
         unsafe { controller.SetBounds(rect) }
-            .map_err(|e| BrowserError::General(format!("SetBounds: {e}")))
+            .map_err(|e| BrowserError::General(format!("SetBounds: {e}")))?;
+
+        // Notify WebView2 that the host moved — required for correct hit-testing
+        // and input routing when the parent window is dragged.
+        // SAFETY: controller is a valid STA-bound COM object on the UI thread.
+        unsafe { controller.NotifyParentWindowPositionChanged() }
+            .map_err(|e| BrowserError::General(format!("NotifyParentWindowPositionChanged: {e}")))
     }
 
     /// Show or hide the browser panel (host HWND + WebView2 controller).

@@ -55,7 +55,7 @@ pub enum ShortcutAction {
     Paste,
 
     // Sidebar
-    /// Ctrl+B — toggle sidebar visibility.
+    /// Ctrl+B — toggle sidebar between expanded and collapsed (icon-only) mode.
     ToggleSidebar,
 
     // Notifications

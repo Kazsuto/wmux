@@ -10,6 +10,7 @@ use crate::types::{PaneId, SurfaceId, WorkspaceId};
 use super::{
     AppCommand, AppEvent, FocusDirection, PaneRenderData, PaneSurfaceInfo, WorkspaceSnapshot,
 };
+use crate::notification::Notification;
 use crate::pane_registry::PaneState;
 
 // ─── Handle ──────────────────────────────────────────────────────────────────
@@ -38,6 +39,17 @@ impl AppStateHandle {
             .is_err()
         {
             tracing::warn!(pane_id = %pane_id, "command channel full, RegisterPane dropped");
+        }
+    }
+
+    /// Store the child shell PID for a pane. Fire-and-forget.
+    pub fn set_child_pid(&self, pane_id: PaneId, pid: u32) {
+        if self
+            .cmd_tx
+            .try_send(AppCommand::SetChildPid { pane_id, pid })
+            .is_err()
+        {
+            tracing::warn!(pane_id = %pane_id, "command channel full, SetChildPid dropped");
         }
     }
 
@@ -599,12 +611,33 @@ impl AppStateHandle {
     pub fn update_ui_state(
         &self,
         sidebar_width: u16,
+        sidebar_collapsed: bool,
         window: Option<crate::session::WindowGeometry>,
     ) {
         let _ = self.cmd_tx.try_send(AppCommand::UpdateUiState {
             sidebar_width,
+            sidebar_collapsed,
             window,
         });
+    }
+
+    /// List notifications (newest first, up to `limit`).
+    pub async fn list_notifications(&self, limit: usize) -> Vec<Notification> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::ListNotifications { limit, reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Clear all non-cleared notifications. Fire-and-forget.
+    pub async fn clear_all_notifications(&self) {
+        let _ = self.cmd_tx.send(AppCommand::ClearAllNotifications).await;
     }
 
     /// Shut down the actor. Fire-and-forget.

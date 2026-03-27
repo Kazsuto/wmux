@@ -16,8 +16,8 @@ const PADDING_Y: f32 = 10.0;
 /// Info text below workspace name — uses Caption token.
 const INFO_FONT_SIZE: f32 = typography::CAPTION_FONT_SIZE;
 const INFO_LINE_HEIGHT: f32 = typography::CAPTION_LINE_HEIGHT;
-/// Maximum info lines below the workspace name (status + git + cwd + ports).
-const MAX_INFO_LINES: f32 = 4.0;
+/// Maximum info lines below the workspace name (status + git + cwd).
+const MAX_INFO_LINES: f32 = 3.0;
 /// Maximum listening ports displayed per workspace.
 const MAX_DISPLAY_PORTS: usize = 5;
 const ACCENT_BAR_WIDTH: f32 = 3.0;
@@ -31,12 +31,32 @@ const SECTION_HEADER_HEIGHT: f32 = 42.0;
 const DRAG_THRESHOLD: f32 = 5.0;
 /// Notification badge diameter.
 const BADGE_SIZE: f32 = 18.0;
+/// Port badge pill height.
+const PORT_PILL_HEIGHT: f32 = 18.0;
+/// Horizontal padding inside a port pill.
+const PORT_PILL_PADDING_X: f32 = 6.0;
+/// Gap between adjacent port pills.
+const PORT_PILL_GAP: f32 = 4.0;
+/// Corner radius for port pills (fully rounded).
+const PORT_PILL_RADIUS: f32 = PORT_PILL_HEIGHT / 2.0;
+/// Background alpha for port pill quads (translucent color wash).
+const PORT_PILL_BG_ALPHA: f32 = 0.15;
+/// Approximate average glyph advance ratio for Segoe UI at badge font size.
+const BADGE_CHAR_WIDTH_RATIO: f32 = 0.62;
 /// Hit zone width for the resize handle on the sidebar right edge.
 const RESIZE_HIT_ZONE: f32 = 5.0;
 /// Minimum sidebar width when resizing.
 pub const MIN_SIDEBAR_WIDTH: f32 = 180.0;
 /// Maximum sidebar width when resizing.
 pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
+/// Fixed width of the sidebar in collapsed (icon-only) mode.
+pub const COLLAPSED_WIDTH: f32 = 48.0;
+/// Row height in collapsed mode (one icon per workspace).
+const COLLAPSED_ROW_HEIGHT: f32 = 48.0;
+/// Diameter of the workspace color circle in collapsed mode.
+const COLLAPSED_ICON_SIZE: f32 = 28.0;
+/// Top padding before first collapsed icon row.
+const COLLAPSED_TOP_PADDING: f32 = 8.0;
 
 /// Sidebar interaction state.
 #[derive(Debug, Clone)]
@@ -54,6 +74,7 @@ pub enum SidebarInteraction {
         index: usize,
         text: String,
         cursor: usize,
+        selected_all: bool,
     },
     /// Mouse hovering over the resize edge.
     ResizeHover,
@@ -65,14 +86,22 @@ pub enum SidebarInteraction {
 pub struct SidebarState {
     pub visible: bool,
     pub width: f32,
+    /// Whether the sidebar is in collapsed (icon-only) mode.
+    pub collapsed: bool,
     /// Current mouse interaction state.
     pub interaction: SidebarInteraction,
     /// One glyphon Buffer per workspace row for the name label.
     name_buffers: Vec<Buffer>,
     /// One glyphon Buffer per workspace row for environment info (pane count, git, cwd, ports).
     info_buffers: Vec<Buffer>,
+    /// One glyphon Buffer per workspace row for notification badge count.
+    badge_buffers: Vec<Buffer>,
+    /// Port pill text buffers — outer Vec per workspace, inner Vec per visible port.
+    port_buffers: Vec<Vec<Buffer>>,
     /// Glyphon Buffer for the inline editing text.
     edit_buffer: Option<Buffer>,
+    /// Precomputed cursor X offset (relative to text_x) from glyphon layout runs.
+    edit_cursor_x_offset: f32,
     /// Glyphon Buffer for the section header label.
     header_buffer: Option<Buffer>,
     /// Number of workspaces rendered last frame (to detect changes).
@@ -88,10 +117,14 @@ impl SidebarState {
         Self {
             visible: true,
             width: clamped,
+            collapsed: false,
             interaction: SidebarInteraction::Idle,
             name_buffers: Vec::new(),
             info_buffers: Vec::new(),
+            badge_buffers: Vec::new(),
+            port_buffers: Vec::new(),
             edit_buffer: None,
+            edit_cursor_x_offset: 0.0,
             header_buffer: None,
             last_workspace_count: 0,
             last_names_hash: 0,
@@ -106,18 +139,36 @@ impl SidebarState {
         tracing::debug!(visible = self.visible, "sidebar toggled");
     }
 
-    /// Effective width: actual width when visible, 0 when hidden.
+    /// Toggle between collapsed (icon-only) and expanded modes.
+    pub fn toggle_collapsed(&mut self) {
+        self.collapsed = !self.collapsed;
+        self.interaction = SidebarInteraction::Idle;
+        tracing::debug!(collapsed = self.collapsed, "sidebar collapsed toggled");
+    }
+
+    /// Effective width: collapsed width when collapsed, full width when expanded, 0 when hidden.
     pub fn effective_width(&self) -> f32 {
-        if self.visible {
-            self.width
-        } else {
+        if !self.visible {
             0.0
+        } else if self.collapsed {
+            COLLAPSED_WIDTH
+        } else {
+            self.width
+        }
+    }
+
+    /// Row height: smaller in collapsed mode.
+    pub fn row_height(&self) -> f32 {
+        if self.collapsed {
+            COLLAPSED_ROW_HEIGHT
+        } else {
+            ROW_HEIGHT
         }
     }
 
     /// Test if x is within the resize handle zone at the right edge.
     pub fn hit_test_resize_edge(&self, px: f32) -> bool {
-        if !self.visible {
+        if !self.visible || self.collapsed {
             return false;
         }
         let edge = self.width;
@@ -135,11 +186,17 @@ impl SidebarState {
     ///
     /// Returns the 0-based workspace index, or `None` if out of range.
     pub fn hit_test_row(&self, y: f32, workspace_count: usize) -> Option<usize> {
-        if y < SECTION_HEADER_HEIGHT {
+        let top_offset = if self.collapsed {
+            COLLAPSED_TOP_PADDING
+        } else {
+            SECTION_HEADER_HEIGHT
+        };
+        if y < top_offset {
             return None;
         }
-        let adjusted_y = y - SECTION_HEADER_HEIGHT;
-        let index = (adjusted_y / ROW_HEIGHT) as usize;
+        let adjusted_y = y - top_offset;
+        let rh = self.row_height();
+        let index = (adjusted_y / rh) as usize;
         if index < workspace_count {
             Some(index)
         } else {
@@ -152,8 +209,13 @@ impl SidebarState {
     /// Returns the index where the dragged workspace would be inserted,
     /// based on whether the cursor is in the top or bottom half of a row.
     pub fn drag_target_index(&self, current_y: f32, workspace_count: usize) -> usize {
-        let adjusted_y = current_y - SECTION_HEADER_HEIGHT;
-        let row_f = adjusted_y / ROW_HEIGHT;
+        let top_offset = if self.collapsed {
+            COLLAPSED_TOP_PADDING
+        } else {
+            SECTION_HEADER_HEIGHT
+        };
+        let adjusted_y = current_y - top_offset;
+        let row_f = adjusted_y / self.row_height();
         let row = row_f as usize;
         let frac = row_f - row as f32;
         if row >= workspace_count {
@@ -181,24 +243,30 @@ impl SidebarState {
 
     /// Update the edit buffer text for rendering.
     pub fn update_edit_buffer(&mut self, font_system: &mut glyphon::FontSystem) {
-        if let SidebarInteraction::Editing { ref text, .. } = self.interaction {
-            // Match edit box width from render_quads: card_w - bar - pad - icon - pad
-            let card_w = self.width - CARD_MARGIN_X * 2.0 - 1.0;
-            let text_width = card_w - ACCENT_BAR_WIDTH - PADDING_X - 22.0 - PADDING_X;
+        if let SidebarInteraction::Editing {
+            ref text, cursor, ..
+        } = self.interaction
+        {
+            // Single-line edit: use unlimited width to prevent wrapping.
+            // Visual clipping is handled by the TextArea bounds.
             let metrics = Metrics::new(SIDEBAR_FONT_SIZE, SIDEBAR_LINE_HEIGHT);
             let attrs = Attrs::new().family(Family::Name("Segoe UI"));
 
+            // Set edit_buffer with full text for rendering.
             let buf = self
                 .edit_buffer
                 .get_or_insert_with(|| Buffer::new(font_system, metrics));
             buf.set_metrics(font_system, metrics);
-            buf.set_size(
-                font_system,
-                Some(text_width.max(1.0)),
-                Some(SIDEBAR_LINE_HEIGHT),
-            );
+            buf.set_size(font_system, Some(10000.0), Some(SIDEBAR_LINE_HEIGHT));
             buf.set_text(font_system, text, &attrs, Shaping::Advanced, None);
             buf.shape_until_scroll(font_system, false);
+
+            // Cursor X via proportional interpolation:
+            // total_line_width * (cursor_position / char_count).
+            // Pure math — cannot get stuck regardless of font shaping quirks.
+            let total_w = buf.layout_runs().next().map_or(0.0, |run| run.line_w);
+            let char_count = text.chars().count().max(1) as f32;
+            self.edit_cursor_x_offset = total_w * (cursor as f32 / char_count);
         }
     }
 
@@ -275,9 +343,71 @@ impl SidebarState {
             info.shape_until_scroll(font_system, false);
         }
 
+        // Badge buffers (notification count per workspace).
+        let badge_metrics =
+            Metrics::new(typography::BADGE_FONT_SIZE, typography::BADGE_LINE_HEIGHT);
+        let badge_attrs = Attrs::new()
+            .family(Family::Name("Segoe UI"))
+            .weight(glyphon::Weight::BOLD);
+        self.badge_buffers
+            .resize_with(workspaces.len(), || Buffer::new(font_system, badge_metrics));
+        for (i, ws) in workspaces.iter().enumerate() {
+            let buf = &mut self.badge_buffers[i];
+            if ws.unread_count > 0 {
+                let count_text = if ws.unread_count > 99 {
+                    "99+".to_string()
+                } else {
+                    ws.unread_count.to_string()
+                };
+                buf.set_metrics(font_system, badge_metrics);
+                buf.set_size(font_system, Some(BADGE_SIZE), Some(BADGE_SIZE));
+                buf.set_text(
+                    font_system,
+                    &count_text,
+                    &badge_attrs,
+                    Shaping::Advanced,
+                    None,
+                );
+                buf.shape_until_scroll(font_system, false);
+            }
+        }
+
+        // Port pill buffers — one Buffer per visible port per workspace.
+        let port_attrs = Attrs::new()
+            .family(Family::Name("Segoe UI"))
+            .weight(glyphon::Weight(600));
+        self.port_buffers.resize_with(workspaces.len(), Vec::new);
+        for (i, ws) in workspaces.iter().enumerate() {
+            let port_count = ws.ports.len().min(MAX_DISPLAY_PORTS);
+            let bufs = &mut self.port_buffers[i];
+            bufs.resize_with(port_count, || Buffer::new(font_system, badge_metrics));
+            for (j, port) in ws.ports.iter().take(MAX_DISPLAY_PORTS).enumerate() {
+                let text = format!(":{port}");
+                let pill_w = port_pill_width(*port);
+                let buf = &mut bufs[j];
+                buf.set_metrics(font_system, badge_metrics);
+                buf.set_size(font_system, Some(pill_w), Some(PORT_PILL_HEIGHT));
+                buf.set_text(font_system, &text, &port_attrs, Shaping::Advanced, None);
+                buf.shape_until_scroll(font_system, false);
+            }
+        }
+
         // Truncate if workspace count decreased.
         self.name_buffers.truncate(workspaces.len());
         self.info_buffers.truncate(workspaces.len());
+        self.badge_buffers.truncate(workspaces.len());
+        self.port_buffers.truncate(workspaces.len());
+    }
+
+    /// Port badge color palette — cycled per port index.
+    fn port_palette(ui_chrome: &UiChrome) -> [[f32; 4]; 5] {
+        [
+            ui_chrome.accent,     // blue
+            ui_chrome.success,    // green
+            ui_chrome.warning,    // yellow
+            ui_chrome.dot_purple, // purple
+            ui_chrome.dot_cyan,   // cyan
+        ]
     }
 
     /// Workspace identity color palette — cycled per workspace index.
@@ -306,7 +436,65 @@ impl SidebarState {
         }
 
         let _s = scale_factor; // available for future per-element scaling
-        let w = self.width;
+        let w = self.effective_width();
+        let dot_palette = Self::workspace_palette(ui_chrome);
+
+        // ── Collapsed mode: icon-only rendering ─────────────────────────────
+        if self.collapsed {
+            // Background + separator
+            quad_pipeline.push_quad(0.0, 0.0, w, surface_height, ui_chrome.surface_1);
+            quad_pipeline.push_quad(w - 1.0, 0.0, 1.0, surface_height, ui_chrome.border_subtle);
+
+            let icon_r = COLLAPSED_ICON_SIZE / 2.0;
+            let center_x = w / 2.0;
+
+            for (i, ws) in workspaces.iter().enumerate() {
+                let row_y = COLLAPSED_TOP_PADDING + i as f32 * COLLAPSED_ROW_HEIGHT;
+                let center_y = row_y + COLLAPSED_ROW_HEIGHT / 2.0;
+                let icon_x = center_x - icon_r;
+                let icon_y = center_y - icon_r;
+                let ws_color = dot_palette[i % dot_palette.len()];
+
+                let is_hover = matches!(self.interaction, SidebarInteraction::Hover(h) if h == i);
+
+                if ws.active {
+                    // Active: filled circle with full opacity
+                    quad_pipeline.push_rounded_quad(
+                        icon_x,
+                        icon_y,
+                        COLLAPSED_ICON_SIZE,
+                        COLLAPSED_ICON_SIZE,
+                        ws_color,
+                        icon_r,
+                    );
+                } else if is_hover {
+                    // Hover: translucent circle
+                    let hover_color = [ws_color[0], ws_color[1], ws_color[2], 0.5];
+                    quad_pipeline.push_rounded_quad(
+                        icon_x,
+                        icon_y,
+                        COLLAPSED_ICON_SIZE,
+                        COLLAPSED_ICON_SIZE,
+                        hover_color,
+                        icon_r,
+                    );
+                } else {
+                    // Inactive: dim circle
+                    let dim_color = [ws_color[0], ws_color[1], ws_color[2], 0.25];
+                    quad_pipeline.push_rounded_quad(
+                        icon_x,
+                        icon_y,
+                        COLLAPSED_ICON_SIZE,
+                        COLLAPSED_ICON_SIZE,
+                        dim_color,
+                        icon_r,
+                    );
+                }
+            }
+            return;
+        }
+
+        // ── Expanded mode ───────────────────────────────────────────────────
         let hover_color = [
             ui_chrome.surface_2[0],
             ui_chrome.surface_2[1],
@@ -322,8 +510,6 @@ impl SidebarState {
 
         // Section header area
         quad_pipeline.push_quad(0.0, 0.0, w, SECTION_HEADER_HEIGHT, ui_chrome.surface_1);
-
-        let dot_palette = Self::workspace_palette(ui_chrome);
 
         // Workspace card rows (offset by header height)
         for (i, ws) in workspaces.iter().enumerate() {
@@ -397,13 +583,44 @@ impl SidebarState {
                 );
             }
 
-            // Editing mode: draw input box background + border
-            if let SidebarInteraction::Editing { index, .. } = &self.interaction {
+            // Port pill badges (bottom of card)
+            if !ws.ports.is_empty() {
+                let port_colors = Self::port_palette(ui_chrome);
+                let pill_start_x = card_x + ACCENT_BAR_WIDTH + PADDING_X;
+                let pill_y = card_y + card_h - PADDING_Y - PORT_PILL_HEIGHT;
+                let avail_w = card_w - ACCENT_BAR_WIDTH - PADDING_X - PADDING_X;
+                let mut cur_x = pill_start_x;
+                for (j, port) in ws.ports.iter().take(MAX_DISPLAY_PORTS).enumerate() {
+                    let pill_w = port_pill_width(*port);
+                    if cur_x + pill_w - pill_start_x > avail_w {
+                        break;
+                    }
+                    let base = port_colors[j % port_colors.len()];
+                    let bg = [base[0], base[1], base[2], PORT_PILL_BG_ALPHA];
+                    quad_pipeline.push_rounded_quad(
+                        cur_x,
+                        pill_y,
+                        pill_w,
+                        PORT_PILL_HEIGHT,
+                        bg,
+                        PORT_PILL_RADIUS,
+                    );
+                    cur_x += pill_w + PORT_PILL_GAP;
+                }
+            }
+
+            // Editing mode: draw input box background + border + selection highlight
+            if let SidebarInteraction::Editing {
+                index,
+                selected_all,
+                ..
+            } = &self.interaction
+            {
                 if *index == i {
-                    let edit_x = card_x + ACCENT_BAR_WIDTH + PADDING_X + 22.0;
-                    let edit_y = card_y + PADDING_Y - 2.0;
-                    let edit_w = card_w - ACCENT_BAR_WIDTH - PADDING_X - 22.0 - PADDING_X;
-                    let edit_h = SIDEBAR_LINE_HEIGHT + 4.0;
+                    let edit_x = card_x + ACCENT_BAR_WIDTH + PADDING_X;
+                    let edit_y = card_y + PADDING_Y - 4.0;
+                    let edit_w = card_w - ACCENT_BAR_WIDTH - PADDING_X * 2.0;
+                    let edit_h = SIDEBAR_LINE_HEIGHT * 2.0;
                     quad_pipeline.push_rounded_quad(
                         edit_x,
                         edit_y,
@@ -412,6 +629,16 @@ impl SidebarState {
                         ui_chrome.surface_base,
                         4.0,
                     );
+                    // Selection highlight when all text is selected.
+                    if *selected_all {
+                        quad_pipeline.push_quad(
+                            edit_x + 4.0,
+                            edit_y + 2.0,
+                            edit_w - 8.0,
+                            edit_h - 4.0,
+                            ui_chrome.accent_muted,
+                        );
+                    }
                     quad_pipeline.push_rounded_quad(
                         edit_x,
                         edit_y,
@@ -444,7 +671,7 @@ impl SidebarState {
                 quad_pipeline.push_quad(
                     CARD_MARGIN_X,
                     indicator_y - 1.0,
-                    w - CARD_MARGIN_X * 2.0 - 1.0,
+                    self.width - CARD_MARGIN_X * 2.0 - 1.0,
                     2.0,
                     ui_chrome.accent,
                 );
@@ -466,7 +693,7 @@ impl SidebarState {
         surface_height: u32,
         ui_chrome: &UiChrome,
         scale_factor: f32,
-        workspace_icon: Option<(&'a glyphon::Buffer, &'a [glyphon::CustomGlyph])>,
+        workspaces: &[WorkspaceSnapshot],
         workspace_status_icons: &[Vec<(String, String)>],
         icon_empty: &'a glyphon::Buffer,
         status_icon_cgs: &'a std::collections::HashMap<
@@ -474,7 +701,7 @@ impl SidebarState {
             [glyphon::CustomGlyph; 1],
         >,
     ) -> Vec<TextArea<'a>> {
-        if !self.visible {
+        if !self.visible || self.collapsed {
             return Vec::new();
         }
 
@@ -488,12 +715,9 @@ impl SidebarState {
 
         let text_color = f32_to_glyphon_color(ui_chrome.text_primary);
         let text_dim = f32_to_glyphon_color(ui_chrome.text_secondary);
-        let dot_palette = Self::workspace_palette(ui_chrome);
         let text_muted = f32_to_glyphon_color(ui_chrome.text_muted);
 
         let mut areas = Vec::with_capacity(self.name_buffers.len() * 4 + 1);
-
-        // (workspace icon custom glyph is passed in via workspace_icon parameter)
 
         // Section header (WORKSPACES)
         if let Some(ref header_buf) = self.header_buffer {
@@ -518,35 +742,26 @@ impl SidebarState {
             let y = SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
             let card_y = y + CARD_GAP / 2.0;
 
-            // Workspace icon: icon (16px) + gap (12px) = 28px reserve before text.
-            let icon_reserve = if workspace_icon.is_some() { 28.0 } else { 0.0 };
-            let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X + icon_reserve;
-
-            // Workspace icon — SVG folder icon colored with the workspace identity color.
-            if let Some((icon_buf, icon_cg)) = workspace_icon {
-                let icon_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X;
-                let ws_color = dot_palette[i % dot_palette.len()];
-                let icon_color = f32_to_glyphon_color(ws_color);
-                areas.push(TextArea {
-                    buffer: icon_buf,
-                    left: icon_x,
-                    top: card_y + PADDING_Y + 1.0,
-                    scale: scale_factor,
-                    bounds,
-                    default_color: icon_color,
-                    custom_glyphs: icon_cg,
-                });
-            }
+            let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X;
 
             // If this row is being edited, show edit buffer instead of name buffer.
             if editing_index == Some(i) {
                 if let Some(ref edit_buf) = self.edit_buffer {
+                    // Clip text to the edit box area (prevents overflow on long text).
+                    let card_w = w - CARD_MARGIN_X * 2.0 - 1.0;
+                    let edit_right = (text_x + card_w - ACCENT_BAR_WIDTH - PADDING_X * 2.0) as i32;
+                    let edit_bounds = TextBounds {
+                        left: text_x as i32,
+                        top: card_y as i32,
+                        right: edit_right.min(bounds.right),
+                        bottom: (card_y + ROW_HEIGHT) as i32,
+                    };
                     areas.push(TextArea {
                         buffer: edit_buf,
                         left: text_x,
                         top: card_y + PADDING_Y,
                         scale: scale_factor,
-                        bounds,
+                        bounds: edit_bounds,
                         default_color: text_color,
                         custom_glyphs: &[],
                     });
@@ -565,16 +780,19 @@ impl SidebarState {
             }
 
             // Info text (status + git + cwd + ports) — caption size, secondary color.
-            if let Some(info_buf) = self.info_buffers.get(i) {
-                areas.push(TextArea {
-                    buffer: info_buf,
-                    left: text_x,
-                    top: card_y + PADDING_Y + SIDEBAR_LINE_HEIGHT + 2.0,
-                    scale: scale_factor,
-                    bounds,
-                    default_color: text_dim,
-                    custom_glyphs: &[],
-                });
+            // Skip when this row is being edited (edit box only covers the name line).
+            if editing_index != Some(i) {
+                if let Some(info_buf) = self.info_buffers.get(i) {
+                    areas.push(TextArea {
+                        buffer: info_buf,
+                        left: text_x,
+                        top: card_y + PADDING_Y + SIDEBAR_LINE_HEIGHT + 2.0,
+                        scale: scale_factor,
+                        bounds,
+                        default_color: text_dim,
+                        custom_glyphs: &[],
+                    });
+                }
             }
 
             // Status icon from IPC (right side of card, below name).
@@ -596,6 +814,67 @@ impl SidebarState {
                     }
                 }
             }
+
+            // Badge count text (centered on the accent-colored circle).
+            if let Some(ws) = workspaces.get(i) {
+                if ws.unread_count > 0 {
+                    if let Some(badge_buf) = self.badge_buffers.get(i) {
+                        let card_x = CARD_MARGIN_X;
+                        let card_w = w - CARD_MARGIN_X * 2.0 - 1.0;
+                        let badge_x = card_x + card_w - BADGE_SIZE - PADDING_X;
+                        let badge_y = card_y + PADDING_Y;
+                        let badge_text_color = f32_to_glyphon_color(ui_chrome.text_inverse);
+                        areas.push(TextArea {
+                            buffer: badge_buf,
+                            left: badge_x,
+                            top: badge_y + 2.0,
+                            scale: scale_factor,
+                            bounds,
+                            default_color: badge_text_color,
+                            custom_glyphs: &[],
+                        });
+                    }
+                }
+            }
+
+            // Port pill text (centered in each pill).
+            if let Some(ws) = workspaces.get(i) {
+                if !ws.ports.is_empty() {
+                    if let Some(port_bufs) = self.port_buffers.get(i) {
+                        let port_colors = Self::port_palette(ui_chrome);
+                        let card_x = CARD_MARGIN_X;
+                        let card_w = w - CARD_MARGIN_X * 2.0 - 1.0;
+                        let card_h = ROW_HEIGHT - CARD_GAP;
+                        let pill_start_x = card_x + ACCENT_BAR_WIDTH + PADDING_X;
+                        let pill_y = card_y + card_h - PADDING_Y - PORT_PILL_HEIGHT;
+                        let avail_w = card_w - ACCENT_BAR_WIDTH - PADDING_X - PADDING_X;
+                        let mut cur_x = pill_start_x;
+                        for (j, (port, buf)) in ws
+                            .ports
+                            .iter()
+                            .take(MAX_DISPLAY_PORTS)
+                            .zip(port_bufs.iter())
+                            .enumerate()
+                        {
+                            let pill_w = port_pill_width(*port);
+                            if cur_x + pill_w - pill_start_x > avail_w {
+                                break;
+                            }
+                            let color = port_colors[j % port_colors.len()];
+                            areas.push(TextArea {
+                                buffer: buf,
+                                left: cur_x,
+                                top: pill_y + 2.0,
+                                scale: scale_factor,
+                                bounds,
+                                default_color: f32_to_glyphon_color(color),
+                                custom_glyphs: &[],
+                            });
+                            cur_x += pill_w + PORT_PILL_GAP;
+                        }
+                    }
+                }
+            }
         }
 
         areas
@@ -604,14 +883,23 @@ impl SidebarState {
     /// Render the text editing cursor as a quad.
     ///
     /// Call after `render_quads` to overlay the cursor on top.
-    pub fn render_edit_cursor(&self, quad_pipeline: &mut QuadPipeline, ui_chrome: &UiChrome) {
-        if let SidebarInteraction::Editing { index, cursor, .. } = &self.interaction {
+    /// `scale` is the DPI scale factor — glyphon multiplies glyph positions
+    /// by this value, so the cursor quad must match.
+    pub fn render_edit_cursor(
+        &self,
+        quad_pipeline: &mut QuadPipeline,
+        ui_chrome: &UiChrome,
+        scale: f32,
+    ) {
+        if self.collapsed {
+            return;
+        }
+        if let SidebarInteraction::Editing { index, .. } = &self.interaction {
             let y = SECTION_HEADER_HEIGHT + *index as f32 * ROW_HEIGHT;
             let card_y = y + CARD_GAP / 2.0;
-            // 28px icon reserve (16px icon + 12px gap) — icons are always loaded.
-            let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X + 28.0;
-            let char_width = SIDEBAR_FONT_SIZE * 0.6;
-            let cursor_x = text_x + (*cursor as f32 * char_width);
+            let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X;
+            // Multiply offset by scale — glyphon renders glyphs at (left + glyph_x * scale).
+            let cursor_x = text_x + self.edit_cursor_x_offset * scale;
             let cursor_y = card_y + PADDING_Y;
             let cursor_color = [
                 ui_chrome.text_primary[0],
@@ -622,6 +910,23 @@ impl SidebarState {
             quad_pipeline.push_quad(cursor_x, cursor_y, 1.5, SIDEBAR_LINE_HEIGHT, cursor_color);
         }
     }
+}
+
+/// Compute the pixel width of a port pill badge from the port number.
+fn port_pill_width(port: u16) -> f32 {
+    let text_len = if port >= 10000 {
+        6 // ":XXXXX"
+    } else if port >= 1000 {
+        5 // ":XXXX"
+    } else if port >= 100 {
+        4 // ":XXX"
+    } else if port >= 10 {
+        3 // ":XX"
+    } else {
+        2 // ":X"
+    };
+    PORT_PILL_PADDING_X * 2.0
+        + text_len as f32 * typography::BADGE_FONT_SIZE * BADGE_CHAR_WIDTH_RATIO
 }
 
 /// Simple hash for quick change detection on workspace data.
@@ -686,20 +991,7 @@ fn build_info_text(ws: &WorkspaceSnapshot) -> String {
         }
     }
 
-    // Line 4: listening ports (max MAX_DISPLAY_PORTS)
-    if !ws.ports.is_empty() {
-        let displayed: Vec<String> = ws
-            .ports
-            .iter()
-            .take(MAX_DISPLAY_PORTS)
-            .map(|p| format!(":{p}"))
-            .collect();
-        let mut port_str = displayed.join(" ");
-        if ws.ports.len() > MAX_DISPLAY_PORTS {
-            port_str.push_str(&format!(" +{}", ws.ports.len() - MAX_DISPLAY_PORTS));
-        }
-        lines.push(port_str);
-    }
+    // Ports are rendered as pill badges (not text) — see render_quads() / text_areas().
 
     lines.join("\n")
 }
@@ -858,6 +1150,7 @@ mod tests {
             index: 0,
             text: "test".into(),
             cursor: 4,
+            selected_all: false,
         };
         assert!(s.is_editing());
     }
@@ -882,8 +1175,8 @@ mod tests {
         assert!(text.contains("main"));
         assert!(text.contains("\u{2022}")); // dirty indicator
         assert!(text.contains("F:/Workspaces/wmux"));
-        assert!(text.contains(":3000"));
-        assert!(text.contains(":4723"));
+        // Ports are rendered as pill badges, not in info text.
+        assert!(!text.contains(":3000"));
         // Pane count should NOT be present
         assert!(!text.contains("pane"));
     }
@@ -949,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn build_info_text_limits_ports() {
+    fn build_info_text_excludes_ports() {
         let ws = WorkspaceSnapshot {
             id: wmux_core::WorkspaceId::new(),
             name: "test".into(),
@@ -964,9 +1257,57 @@ mod tests {
             status_icons: Vec::new(),
         };
         let text = build_info_text(&ws);
-        assert!(text.contains(":3000"));
-        assert!(text.contains(":3004"));
-        assert!(!text.contains(":3005"));
-        assert!(text.contains("+2"));
+        // Ports are rendered as pill badges, not in info text.
+        assert!(!text.contains(":3000"));
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn edit_cursor_offset_increases_monotonically() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut s = SidebarState::new(250);
+        let text = "Workspace 1";
+        let char_count = text.chars().count(); // 11
+
+        let mut offsets = Vec::new();
+        for cursor in 0..=char_count {
+            s.interaction = SidebarInteraction::Editing {
+                index: 0,
+                text: text.to_string(),
+                cursor,
+                selected_all: false,
+            };
+            s.update_edit_buffer(&mut font_system);
+            offsets.push((cursor, s.edit_cursor_x_offset));
+        }
+
+        // Print all offsets for debugging.
+        for (c, o) in &offsets {
+            eprintln!("cursor={c:>2} offset={o:.2}");
+        }
+
+        // Cursor 0 should be at 0.
+        assert!(
+            offsets[0].1.abs() < 0.001,
+            "cursor 0 should be at offset 0, got {}",
+            offsets[0].1
+        );
+        // Last cursor should be > 0 (non-empty text has width).
+        assert!(
+            offsets[char_count].1 > 10.0,
+            "cursor at end should have positive offset, got {}",
+            offsets[char_count].1
+        );
+        // Offsets should be strictly increasing.
+        for i in 1..offsets.len() {
+            assert!(
+                offsets[i].1 > offsets[i - 1].1,
+                "offset must increase: cursor {} ({:.2}) should be > cursor {} ({:.2})",
+                i,
+                offsets[i].1,
+                i - 1,
+                offsets[i - 1].1
+            );
+        }
     }
 }

@@ -8,3 +8,4 @@ Cargo.lock
 *.so
 .env
 .claude/
+docs/stitch/

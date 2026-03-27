@@ -284,7 +284,7 @@ impl CommandPalette {
         );
 
         // Fullscreen dimming overlay — two layered quads
-        // First: overlay_dim (black at 0.5 alpha)
+        // First: overlay_dim (bg-tinted at 0.5 alpha)
         quads.push_quad(
             0.0,
             0.0,

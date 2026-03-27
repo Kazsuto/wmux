@@ -29,6 +29,9 @@ pub struct PaneState {
 
     /// Surface (tab) manager for this pane.
     pub surfaces: SurfaceManager,
+
+    /// PID of the child shell process (for process-aware port filtering).
+    pub child_pid: Option<u32>,
 }
 
 /// Registry of all active panes, with focus tracking.
@@ -164,6 +167,7 @@ mod tests {
             pty_resize_tx: resize_tx,
             process_exited: false,
             surfaces: SurfaceManager::new(Surface::new("shell", PaneId::new())),
+            child_pid: None,
         }
     }
 

@@ -54,6 +54,9 @@ pub enum AppCommand {
     /// Close and remove a pane.
     ClosePane { pane_id: PaneId },
 
+    /// Store the child shell PID for a pane (used by process-aware port scanning).
+    SetChildPid { pane_id: PaneId, pid: u32 },
+
     /// Process raw PTY output bytes into a pane's terminal.
     ProcessPtyOutput { pane_id: PaneId, data: Vec<u8> },
 
@@ -304,11 +307,22 @@ pub enum AppCommand {
         reply: tokio::sync::oneshot::Sender<MetadataSnapshot>,
     },
 
-    /// Update UI-owned state (sidebar width, window geometry) for session persistence.
+    /// Update UI-owned state (sidebar width, collapsed, window geometry) for session persistence.
     UpdateUiState {
         sidebar_width: u16,
+        sidebar_collapsed: bool,
         window: Option<crate::session::WindowGeometry>,
     },
+
+    // ─── Notification commands ─────────────────────────────────────────────
+    /// List notifications (newest first, up to `limit`).
+    ListNotifications {
+        limit: usize,
+        reply: tokio::sync::oneshot::Sender<Vec<Notification>>,
+    },
+
+    /// Clear all non-cleared notifications.
+    ClearAllNotifications,
 
     /// Shut down the actor.
     Shutdown,
@@ -324,6 +338,11 @@ impl fmt::Debug for AppCommand {
             Self::ClosePane { pane_id } => f
                 .debug_struct("ClosePane")
                 .field("pane_id", pane_id)
+                .finish(),
+            Self::SetChildPid { pane_id, pid } => f
+                .debug_struct("SetChildPid")
+                .field("pane_id", pane_id)
+                .field("pid", pid)
                 .finish(),
             Self::ProcessPtyOutput { pane_id, data } => f
                 .debug_struct("ProcessPtyOutput")
@@ -563,10 +582,20 @@ impl fmt::Debug for AppCommand {
                 .finish_non_exhaustive(),
             Self::SidebarClearLog => write!(f, "SidebarClearLog"),
             Self::SidebarState { .. } => write!(f, "SidebarState"),
-            Self::UpdateUiState { sidebar_width, .. } => f
+            Self::UpdateUiState {
+                sidebar_width,
+                sidebar_collapsed,
+                ..
+            } => f
                 .debug_struct("UpdateUiState")
                 .field("sidebar_width", sidebar_width)
+                .field("sidebar_collapsed", sidebar_collapsed)
                 .finish_non_exhaustive(),
+            Self::ListNotifications { limit, .. } => f
+                .debug_struct("ListNotifications")
+                .field("limit", limit)
+                .finish_non_exhaustive(),
+            Self::ClearAllNotifications => write!(f, "ClearAllNotifications"),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }

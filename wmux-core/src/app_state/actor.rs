@@ -8,7 +8,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::error::CoreError;
 use crate::event::TerminalEvent;
 use crate::metadata_store::{LogLevel, MetadataSnapshot, MetadataStore, StatusEntry};
-use crate::notification::{NotificationEvent, NotificationSource, NotificationStore};
+use crate::notification::{
+    NotificationEvent, NotificationSeverity, NotificationSource, NotificationStore,
+};
 use crate::pane_registry::PaneRegistry;
 use crate::pane_tree::PaneTree;
 use crate::session::WindowGeometry;
@@ -55,6 +57,8 @@ pub(super) struct AppStateActor {
     pane_cwds: HashMap<PaneId, PathBuf>,
     /// Sidebar width (pixels), sent from UI layer for session persistence.
     ui_sidebar_width: u16,
+    /// Whether the sidebar is in collapsed (icon-only) mode.
+    ui_sidebar_collapsed: bool,
     /// Window geometry, sent from UI layer for session persistence.
     ui_window_geometry: Option<WindowGeometry>,
     cmd_rx: mpsc::Receiver<AppCommand>,
@@ -76,6 +80,7 @@ pub(super) fn spawn_actor(event_tx: mpsc::Sender<AppEvent>) -> (AppStateHandle, 
         port_scan_in_flight: false,
         pane_cwds: HashMap::new(),
         ui_sidebar_width: 0,
+        ui_sidebar_collapsed: false,
         ui_window_geometry: None,
         cmd_rx,
         event_tx,
@@ -114,6 +119,11 @@ impl AppStateActor {
                 }
                 AppCommand::ClosePane { pane_id } => {
                     self.close_pane_internal(pane_id);
+                }
+                AppCommand::SetChildPid { pane_id, pid } => {
+                    if let Some(pane) = self.registry.get_mut(pane_id) {
+                        pane.child_pid = Some(pid);
+                    }
                 }
                 AppCommand::ProcessPtyOutput { pane_id, data } => {
                     self.handle_pty_output(pane_id, &data);
@@ -586,10 +596,27 @@ impl AppStateActor {
 
                 AppCommand::UpdateUiState {
                     sidebar_width,
+                    sidebar_collapsed,
                     window,
                 } => {
                     self.ui_sidebar_width = sidebar_width;
+                    self.ui_sidebar_collapsed = sidebar_collapsed;
                     self.ui_window_geometry = window;
+                }
+
+                AppCommand::ListNotifications { limit, reply } => {
+                    let notifs: Vec<_> = self
+                        .notification_store
+                        .list(None, limit)
+                        .into_iter()
+                        .filter(|n| n.state != crate::NotificationState::Cleared)
+                        .cloned()
+                        .collect();
+                    let _ = reply.send(notifs);
+                }
+
+                AppCommand::ClearAllNotifications => {
+                    let _events = self.notification_store.clear_all();
                 }
 
                         AppCommand::Shutdown => {
@@ -612,9 +639,11 @@ impl AppStateActor {
                     if !self.port_scan_in_flight {
                         self.port_scan_in_flight = true;
                         let ws_id = self.workspace_manager.active_id();
+                        // Collect child shell PIDs for the active workspace's panes.
+                        let shell_pids = self.collect_workspace_shell_pids(ws_id);
                         let self_tx = self.self_tx.clone();
                         self.background_tasks.spawn(async move {
-                            let ports = crate::port_scanner::scan_listening_ports().await;
+                            let ports = crate::port_scanner::scan_listening_ports(&shell_pids).await;
                             let _ = self_tx.try_send(AppCommand::UpdatePorts {
                                 workspace_id: ws_id,
                                 ports,
@@ -668,11 +697,31 @@ impl AppStateActor {
             &self.registry,
             &self.pane_cwds,
             self.ui_sidebar_width,
+            self.ui_sidebar_collapsed,
             self.ui_window_geometry.clone(),
         )
     }
 
     /// Find which workspace contains a specific pane by searching all workspaces' pane trees.
+    /// Collect child shell PIDs for all panes in a workspace.
+    fn collect_workspace_shell_pids(&self, ws_id: WorkspaceId) -> Vec<u32> {
+        let pane_ids = self
+            .workspace_manager
+            .by_id(ws_id)
+            .and_then(|ws| ws.pane_tree.as_ref())
+            .map_or_else(Vec::new, |t| t.pane_ids());
+
+        let mut pids = Vec::with_capacity(pane_ids.len());
+        for pane_id in pane_ids {
+            if let Some(pane) = self.registry.get(pane_id) {
+                if let Some(pid) = pane.child_pid {
+                    pids.push(pid);
+                }
+            }
+        }
+        pids
+    }
+
     fn find_workspace_for_pane(&self, pane_id: PaneId) -> Option<WorkspaceId> {
         for ws in self.workspace_manager.iter() {
             if let Some(tree) = ws.pane_tree() {
@@ -703,11 +752,14 @@ impl AppStateActor {
                     let _ = pane.pty_write_tx.try_send(bytes);
                 }
                 TerminalEvent::Notification { title, body, .. } => {
+                    // Heuristic severity from title/body keywords.
+                    let severity = infer_severity(title.as_deref(), &body);
                     let (notif_id, event) = self.notification_store.add(
                         title,
                         body,
                         None, // subtitle
                         NotificationSource::Osc,
+                        severity,
                         None, // workspace — TODO(L2_07): pass workspace context for notification tracking
                         None, // surface — TODO(L2_07): pass surface context for notification tracking
                     );
@@ -777,6 +829,10 @@ impl AppStateActor {
 
     /// Remove a pane from the registry, clear zoom if needed, and prune the
     /// pane tree.  Shared by `ClosePane` and `CloseSurface` (empty-pane path).
+    ///
+    /// When the last pane in a workspace is closed, the workspace itself is
+    /// closed (rule: "last pane closes → workspace closes"). The workspace
+    /// manager creates a replacement if it was the very last workspace.
     fn close_pane_internal(&mut self, pane_id: PaneId) {
         // Remove hidden surface backing panes first (stops their PTYs).
         let hidden_ids: Vec<PaneId> = self
@@ -795,14 +851,49 @@ impl AppStateActor {
             self.pane_cwds.remove(hid);
         }
 
+        // Check if this is the last pane BEFORE removing from registry.
+        let is_last_pane = self
+            .workspace_manager
+            .active()
+            .pane_tree
+            .as_ref()
+            .is_some_and(|tree| tree.pane_count() == 1);
+
         self.registry.remove(pane_id);
         self.pane_cwds.remove(&pane_id);
         if self.zoomed_pane == Some(pane_id) {
             self.zoomed_pane = None;
         }
-        if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
-            if let Err(e) = tree.close_pane(pane_id) {
-                tracing::warn!(error = %e, "failed to close pane in tree");
+
+        if is_last_pane {
+            // Last pane → close the workspace (creates replacement if last workspace).
+            let ws_id = self.workspace_manager.active_id();
+            // Clear the tree to prevent stale pane_id references.
+            self.workspace_manager.active_mut().pane_tree = None;
+            if let Err(e) = self.workspace_manager.close(ws_id) {
+                tracing::warn!(error = %e, "failed to close workspace after last pane");
+            }
+            let new_index = self.workspace_manager.active_index();
+            let new_id = self.workspace_manager.active_id();
+            tracing::info!(
+                closed_workspace = %ws_id,
+                new_workspace = %new_id,
+                new_index = new_index,
+                "last pane closed, workspace closed"
+            );
+            let _ = self
+                .event_tx
+                .try_send(AppEvent::WorkspaceClosed { id: ws_id });
+            let _ = self.event_tx.try_send(AppEvent::WorkspaceSwitched {
+                index: new_index,
+                id: new_id,
+            });
+        } else {
+            // Not last pane — prune from the tree normally.
+            if let Some(tree) = self.workspace_manager.active_mut().pane_tree.as_mut() {
+                if let Err(e) = tree.close_pane(pane_id) {
+                    tracing::warn!(error = %e, "failed to close pane in tree");
+                }
             }
         }
     }
@@ -1217,6 +1308,36 @@ impl AppStateActor {
     }
 }
 
+/// Infer notification severity from title/body keywords.
+///
+/// Scans both fields (case-insensitive) for common patterns:
+/// - Error/fail/crash/fatal → `Error`
+/// - Warn/warning/caution → `Warning`
+/// - Success/complete/done/pass/deploy → `Success`
+/// - Fallback → `Info`
+fn infer_severity(title: Option<&str>, body: &str) -> NotificationSeverity {
+    let haystack = format!("{} {}", title.unwrap_or_default(), body).to_ascii_lowercase();
+
+    if haystack.contains("error")
+        || haystack.contains("fail")
+        || haystack.contains("crash")
+        || haystack.contains("fatal")
+    {
+        NotificationSeverity::Error
+    } else if haystack.contains("warn") || haystack.contains("caution") {
+        NotificationSeverity::Warning
+    } else if haystack.contains("success")
+        || haystack.contains("complete")
+        || haystack.contains("done")
+        || haystack.contains("pass")
+        || haystack.contains("deploy")
+    {
+        NotificationSeverity::Success
+    } else {
+        NotificationSeverity::Info
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,6 +1360,7 @@ mod tests {
             surfaces: crate::surface_manager::SurfaceManager::new(
                 crate::surface_manager::Surface::new("shell", pane_id),
             ),
+            child_pid: None,
         }
     }
 

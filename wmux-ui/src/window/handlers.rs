@@ -5,7 +5,7 @@ use crate::sidebar::SidebarInteraction;
 use tokio::sync::mpsc;
 use winit::event::KeyEvent;
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use wmux_core::surface::SplitDirection;
 use wmux_core::surface_manager::{Surface, SurfaceManager};
 use wmux_core::{AppStateHandle, FocusDirection, PaneId, PaneState, Terminal};
@@ -77,6 +77,7 @@ fn spawn_pane_pty_inner(
         pty_resize_tx: resize_tx,
         process_exited: false,
         surfaces: SurfaceManager::new(Surface::new("shell", pane_id)),
+        child_pid: None,
     };
     app_state.register_pane(pane_id, pane_state);
 
@@ -114,6 +115,10 @@ fn spawn_pane_pty_inner(
             return;
         }
     };
+
+    // Capture the child shell PID before the actor consumes the handle.
+    let child_pid = handle.child_pid();
+    app_state.set_child_pid(pane_id, child_pid);
 
     // Set initial CWD in the actor for restored panes without a shell to emit OSC 7.
     if let Some(cwd) = initial_cwd {
@@ -167,15 +172,68 @@ fn spawn_pane_pty_inner(
 /// Handles Backspace, Delete, ArrowLeft, ArrowRight, Home, End, and character
 /// insertion. Returns `true` if the key was handled, `false` if not (the caller
 /// should handle Escape, Enter, and other keys).
+/// Check if the key event is Ctrl+A (select all).
+///
+/// Uses `logical_key` (not `physical_key`) because Ctrl+A follows the key label,
+/// not the physical position. On AZERTY, "A" is at QWERTY "Q" position —
+/// `physical_key` would be `KeyCode::KeyQ`, but `logical_key` is correctly `"a"`.
+///
+/// Winit on Windows sends `logical_key: Character("\x01")` (SOH) for Ctrl+A,
+/// which is the most reliable cross-platform signal.
+fn is_ctrl_a(event: &KeyEvent, modifiers: &ModifiersState) -> bool {
+    // Strategy 1: Ctrl+A produces SOH control character (U+0001) — works on all layouts.
+    if matches!(&event.logical_key, Key::Character(ch) if ch.as_str() == "\x01") {
+        return true;
+    }
+
+    // Strategy 2: logical key "a" with Ctrl modifier.
+    if modifiers.control_key()
+        && matches!(&event.logical_key, Key::Character(ch) if ch.as_str() == "a")
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Check if a key event is a Ctrl+letter combination that should NOT be inserted as text.
+///
+/// Returns true for control characters (Ctrl+A→SOH, Ctrl+C→ETX, etc.) so the caller
+/// can skip text insertion. Named keys (Backspace, Delete, arrows, Home, End) always
+/// pass through — they are editing keys, not Ctrl+letter combos.
+fn is_ctrl_combo(event: &KeyEvent, modifiers: &ModifiersState) -> bool {
+    // Named keys are never Ctrl+letter combos — always allow them through
+    // so Backspace, Delete, Home, End, arrows work in all edit fields.
+    if matches!(event.logical_key, Key::Named(_)) {
+        return false;
+    }
+    if modifiers.control_key() {
+        return true;
+    }
+    // Detect via logical_key: Ctrl+letter produces control characters (U+0001–U+001A).
+    if let Key::Character(ch) = &event.logical_key {
+        if ch.as_str().bytes().all(|b| b < 0x20) && !ch.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 fn apply_text_edit_key(
     text: &mut String,
     cursor: &mut usize,
     key: &Key,
     max_len: Option<usize>,
+    selected_all: &mut bool,
 ) -> bool {
     match key {
         Key::Named(NamedKey::Backspace) => {
-            if *cursor > 0 {
+            if *selected_all {
+                // Delete all selected text.
+                text.clear();
+                *cursor = 0;
+                *selected_all = false;
+            } else if *cursor > 0 {
                 let byte_pos = text
                     .char_indices()
                     .nth(*cursor - 1)
@@ -192,29 +250,37 @@ fn apply_text_edit_key(
             true
         }
         Key::Named(NamedKey::Delete) => {
-            let char_count = text.chars().count();
-            if *cursor < char_count {
-                let byte_pos = text
-                    .char_indices()
-                    .nth(*cursor)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                let next_byte = text
-                    .char_indices()
-                    .nth(*cursor + 1)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(text.len());
-                text.replace_range(byte_pos..next_byte, "");
+            if *selected_all {
+                text.clear();
+                *cursor = 0;
+                *selected_all = false;
+            } else {
+                let char_count = text.chars().count();
+                if *cursor < char_count {
+                    let byte_pos = text
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(pos, _)| pos)
+                        .unwrap_or(text.len());
+                    let next_byte = text
+                        .char_indices()
+                        .nth(*cursor + 1)
+                        .map(|(pos, _)| pos)
+                        .unwrap_or(text.len());
+                    text.replace_range(byte_pos..next_byte, "");
+                }
             }
             true
         }
         Key::Named(NamedKey::ArrowLeft) => {
+            *selected_all = false;
             if *cursor > 0 {
                 *cursor -= 1;
             }
             true
         }
         Key::Named(NamedKey::ArrowRight) => {
+            *selected_all = false;
             let char_count = text.chars().count();
             if *cursor < char_count {
                 *cursor += 1;
@@ -222,16 +288,24 @@ fn apply_text_edit_key(
             true
         }
         Key::Named(NamedKey::Home) => {
+            *selected_all = false;
             *cursor = 0;
             true
         }
         Key::Named(NamedKey::End) => {
+            *selected_all = false;
             *cursor = text.chars().count();
             true
         }
         Key::Character(ch) => {
             let s = ch.as_str();
             if s.chars().all(|c| !c.is_control()) {
+                if *selected_all {
+                    // Replace all text with the typed character.
+                    text.clear();
+                    *cursor = 0;
+                    *selected_all = false;
+                }
                 if let Some(max) = max_len {
                     if text.chars().count() + s.chars().count() > max {
                         return true;
@@ -257,14 +331,27 @@ pub(super) fn handle_sidebar_edit_key(
     app_state: &AppStateHandle,
 ) {
     // Extract editing state; if not editing, do nothing.
-    let (index, text, cursor) = match &mut state.sidebar.interaction {
+    let (index, text, cursor, selected_all) = match &mut state.sidebar.interaction {
         SidebarInteraction::Editing {
             index,
             text,
             cursor,
-        } => (*index, text, cursor),
+            selected_all,
+        } => (*index, text, cursor, selected_all),
         _ => return,
     };
+
+    // Ctrl+A — select all text.
+    if is_ctrl_a(event, &state.modifiers) {
+        *selected_all = true;
+        *cursor = text.chars().count();
+        return;
+    }
+
+    // Block any other Ctrl+letter combo from inserting text.
+    if is_ctrl_combo(event, &state.modifiers) {
+        return;
+    }
 
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
@@ -284,7 +371,7 @@ pub(super) fn handle_sidebar_edit_key(
             state.sidebar.interaction = SidebarInteraction::Idle;
         }
         other => {
-            apply_text_edit_key(text, cursor, other, None);
+            apply_text_edit_key(text, cursor, other, None, selected_all);
         }
     }
 }
@@ -296,16 +383,29 @@ pub(super) fn handle_tab_edit_key(
     event: &KeyEvent,
     app_state: &AppStateHandle,
 ) {
-    let (pane_id, surface_id, text, cursor) = match &mut state.tab_edit {
+    let (pane_id, surface_id, text, cursor, selected_all) = match &mut state.tab_edit {
         super::TabEditState::Editing {
             pane_id,
             surface_id,
             text,
             cursor,
+            selected_all,
             ..
-        } => (*pane_id, *surface_id, text, cursor),
+        } => (*pane_id, *surface_id, text, cursor, selected_all),
         super::TabEditState::None => return,
     };
+
+    // Ctrl+A — select all text.
+    if is_ctrl_a(event, &state.modifiers) {
+        *selected_all = true;
+        *cursor = text.chars().count();
+        return;
+    }
+
+    // Block any other Ctrl+letter combo from inserting text.
+    if is_ctrl_combo(event, &state.modifiers) {
+        return;
+    }
 
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
@@ -321,7 +421,7 @@ pub(super) fn handle_tab_edit_key(
             state.tab_edit = super::TabEditState::None;
         }
         other => {
-            apply_text_edit_key(text, cursor, other, Some(MAX_TAB_TITLE_LEN));
+            apply_text_edit_key(text, cursor, other, Some(MAX_TAB_TITLE_LEN), selected_all);
         }
     }
 }
@@ -359,6 +459,57 @@ pub(super) fn handle_search_key(state: &mut UiState<'_>, event: &KeyEvent) {
         }
         _ => {
             // Named keys (arrows, Tab, F-keys) are silently consumed.
+        }
+    }
+}
+
+/// Handle keyboard input when the browser address bar is in editing mode.
+///
+/// Returns `Some(url)` when the user presses Enter to navigate.
+pub(super) fn handle_address_bar_key(state: &mut UiState<'_>, event: &KeyEvent) -> Option<String> {
+    // Ctrl+A — select all URL text.
+    if is_ctrl_a(event, &state.modifiers) {
+        state.address_bar.selected_all = true;
+        state.address_bar.cursor_pos = state.address_bar.url.chars().count();
+        return None;
+    }
+
+    // Block any other Ctrl+letter combo from inserting text.
+    if is_ctrl_combo(event, &state.modifiers) {
+        return None;
+    }
+
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            state.address_bar.cancel_editing();
+            tracing::debug!("address bar edit cancelled via Escape");
+            None
+        }
+        Key::Named(NamedKey::Enter) => {
+            let url = state.address_bar.confirm_editing();
+            tracing::debug!(url = %url, "address bar navigation confirmed");
+            Some(url)
+        }
+        Key::Named(NamedKey::Space) => {
+            // Space is a NamedKey, not Key::Character — insert explicitly.
+            apply_text_edit_key(
+                &mut state.address_bar.url,
+                &mut state.address_bar.cursor_pos,
+                &Key::Character(" ".into()),
+                None,
+                &mut state.address_bar.selected_all,
+            );
+            None
+        }
+        key => {
+            apply_text_edit_key(
+                &mut state.address_bar.url,
+                &mut state.address_bar.cursor_pos,
+                key,
+                None,
+                &mut state.address_bar.selected_all,
+            );
+            None
         }
     }
 }
@@ -693,6 +844,7 @@ pub(super) fn handle_shortcut(
             // Create browser surface in the actor, then trigger panel creation.
             let app_clone = app_state.clone();
             let proxy_clone = proxy.clone();
+            let default_url = state.browser_default_url.clone();
             rt_handle.spawn(async move {
                 match app_clone
                     .create_browser_surface(layout_pane_id, backing_pane_id)
@@ -702,7 +854,7 @@ pub(super) fn handle_shortcut(
                         tracing::info!(surface_id = %surface_id, "browser surface registered, requesting panel creation");
                         let _ = proxy_clone.send_event(crate::event::WmuxEvent::CreateBrowserPanel {
                             surface_id,
-                            url: "about:blank".to_owned(),
+                            url: default_url,
                         });
                     }
                     Err(e) => {
@@ -744,7 +896,21 @@ pub(super) fn handle_shortcut(
         }
 
         ShortcutAction::ToggleSidebar => {
-            state.sidebar.toggle();
+            state.sidebar.toggle_collapsed();
+            // Persist collapsed state for session save.
+            let size = state.window.inner_size();
+            let pos = state.window.outer_position().unwrap_or_default();
+            app_state.update_ui_state(
+                state.sidebar.width as u16,
+                state.sidebar.collapsed,
+                Some(wmux_core::WindowGeometry {
+                    x: pos.x,
+                    y: pos.y,
+                    width: size.width,
+                    height: size.height,
+                    maximized: state.window.is_maximized(),
+                }),
+            );
             state.window.request_redraw();
         }
 
@@ -753,18 +919,24 @@ pub(super) fn handle_shortcut(
             if state.command_palette.open {
                 state.command_palette.close();
             } else {
-                // Close search if active — only one overlay at a time.
+                // Close other overlays — only one at a time.
                 if state.search.active {
                     state.search.close();
+                }
+                if state.notification_panel.open {
+                    state.notification_panel.toggle();
                 }
                 state.command_palette.open();
             }
             state.window.request_redraw();
         }
         ShortcutAction::Find => {
-            // Close palette if open — only one overlay at a time.
+            // Close other overlays — only one at a time.
             if state.command_palette.open {
                 state.command_palette.close();
+            }
+            if state.notification_panel.open {
+                state.notification_panel.toggle();
             }
             if state.search.active {
                 state.search.close();
@@ -779,10 +951,32 @@ pub(super) fn handle_shortcut(
             tracing::debug!("ToggleDevTools shortcut (placeholder)");
         }
         ShortcutAction::NotificationPanelToggle => {
-            tracing::debug!("NotificationPanelToggle shortcut (placeholder — L3_09 UI wiring)");
+            // Close other overlays for mutual exclusion.
+            if state.command_palette.open {
+                state.command_palette.close();
+            }
+            if state.search.active {
+                state.search.close();
+            }
+            state.notification_panel.toggle();
+            state.window.request_redraw();
         }
         ShortcutAction::JumpLastUnread => {
-            tracing::debug!("JumpLastUnread shortcut (placeholder — L3_09 UI wiring)");
+            // Fetch notifications directly from actor (cache may be empty when panel is closed).
+            let notifs = rt_handle.block_on(app_state.list_notifications(50));
+            if let Some(notif) = notifs.iter().find(|n| {
+                n.state == wmux_core::NotificationState::Received
+                    || n.state == wmux_core::NotificationState::Unread
+            }) {
+                if let Some(ws_id) = notif.source_workspace {
+                    let app = app_state.clone();
+                    rt_handle.spawn(async move {
+                        app.select_workspace_by_id(ws_id).await;
+                    });
+                    tracing::debug!(%ws_id, "jumped to last unread notification workspace");
+                }
+            }
+            state.window.request_redraw();
         }
     }
 }

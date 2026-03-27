@@ -1,3 +1,4 @@
+pub(crate) mod address_bar;
 pub mod animation;
 pub(crate) mod command_palette;
 pub mod divider;

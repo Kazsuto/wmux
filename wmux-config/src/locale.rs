@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn notification_keys_present() {
         let locale = Locale::new("en");
-        assert_eq!(locale.t("notification.clear_all"), "Clear All");
+        assert_eq!(locale.t("notification.clear_all"), "Clear all");
         assert_eq!(locale.t("notification.mark_read"), "Mark as Read");
     }
 

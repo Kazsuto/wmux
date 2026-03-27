@@ -1,7 +1,56 @@
 # Changelog
 
+## 2026-03-27
+
+FIX: Wire i18n locale system into wmux-ui — replace 12+ hardcoded English strings with locale.t() lookups for notification panel, tab menus, severity labels, toggle labels, and time-ago timestamps
+FIX: Add notification.time_* locale keys (en/fr) for relative timestamps with {n} placeholder
+FIX: Eliminate per-frame heap allocations in render loop — String::clone for address bar URL, HashSet::new for browser orphan tracking, Vec::new for overlay rects
+FIX: RAII-wrap Win32 snapshot handle in port_scanner.rs — OwnedHandle with Drop prevents handle leak on panic
+CHORE: Restrict address_bar module visibility from pub to pub(crate)
+FIX: Derive overlay_dim and shadow colors from theme background instead of hardcoded black
+FIX: Replace hardcoded cursor alpha (0.85) in address bar and tab edit with ui_chrome.cursor_alpha
+FIX: Wire is_animations_enabled() to AnimationEngine reduced motion for accessibility
+REFACTOR: Remove 5 unused UiChrome fields (accent_hover, accent_pressed, accent_tint, border_strong, info)
+FEATURE: Add browser address bar — back/forward buttons, URL text field with click-to-edit, Enter to navigate, Escape to cancel, smart URL handling (auto-https, localhost detection, DuckDuckGo search fallback)
+FEATURE: Change browser default page from Google to DuckDuckGo — privacy-respecting default for embedded browser
+FEATURE: Add `browser-default-url` config option — configurable default URL for browser panels (default: duckduckgo.com)
+FIX: Remove bash from auto-detection shell order — Git Bash doesn't work under ConPTY, detection now follows CLAUDE.md rule (pwsh → powershell → cmd), bash available via explicit config
+FEATURE: Add Ctrl+A select-all for all text edit fields — sidebar rename, tab rename, address bar URL; multi-strategy detection (physical key + text field + modifiers), Ctrl+letter guard blocks accidental insertion, visual selection highlight with accent_muted, typing/Backspace replaces selected text
+FIX: Fix orphaned WebView2 panel visible after closing browser tab — render loop now removes panels whose surface was deleted from the actor, fixing both the ghost panel and the frozen-on-window-move issue
+FIX: Fix keyboard input blocked in address bar and UI overlays — PtyExited event now carries pane_id, process_exited only set for focused pane; address bar handler moved before process_exited guard
+FEATURE: Add text caret to browser address bar — visible cursor with proportional positioning, moves with arrow keys
+FIX: Fix edit cursor positioning — multiply cursor offset by DPI scale factor to match glyphon's glyph_x × scale rendering; use proportional interpolation for all edit fields (sidebar, tab, address bar)
+FIX: Fix sidebar workspace rename edit box misaligned by 22px and too short — remove stale folder icon offset, double edit box height to 2× line height
+FIX: Fix overlay menus (context menus, split menu) bleeding through by underlying text — filter base text areas that overlap open menu rects before glyphon prepare
+FIX: Fix sidebar edit mode showing subtitle text through edit box — skip info text rendering when workspace row is being edited
+FEATURE: Add right-click context menu on tabs — rename and close actions, works on both pill tabs and toggle segments
+FEATURE: Add close button to toggle mode — single X button to the right of the shell/browser toggle control
+FIX: Reduce max tab width from 220px to 160px — prevent tabs from looking disproportionately wide
+FIX: Close last pane properly closes workspace — clear stale tree, emit WorkspaceSwitched/Closed events, auto-correct focused_pane
+FIX: Browser panel follows window during drag — add WindowEvent::Moved handler and NotifyParentWindowPositionChanged for WS_POPUP HWND
+FEATURE: Allow closing the last shell tab — closes the entire pane instead of blocking with a safety guard
+FIX: Navigate browser panel to Google instead of about:blank — blank page was showing when opening browser tab
+FEATURE: Add shell/browser segmented toggle in tab bar — centered toggle control replaces individual pills when pane has 1 terminal + 1 browser, with icon + label per segment and accent highlight on active segment
+FEATURE: Add sidebar collapsed mode (Ctrl+B) — 48px icon-only column with colored workspace circles, auto-adapting viewport, session persistence
+CHORE: Remove folder icons from sidebar workspace cards — text and pills now start flush with accent bar
+FIX: Don't show all system ports at startup — return empty when no shell PIDs registered yet (was falling back to unfiltered scan)
+FIX: Update notification test signatures to match new `add()` method with severity parameter
+
 ## 2026-03-26
 
+FEATURE: Filter sidebar ports by process tree — use `netstat -ano` with PID and `CreateToolhelp32Snapshot` to show only ports owned by workspace shell descendants, not system-wide listeners
+FEATURE: Replace sidebar port text with colored pill badges — rounded quads with cycled theme colors (accent, success, warning, purple, cyan) at 15% alpha background, port text centered in each pill
+## 2026-03-26
+
+FEATURE: Wire complete notification panel — Ctrl+Shift+I toggles right-side slide-out with header, severity-colored items (category label, title, body, timestamp), scroll, hover, click-to-focus-workspace, Clear All, and close
+FEATURE: Add notification badge count text in sidebar — unread count number rendered inside the accent-colored circle badge
+FEATURE: Wire Ctrl+Shift+U to jump to last unread notification's source workspace
+FEATURE: Add ListNotifications and ClearAllNotifications commands to AppState actor
+FEATURE: Infer notification severity from title/body keywords (error/warn/success → colored stripes)
+FIX: Force opaque background on notification panel — terminal content was bleeding through 95% alpha surface_overlay
+FIX: Filter out Cleared notifications from ListNotifications response — Clear All now has visible effect
+FIX: JumpLastUnread fetches from actor directly — works even when panel is closed
+FIX: Mutual exclusion between all overlays — command palette and search now close notification panel
 FIX: Fix filter tab text clipping — multiply measured line_w by scale_factor (DPI) when computing pill widths, since glyphon layout_runs() returns buffer-coordinate widths but quads/bounds use physical pixels
 REFACTOR: Extract PaletteLayout struct — single source of truth for palette position/size math, replaces 3 duplicated inline computations across render_quads/render.rs
 REFACTOR: Add dirty tracking for palette search — skip expensive search/set_text/shape_until_scroll when query+filter unchanged between frames (eliminates ~100 per-frame allocations)

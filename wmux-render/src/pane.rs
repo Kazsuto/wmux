@@ -5,6 +5,9 @@ use crate::quad::QuadPipeline;
 /// Height in pixels of the tab bar when a pane has multiple surfaces.
 pub const TAB_BAR_HEIGHT: f32 = 40.0;
 
+/// Height in pixels of the browser address bar.
+pub const ADDRESS_BAR_HEIGHT: f32 = 32.0;
+
 /// Width in pixels of the focused pane accent stripe (left bar).
 pub const FOCUS_STRIPE_WIDTH: f32 = 3.0;
 
@@ -14,8 +17,8 @@ const TAB_GAP: f32 = 6.0;
 /// Border radius for pill-style tabs.
 const TAB_RADIUS: f32 = 4.0;
 
-/// Maximum width for a single tab pill (220px).
-const MAX_TAB_WIDTH: f32 = 220.0;
+/// Maximum width for a single tab pill (160px).
+const MAX_TAB_WIDTH: f32 = 160.0;
 
 /// Close button size (visual hit area).
 const CLOSE_BUTTON_SIZE: f32 = 18.0;
@@ -46,6 +49,15 @@ const GLOBE_BUTTON_HEIGHT: f32 = 28.0;
 
 /// Gap between the split button and the globe button.
 const GLOBE_BUTTON_GAP: f32 = 4.0;
+
+/// Width of the shell/browser segmented toggle control.
+const TOGGLE_WIDTH: f32 = 240.0;
+
+/// Internal padding between toggle container edge and segment.
+const TOGGLE_INNER_PAD: f32 = 2.0;
+
+/// Gap between the two toggle segments.
+const TOGGLE_SEGMENT_GAP: f32 = 2.0;
 
 /// Type of surface (Terminal or Browser) for a tab indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +96,19 @@ impl PaneViewport {
     /// Tab bar height scaled for DPI.
     pub fn tab_bar_height(&self) -> f32 {
         TAB_BAR_HEIGHT * self.scale
+    }
+
+    /// Whether the pane should display a shell/browser segmented toggle
+    /// instead of individual pill tabs.
+    ///
+    /// Returns `true` when the pane has exactly 2 surfaces — one Terminal
+    /// and one Browser.
+    #[must_use]
+    pub fn is_toggle_mode(&self) -> bool {
+        self.tab_count == 2
+            && self.surface_types.len() == 2
+            && self.surface_types.contains(&SurfaceType::Terminal)
+            && self.surface_types.contains(&SurfaceType::Browser)
     }
 }
 
@@ -200,6 +225,9 @@ impl PaneRenderer {
     /// Each tab is a rounded pill with `TAB_GAP` spacing. The active tab
     /// has an elevated background and a 2px rounded accent indicator at the
     /// bottom. A "+" button at the end allows creating new surfaces.
+    ///
+    /// When the pane is in toggle mode (1 terminal + 1 browser), a centred
+    /// segmented toggle control is rendered instead of individual pills.
     pub fn render_tab_bar(
         &self,
         quads: &mut QuadPipeline,
@@ -211,6 +239,11 @@ impl PaneRenderer {
     ) -> Result<(), crate::RenderError> {
         if viewport.tab_count == 0 {
             return Ok(());
+        }
+
+        // Segmented toggle for 1-terminal + 1-browser panes.
+        if viewport.is_toggle_mode() {
+            return Self::render_toggle_quads(quads, viewport, tab_bg, accent_color);
         }
 
         let r = &viewport.rect;
@@ -351,7 +384,7 @@ impl PaneRenderer {
         viewport: &PaneViewport,
         tab_index: usize,
     ) -> Option<(f32, f32, f32, f32)> {
-        if viewport.tab_count <= 1 || tab_index >= viewport.tab_count {
+        if tab_index >= viewport.tab_count {
             return None;
         }
         let s = viewport.scale;
@@ -424,6 +457,142 @@ impl PaneRenderer {
         Some((globe_x, split_y, gw, gh))
     }
 
+    // ── Toggle (segmented control) methods ─────────────────────────
+
+    /// Render the segmented toggle quads: container background + active
+    /// segment highlight.  Called from `render_tab_bar` when toggle mode
+    /// is active.
+    fn render_toggle_quads(
+        quads: &mut QuadPipeline,
+        viewport: &PaneViewport,
+        tab_bg: [f32; 4],
+        accent_color: [f32; 4],
+    ) -> Result<(), crate::RenderError> {
+        let r = &viewport.rect;
+        let s = viewport.scale;
+        let tbh = TAB_BAR_HEIGHT * s;
+        let radius = TAB_RADIUS * s;
+
+        // Full tab bar background (same as pill mode).
+        quads.push_quad(r.x, r.y, r.width, tbh, tab_bg);
+
+        // Toggle container.
+        let (cx, cy, cw, ch) = Self::toggle_container_rect(viewport);
+        let container_bg = [tab_bg[0], tab_bg[1], tab_bg[2], tab_bg[3].max(0.4)];
+        quads.push_rounded_quad(cx, cy, cw, ch, container_bg, radius);
+
+        // Active segment highlight.
+        let active_seg = Self::active_toggle_segment(viewport).unwrap_or(0);
+        if let Some((sx, sy, sw, sh)) = Self::toggle_segment_rect(viewport, active_seg) {
+            let seg_radius = (radius - TOGGLE_INNER_PAD * s).max(2.0);
+            quads.push_rounded_quad(sx, sy, sw, sh, accent_color, seg_radius);
+        }
+
+        tracing::trace!(
+            pane_id = %viewport.pane_id,
+            active_segment = active_seg,
+            "toggle bar rendered"
+        );
+
+        Ok(())
+    }
+
+    /// Compute the toggle container rect `(x, y, width, height)`.
+    ///
+    /// The container is centred horizontally in the tab bar.
+    #[must_use]
+    pub fn toggle_container_rect(viewport: &PaneViewport) -> (f32, f32, f32, f32) {
+        let s = viewport.scale;
+        let tw = (TOGGLE_WIDTH * s).min(viewport.rect.width - 16.0 * s);
+        let pad = 4.0 * s;
+        let pill_h = TAB_BAR_HEIGHT * s - pad * 2.0;
+        let cx = viewport.rect.x + (viewport.rect.width - tw) / 2.0;
+        let cy = viewport.rect.y + pad;
+        (cx, cy, tw, pill_h)
+    }
+
+    /// Compute the rect for a toggle segment (0 = shell, 1 = browser).
+    ///
+    /// Returns `None` when `segment > 1`.
+    #[must_use]
+    pub fn toggle_segment_rect(
+        viewport: &PaneViewport,
+        segment: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        if segment > 1 {
+            return None;
+        }
+        let (cx, cy, cw, ch) = Self::toggle_container_rect(viewport);
+        let s = viewport.scale;
+        let inner_pad = TOGGLE_INNER_PAD * s;
+        let gap = TOGGLE_SEGMENT_GAP * s;
+        let seg_w = (cw - inner_pad * 2.0 - gap) / 2.0;
+        let seg_h = ch - inner_pad * 2.0;
+        let seg_y = cy + inner_pad;
+        let seg_x = if segment == 0 {
+            cx + inner_pad
+        } else {
+            cx + inner_pad + seg_w + gap
+        };
+        Some((seg_x, seg_y, seg_w, seg_h))
+    }
+
+    /// Map a toggle segment index (0 = shell, 1 = browser) to the surface
+    /// tab index in `PaneViewport.surface_types`.
+    ///
+    /// Returns `None` when the viewport is not in toggle mode or the
+    /// target surface type is missing.
+    #[must_use]
+    pub fn toggle_segment_to_tab(viewport: &PaneViewport, segment: usize) -> Option<usize> {
+        if !viewport.is_toggle_mode() {
+            return None;
+        }
+        let target = if segment == 0 {
+            SurfaceType::Terminal
+        } else {
+            SurfaceType::Browser
+        };
+        viewport.surface_types.iter().position(|st| *st == target)
+    }
+
+    /// Return the active toggle segment (0 = shell, 1 = browser) based on
+    /// `active_tab`.  Returns `None` when the viewport is not in toggle mode.
+    #[must_use]
+    pub fn active_toggle_segment(viewport: &PaneViewport) -> Option<usize> {
+        if !viewport.is_toggle_mode() {
+            return None;
+        }
+        let active_type = viewport.surface_types.get(viewport.active_tab)?;
+        match active_type {
+            SurfaceType::Terminal => Some(0),
+            SurfaceType::Browser => Some(1),
+        }
+    }
+
+    /// Return the close button rect for toggle mode.
+    ///
+    /// A single close button positioned to the right of the toggle container,
+    /// which closes the currently active surface.
+    #[must_use]
+    pub fn toggle_close_button_rect(viewport: &PaneViewport) -> Option<(f32, f32, f32, f32)> {
+        if !viewport.is_toggle_mode() || viewport.tab_count <= 1 {
+            return None;
+        }
+        let (cx, cy, cw, ch) = Self::toggle_container_rect(viewport);
+        let s = viewport.scale;
+        let btn_size = CLOSE_BUTTON_SIZE * s;
+        let btn_pad = 8.0 * s;
+        let btn_x = cx + cw + btn_pad;
+        let btn_y = cy + (ch - btn_size) / 2.0;
+        // Don't overflow pane width.
+        if btn_x + btn_size > viewport.rect.x + viewport.rect.width {
+            return None;
+        }
+        Some((btn_x, btn_y, btn_size, btn_size))
+    }
+
+    // ── Tab type indicator ──────────────────────────────────────────
+
     /// Return position information for rendering a tab type indicator.
     ///
     /// Returns `(indicator_x, indicator_y)` for a given tab index.
@@ -454,6 +623,35 @@ impl PaneRenderer {
             viewport.rect.y + tbh,
             viewport.rect.width,
             (viewport.rect.height - tbh).max(0.0),
+        )
+    }
+
+    /// Return the browser content area, below both tab bar and address bar.
+    ///
+    /// Use this when positioning WebView2 panels — the address bar occupies
+    /// `ADDRESS_BAR_HEIGHT` between the tab bar and browser content.
+    #[must_use]
+    pub fn browser_viewport(viewport: &PaneViewport) -> Rect {
+        let tbh = TAB_BAR_HEIGHT * viewport.scale;
+        let abh = ADDRESS_BAR_HEIGHT * viewport.scale;
+        Rect::new(
+            viewport.rect.x,
+            viewport.rect.y + tbh + abh,
+            viewport.rect.width,
+            (viewport.rect.height - tbh - abh).max(0.0),
+        )
+    }
+
+    /// Return the address bar rect (between tab bar and browser content).
+    #[must_use]
+    pub fn address_bar_rect(viewport: &PaneViewport) -> Rect {
+        let tbh = TAB_BAR_HEIGHT * viewport.scale;
+        let abh = ADDRESS_BAR_HEIGHT * viewport.scale;
+        Rect::new(
+            viewport.rect.x,
+            viewport.rect.y + tbh,
+            viewport.rect.width,
+            abh,
         )
     }
 
@@ -567,7 +765,7 @@ mod tests {
 
     #[test]
     fn tab_metrics_applies_max_width_clamp() {
-        // With a very wide viewport, tab_width should clamp to MAX_TAB_WIDTH.
+        // With a very wide viewport, tab_width should clamp to MAX_TAB_WIDTH (160px).
         let rect = Rect::new(0.0, 0.0, 2000.0, 100.0);
         let vp = make_viewport(rect, false, 2);
         let (tab_width, _) = PaneRenderer::tab_metrics(&vp, 0);
@@ -617,10 +815,11 @@ mod tests {
     }
 
     #[test]
-    fn close_button_rect_hidden_for_single_tab() {
+    fn close_button_rect_shown_for_single_tab() {
         let rect = Rect::new(0.0, 0.0, 400.0, 100.0);
         let vp = make_viewport(rect, false, 1);
-        assert!(PaneRenderer::close_button_rect(&vp, 0).is_none());
+        // Closing the last tab closes the entire pane.
+        assert!(PaneRenderer::close_button_rect(&vp, 0).is_some());
     }
 
     #[test]
@@ -686,5 +885,136 @@ mod tests {
             let alpha = 0.3 + 0.2 * (t * std::f32::consts::PI).sin();
             assert!(alpha >= 0.09 && alpha <= 0.51, "alpha {alpha} at t={t}");
         }
+    }
+
+    // ── Toggle mode tests ───────────────────────────────────────────
+
+    fn make_toggle_viewport(rect: Rect) -> PaneViewport {
+        PaneViewport {
+            pane_id: PaneId::new(),
+            rect,
+            focused: true,
+            tab_count: 2,
+            tab_titles: vec!["bash".into(), "http://localhost".into()],
+            surface_ids: vec![SurfaceId::new(), SurfaceId::new()],
+            active_tab: 0,
+            zoomed: false,
+            surface_types: vec![SurfaceType::Terminal, SurfaceType::Browser],
+            unsaved: vec![false, false],
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn is_toggle_mode_terminal_and_browser() {
+        let vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert!(vp.is_toggle_mode());
+    }
+
+    #[test]
+    fn is_toggle_mode_two_terminals() {
+        let mut vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 300.0));
+        vp.surface_types = vec![SurfaceType::Terminal, SurfaceType::Terminal];
+        assert!(!vp.is_toggle_mode());
+    }
+
+    #[test]
+    fn is_toggle_mode_single_tab() {
+        let vp = make_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), false, 1);
+        assert!(!vp.is_toggle_mode());
+    }
+
+    #[test]
+    fn is_toggle_mode_three_tabs() {
+        let mut vp = make_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), false, 3);
+        vp.surface_types = vec![
+            SurfaceType::Terminal,
+            SurfaceType::Browser,
+            SurfaceType::Terminal,
+        ];
+        assert!(!vp.is_toggle_mode());
+    }
+
+    #[test]
+    fn toggle_container_rect_centred() {
+        let rect = Rect::new(100.0, 0.0, 500.0, 100.0);
+        let vp = make_toggle_viewport(rect);
+        let (cx, _cy, cw, _ch) = PaneRenderer::toggle_container_rect(&vp);
+        let centre = rect.x + rect.width / 2.0;
+        let container_centre = cx + cw / 2.0;
+        assert!((centre - container_centre).abs() < 1.0);
+    }
+
+    #[test]
+    fn toggle_segment_rects_within_container() {
+        let vp = make_toggle_viewport(Rect::new(0.0, 0.0, 500.0, 100.0));
+        let (cx, cy, cw, ch) = PaneRenderer::toggle_container_rect(&vp);
+        for seg in 0..2 {
+            let (sx, sy, sw, sh) = PaneRenderer::toggle_segment_rect(&vp, seg).unwrap();
+            assert!(sx >= cx, "segment {seg} starts before container");
+            assert!(sy >= cy, "segment {seg} top before container");
+            assert!(
+                sx + sw <= cx + cw + 1.0,
+                "segment {seg} extends past container"
+            );
+            assert!(
+                sy + sh <= cy + ch + 1.0,
+                "segment {seg} bottom past container"
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_segment_rect_out_of_range() {
+        let vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 100.0));
+        assert!(PaneRenderer::toggle_segment_rect(&vp, 2).is_none());
+    }
+
+    #[test]
+    fn toggle_segment_to_tab_mapping() {
+        let vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 100.0));
+        // Segment 0 (shell) → Terminal index
+        let tab_idx = PaneRenderer::toggle_segment_to_tab(&vp, 0).unwrap();
+        assert_eq!(vp.surface_types[tab_idx], SurfaceType::Terminal);
+        // Segment 1 (browser) → Browser index
+        let tab_idx = PaneRenderer::toggle_segment_to_tab(&vp, 1).unwrap();
+        assert_eq!(vp.surface_types[tab_idx], SurfaceType::Browser);
+    }
+
+    #[test]
+    fn active_toggle_segment_shell() {
+        let mut vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 100.0));
+        vp.active_tab = 0; // Terminal
+        assert_eq!(PaneRenderer::active_toggle_segment(&vp), Some(0));
+    }
+
+    #[test]
+    fn active_toggle_segment_browser() {
+        let mut vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 100.0));
+        vp.active_tab = 1; // Browser
+        assert_eq!(PaneRenderer::active_toggle_segment(&vp), Some(1));
+    }
+
+    #[test]
+    fn active_toggle_segment_not_toggle_mode() {
+        let vp = make_viewport(Rect::new(0.0, 0.0, 400.0, 100.0), false, 1);
+        assert_eq!(PaneRenderer::active_toggle_segment(&vp), None);
+    }
+
+    #[test]
+    fn toggle_segment_to_tab_reversed_order() {
+        // Browser first, Terminal second — segment mapping must still be correct.
+        let mut vp = make_toggle_viewport(Rect::new(0.0, 0.0, 400.0, 100.0));
+        vp.surface_types = vec![SurfaceType::Browser, SurfaceType::Terminal];
+
+        // Segment 0 (shell) → Terminal at index 1
+        let shell_idx = PaneRenderer::toggle_segment_to_tab(&vp, 0).unwrap();
+        assert_eq!(shell_idx, 1);
+        assert_eq!(vp.surface_types[shell_idx], SurfaceType::Terminal);
+
+        // Segment 1 (browser) → Browser at index 0
+        let browser_idx = PaneRenderer::toggle_segment_to_tab(&vp, 1).unwrap();
+        assert_eq!(browser_idx, 0);
+        assert_eq!(vp.surface_types[browser_idx], SurfaceType::Browser);
     }
 }

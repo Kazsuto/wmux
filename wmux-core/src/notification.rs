@@ -174,12 +174,14 @@ impl NotificationStore {
     /// If the store is at capacity, evicts the oldest cleared notification first,
     /// then the oldest notification regardless.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &mut self,
         title: Option<String>,
         body: String,
         subtitle: Option<String>,
         source: NotificationSource,
+        severity: NotificationSeverity,
         workspace: Option<WorkspaceId>,
         surface: Option<SurfaceId>,
     ) -> (NotificationId, NotificationEvent) {
@@ -209,7 +211,7 @@ impl NotificationStore {
             source_surface: surface,
             timestamp: SystemTime::now(),
             state: NotificationState::Received,
-            severity: NotificationSeverity::default(),
+            severity,
         };
 
         self.notifications.push(notification);
@@ -422,6 +424,7 @@ mod tests {
             "Body".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -447,6 +450,7 @@ mod tests {
             "test".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -493,6 +497,7 @@ mod tests {
             "test".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -523,6 +528,7 @@ mod tests {
             "test".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -540,6 +546,7 @@ mod tests {
             "test1".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(ws_id),
             None,
         );
@@ -548,6 +555,7 @@ mod tests {
             "test2".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(other_ws_id),
             None,
         );
@@ -556,6 +564,7 @@ mod tests {
             "test3".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(ws_id),
             None,
         );
@@ -581,6 +590,7 @@ mod tests {
             "test1".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -589,6 +599,7 @@ mod tests {
             "test2".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -597,6 +608,7 @@ mod tests {
             "test3".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -624,6 +636,7 @@ mod tests {
             "test1".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(ws_id),
             None,
         );
@@ -632,6 +645,7 @@ mod tests {
             "test2".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(ws_id),
             None,
         );
@@ -640,6 +654,7 @@ mod tests {
             "test3".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(other_ws_id),
             None,
         );
@@ -671,6 +686,7 @@ mod tests {
                 format!("notif {}", i),
                 None,
                 NotificationSource::Api,
+                NotificationSeverity::default(),
                 None,
                 None,
             );
@@ -703,6 +719,7 @@ mod tests {
                 format!("notif {}", i),
                 None,
                 NotificationSource::Api,
+                NotificationSeverity::default(),
                 None,
                 None,
             );
@@ -718,6 +735,7 @@ mod tests {
             "notif 10".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -741,6 +759,7 @@ mod tests {
             "test".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::Info,
             Some(ws_id),
             None,
         );
@@ -769,6 +788,7 @@ mod tests {
             "test1".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -777,6 +797,7 @@ mod tests {
             "test2".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );
@@ -785,6 +806,7 @@ mod tests {
             "test3".to_string(),
             None,
             NotificationSource::Api,
+            NotificationSeverity::default(),
             None,
             None,
         );

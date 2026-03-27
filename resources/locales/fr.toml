@@ -18,6 +18,14 @@ clear_all = "Tout effacer"
 mark_read = "Marquer comme lu"
 notifications = "Notifications"
 no_notifications = "Aucune notification"
+severity_info = "Info"
+severity_warning = "Avertissement"
+severity_error = "Erreur"
+severity_success = "Succès"
+time_just_now = "à l'instant"
+time_minutes_ago = "il y a {n} min"
+time_hours_ago = "il y a {n}h"
+time_days_ago = "il y a {n}j"
 
 [terminal]
 copy = "Copier"
@@ -68,7 +76,14 @@ reload = "Recharger"
 back = "Précédent"
 forward = "Suivant"
 address_bar = "Adresse"
+address_placeholder = "Saisissez une URL ou recherchez..."
 stop = "Arrêter"
+
+[tab]
+shell = "Shell"
+browser = "Navigateur"
+close_tab = "Fermer l'onglet"
+rename_tab = "Renommer l'onglet"
 
 [settings]
 font = "Police"

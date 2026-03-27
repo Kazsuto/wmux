@@ -19,7 +19,7 @@ use winit::{
     keyboard::ModifiersState,
     window::Window,
 };
-use wmux_config::UiChrome;
+use wmux_config::{Locale, UiChrome};
 use wmux_core::{AppEvent, AppStateHandle, PaneId, SurfaceId, TerminalMode};
 use wmux_render::{
     GlyphonRenderer, GpuContext, QuadPipeline, ShadowPipeline, TerminalMetrics, TerminalRenderer,
@@ -92,6 +92,25 @@ pub(crate) struct UiState<'window> {
     /// Last filter used for palette search — dirty tracking.
     pub(crate) palette_last_filter: crate::command_palette::PaletteFilter,
 
+    // Notification panel
+    pub(crate) notification_panel: crate::notification_panel::NotificationPanel,
+    /// Cached notifications — refreshed each frame when panel is open.
+    pub(crate) notification_cache: Vec<wmux_core::Notification>,
+    /// Glyphon buffer for the "Notifications" header title.
+    pub(crate) notif_header_buffer: glyphon::Buffer,
+    /// Glyphon buffer for the "Clear all" header text.
+    pub(crate) notif_clear_all_buffer: glyphon::Buffer,
+    /// Glyphon buffer for the empty state text.
+    pub(crate) notif_empty_buffer: glyphon::Buffer,
+    /// Pool of glyphon buffers for notification category labels.
+    pub(crate) notif_category_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon buffers for notification titles.
+    pub(crate) notif_title_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon buffers for notification body text.
+    pub(crate) notif_body_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon buffers for notification timestamps.
+    pub(crate) notif_time_buffers: Vec<glyphon::Buffer>,
+
     // Search overlay
     pub(crate) search: SearchState,
     /// Cached visible rows (scrollback + grid) for the focused pane, used by search.
@@ -107,6 +126,8 @@ pub(crate) struct UiState<'window> {
     // Tab bar text
     /// Cached glyphon text buffers for tab titles, keyed by layout pane ID.
     pub(crate) tab_title_buffers: HashMap<PaneId, Vec<glyphon::Buffer>>,
+    /// Cached glyphon text buffers for toggle labels ("Shell"/"Browser"), keyed by pane ID.
+    pub(crate) toggle_label_buffers: HashMap<PaneId, [glyphon::Buffer; 2]>,
     /// Cached viewports from the last render — used for tab bar hit-testing.
     pub(crate) last_viewports: Vec<wmux_render::PaneViewport>,
     /// Active tab drag state for drag-and-drop reordering.
@@ -128,7 +149,6 @@ pub(crate) struct UiState<'window> {
     pub(crate) cg_split: [glyphon::CustomGlyph; 1],
     pub(crate) cg_search: [glyphon::CustomGlyph; 1],
     pub(crate) cg_arrows: [[glyphon::CustomGlyph; 1]; 4],
-    pub(crate) cg_workspace: [glyphon::CustomGlyph; 1],
     /// Pre-built CustomGlyph arrays for status badge icons, keyed by Icon variant.
     pub(crate) status_icon_cgs: HashMap<wmux_render::icons::Icon, [glyphon::CustomGlyph; 1]>,
 
@@ -139,6 +159,14 @@ pub(crate) struct UiState<'window> {
     pub(crate) main_hwnd: windows::Win32::Foundation::HWND,
     /// Kind of the active surface in the focused pane — used to route keyboard input.
     pub(crate) focused_surface_kind: wmux_core::PanelKind,
+    /// Address bar state for the focused browser surface.
+    pub(crate) address_bar: crate::address_bar::AddressBarState,
+    /// Glyphon text buffer for the address bar URL display.
+    pub(crate) address_bar_buffer: glyphon::Buffer,
+    /// Last known URL per browser surface (avoids per-frame COM calls).
+    pub(crate) browser_urls: std::collections::HashMap<wmux_core::SurfaceId, String>,
+    /// Config-defined default browser URL.
+    pub(crate) browser_default_url: String,
 
     // Status bar
     pub(crate) status_bar: crate::status_bar::StatusBar,
@@ -167,6 +195,14 @@ pub(crate) struct UiState<'window> {
     pub(crate) workspace_menu_buffers: [glyphon::Buffer; WORKSPACE_MENU_ITEMS],
     /// Which workspace menu item is currently hovered, if any.
     pub(crate) workspace_menu_hover: Option<usize>,
+
+    // Tab context menu
+    /// State of the tab context menu (right-click on a tab).
+    pub(crate) tab_menu: TabContextMenuState,
+    /// Glyphon text buffers for tab context menu items.
+    pub(crate) tab_menu_buffers: [glyphon::Buffer; TAB_MENU_ITEMS],
+    /// Which tab menu item is currently hovered, if any.
+    pub(crate) tab_menu_hover: Option<usize>,
 
     // Animation
     pub(crate) animation: crate::animation::AnimationEngine,
@@ -198,6 +234,14 @@ pub(crate) struct UiState<'window> {
     pub(crate) terminal_font_family: String,
     /// User-configured terminal font size.
     pub(crate) terminal_font_size: f32,
+
+    // Localization
+    /// Locale instance for i18n string lookups.
+    pub(crate) locale: Locale,
+
+    // Reusable allocations (avoid per-frame heap allocation)
+    /// Reusable set for tracking live browser surface IDs during render.
+    pub(crate) live_browser_sids: std::collections::HashSet<SurfaceId>,
 }
 
 impl UiState<'_> {
@@ -229,6 +273,7 @@ pub(crate) enum TabEditState {
         surface_id: SurfaceId,
         text: String,
         cursor: usize,
+        selected_all: bool,
     },
 }
 
@@ -285,6 +330,26 @@ pub(crate) enum WorkspaceMenuState {
 
 /// Number of items in the workspace context menu.
 pub(crate) const WORKSPACE_MENU_ITEMS: usize = 2;
+
+/// State for the tab context menu (right-click on a tab pill or toggle segment).
+#[derive(Debug, Clone, Default)]
+pub(crate) enum TabContextMenuState {
+    /// Menu is closed.
+    #[default]
+    Closed,
+    /// Menu is open for a specific tab.
+    Open {
+        pane_id: PaneId,
+        tab_index: usize,
+        surface_id: SurfaceId,
+        /// Top-left corner of the menu popup in logical pixels.
+        menu_x: f32,
+        menu_y: f32,
+    },
+}
+
+/// Number of items in the tab context menu.
+pub(crate) const TAB_MENU_ITEMS: usize = 2;
 
 /// Tab drag-and-drop state machine.
 #[derive(Debug, Clone)]

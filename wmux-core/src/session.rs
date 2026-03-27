@@ -23,6 +23,8 @@ pub struct SessionState {
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub active_workspace_index: usize,
     pub sidebar_width: u16,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
     pub window: Option<WindowGeometry>,
 }
 
@@ -73,6 +75,7 @@ pub fn build_session_state(
     registry: &PaneRegistry,
     pane_cwds: &HashMap<PaneId, PathBuf>,
     sidebar_width: u16,
+    sidebar_collapsed: bool,
     window: Option<WindowGeometry>,
 ) -> SessionState {
     let active_workspace_index = workspace_manager.active_index();
@@ -96,6 +99,7 @@ pub fn build_session_state(
         workspaces,
         active_workspace_index,
         sidebar_width,
+        sidebar_collapsed,
         window,
     }
 }
@@ -374,6 +378,7 @@ mod tests {
             pty_resize_tx: resize_tx,
             process_exited: false,
             surfaces: SurfaceManager::new(Surface::new("shell", PaneId::new())),
+            child_pid: None,
         }
     }
 
@@ -382,7 +387,7 @@ mod tests {
         let wm = WorkspaceManager::new();
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, false, None);
 
         assert_eq!(state.version, 1);
         assert_eq!(state.workspaces.len(), 1);
@@ -401,7 +406,7 @@ mod tests {
         let active = wm.active_mut();
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, false, None);
 
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
@@ -420,7 +425,7 @@ mod tests {
         wm.create("Third".to_string());
         let registry = PaneRegistry::new();
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, false, None);
 
         assert_eq!(state.workspaces.len(), 3);
         assert_eq!(state.workspaces[1].name, "Second");
@@ -442,6 +447,7 @@ mod tests {
             }],
             active_workspace_index: 0,
             sidebar_width: 200,
+            sidebar_collapsed: true,
             window: Some(WindowGeometry {
                 x: 100,
                 y: 200,
@@ -458,6 +464,7 @@ mod tests {
         assert_eq!(back.workspaces.len(), 1);
         assert_eq!(back.active_workspace_index, 0);
         assert_eq!(back.sidebar_width, 200);
+        assert!(back.sidebar_collapsed);
         assert!(back.window.is_some());
         let w = back.window.unwrap();
         assert_eq!(w.x, 100);
@@ -488,6 +495,7 @@ mod tests {
             }],
             active_workspace_index: 0,
             sidebar_width: 0,
+            sidebar_collapsed: false,
             window: None,
         };
 
@@ -540,7 +548,7 @@ mod tests {
         active.pane_tree = Some(crate::pane_tree::PaneTree::new(pane_id));
 
         // Build state — should succeed even with empty scrollback.
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, None);
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, false, None);
         assert_eq!(state.version, 1);
         assert!(state.workspaces[0].pane_tree.is_some());
     }
@@ -558,7 +566,7 @@ mod tests {
         let mut cwds = HashMap::new();
         cwds.insert(pane_id, PathBuf::from("F:/Workspaces/wmux"));
 
-        let state = build_session_state(&wm, &registry, &cwds, 260, None);
+        let state = build_session_state(&wm, &registry, &cwds, 260, false, None);
         assert_eq!(state.sidebar_width, 260);
 
         if let Some(PaneTreeSnapshot::Leaf { cwd, .. }) = &state.workspaces[0].pane_tree {
@@ -580,7 +588,7 @@ mod tests {
             maximized: true,
         };
 
-        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, Some(geom));
+        let state = build_session_state(&wm, &registry, &HashMap::new(), 0, false, Some(geom));
         let w = state.window.unwrap();
         assert_eq!(w.x, 50);
         assert_eq!(w.width, 1920);

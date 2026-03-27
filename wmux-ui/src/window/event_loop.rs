@@ -169,6 +169,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 None
             }
         });
+        let restored_sidebar_collapsed = session.as_ref().is_some_and(|s| s.sidebar_collapsed);
         let pane_id = if let Some(session) = session {
             restore_session(&session, cols, rows, &self.app_state, &self.rt_handle)
         } else {
@@ -194,16 +195,20 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                 let _ = proxy_fwd.send_event(WmuxEvent::ShowToast(notification));
                             }
                         }
-                        AppEvent::PaneExited { success, .. } => {
-                            let _ = proxy_fwd.send_event(WmuxEvent::PtyExited { success });
+                        AppEvent::PaneExited { pane_id, success } => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::PtyExited { pane_id, success });
                         }
                         AppEvent::FocusChanged { pane_id } => {
                             let _ = proxy_fwd.send_event(WmuxEvent::FocusPane(pane_id));
                         }
-                        // Workspace events are handled by the sidebar (Task L2_08).
-                        AppEvent::WorkspaceCreated { .. }
-                        | AppEvent::WorkspaceSwitched { .. }
-                        | AppEvent::WorkspaceClosed { .. } => {}
+                        // Workspace events: trigger a redraw so the UI picks up
+                        // the new active workspace (empty or not).
+                        AppEvent::WorkspaceCreated { .. } | AppEvent::WorkspaceClosed { .. } => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::PtyOutput);
+                        }
+                        AppEvent::WorkspaceSwitched { .. } => {
+                            let _ = proxy_fwd.send_event(WmuxEvent::PtyOutput);
+                        }
                     }
                 }
                 tracing::info!("event forwarding task ended");
@@ -284,6 +289,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let search_query_buffer = glyphon::Buffer::new(glyphon.font_system(), search_text_metrics);
         let search_count_buffer = glyphon::Buffer::new(glyphon.font_system(), search_text_metrics);
 
+        // Pre-allocate address bar text buffer.
+        let address_bar_buffer = glyphon::Buffer::new(glyphon.font_system(), search_text_metrics);
+
         // Pre-allocate command palette text buffers.
         let palette_text_metrics = glyphon::Metrics::new(
             crate::typography::CAPTION_FONT_SIZE,
@@ -324,6 +332,84 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let palette_shortcut_buffers: Vec<glyphon::Buffer> = (0
             ..crate::command_palette::MAX_VISIBLE_RESULTS)
             .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics))
+            .collect();
+
+        // Pre-allocate notification panel text buffers.
+        let notif_title_metrics = glyphon::Metrics::new(
+            crate::typography::TITLE_FONT_SIZE,
+            crate::typography::TITLE_LINE_HEIGHT,
+        );
+        let notif_body_metrics = glyphon::Metrics::new(
+            crate::typography::BODY_FONT_SIZE,
+            crate::typography::BODY_LINE_HEIGHT,
+        );
+        let notif_caption_metrics = glyphon::Metrics::new(
+            crate::typography::CAPTION_FONT_SIZE,
+            crate::typography::CAPTION_LINE_HEIGHT,
+        );
+        let notif_ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+        let notif_ui_bold = glyphon::Attrs::new()
+            .family(glyphon::Family::Name("Segoe UI"))
+            .weight(glyphon::Weight::BOLD);
+
+        // Locale for i18n string lookups.
+        let locale = wmux_config::Locale::new(&config.language);
+
+        // Header "Notifications" (title size)
+        let mut notif_header_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), notif_title_metrics);
+        notif_header_buffer.set_size(glyphon.font_system(), Some(250.0), Some(30.0));
+        notif_header_buffer.set_text(
+            glyphon.font_system(),
+            locale.t("notification.notifications"),
+            &notif_ui_bold,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        notif_header_buffer.shape_until_scroll(glyphon.font_system(), false);
+
+        // "Clear all" (caption size)
+        let mut notif_clear_all_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), notif_caption_metrics);
+        notif_clear_all_buffer.set_size(glyphon.font_system(), Some(80.0), Some(20.0));
+        notif_clear_all_buffer.set_text(
+            glyphon.font_system(),
+            locale.t("notification.clear_all"),
+            &notif_ui_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        notif_clear_all_buffer.shape_until_scroll(glyphon.font_system(), false);
+
+        // Empty state text
+        let mut notif_empty_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), notif_caption_metrics);
+        notif_empty_buffer.set_size(glyphon.font_system(), Some(200.0), Some(20.0));
+        notif_empty_buffer.set_text(
+            glyphon.font_system(),
+            locale.t("notification.no_notifications"),
+            &notif_ui_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        notif_empty_buffer.shape_until_scroll(glyphon.font_system(), false);
+
+        // Item buffer pools (category=caption, title=body bold, body=caption, time=caption).
+        let notif_category_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::notification_panel::MAX_VISIBLE_ITEMS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), notif_caption_metrics))
+            .collect();
+        let notif_title_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::notification_panel::MAX_VISIBLE_ITEMS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), notif_body_metrics))
+            .collect();
+        let notif_body_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::notification_panel::MAX_VISIBLE_ITEMS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), notif_caption_metrics))
+            .collect();
+        let notif_time_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::notification_panel::MAX_VISIBLE_ITEMS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), notif_caption_metrics))
             .collect();
 
         tracing::info!(
@@ -402,6 +488,21 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 b
             });
 
+        let tab_menu_labels = [locale.t("tab.rename_tab"), locale.t("tab.close_tab")];
+        let tab_menu_buffers: [glyphon::Buffer; super::TAB_MENU_ITEMS] = std::array::from_fn(|i| {
+            let mut b = glyphon::Buffer::new(glyphon.font_system(), menu_m);
+            b.set_size(glyphon.font_system(), Some(180.0), Some(28.0));
+            b.set_text(
+                glyphon.font_system(),
+                tab_menu_labels[i],
+                &menu_attrs,
+                glyphon::Shaping::Advanced,
+                None,
+            );
+            b.shape_until_scroll(glyphon.font_system(), false);
+            b
+        });
+
         let split_menu_hint_buffers = std::array::from_fn(|i| {
             let mut b = glyphon::Buffer::new(glyphon.font_system(), menu_m);
             b.set_size(glyphon.font_system(), Some(120.0), Some(28.0));
@@ -432,6 +533,15 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             toast_service,
             sidebar: crate::sidebar::SidebarState::new(config.sidebar_width),
             workspace_cache: Vec::new(),
+            notification_panel: crate::notification_panel::NotificationPanel::new(),
+            notification_cache: Vec::new(),
+            notif_header_buffer,
+            notif_clear_all_buffer,
+            notif_empty_buffer,
+            notif_category_buffers,
+            notif_title_buffers,
+            notif_body_buffers,
+            notif_time_buffers,
             dividers: Vec::new(),
             drag_state: None,
             focused_pane: pane_id,
@@ -459,6 +569,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             search_query_buffer,
             search_count_buffer,
             tab_title_buffers: std::collections::HashMap::new(),
+            toggle_label_buffers: std::collections::HashMap::new(),
             last_viewports: Vec::new(),
             tab_drag: TabDragState::None,
             tab_close_hover: None,
@@ -477,11 +588,14 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 [svg_cg(wmux_render::icons::Icon::ArrowUp, 14.0)],
                 [svg_cg(wmux_render::icons::Icon::ArrowDown, 14.0)],
             ],
-            cg_workspace: [svg_cg(wmux_render::icons::Icon::Workspace, 16.0)],
             status_icon_cgs,
             browser_manager,
             main_hwnd,
             focused_surface_kind: wmux_core::PanelKind::Terminal,
+            address_bar: crate::address_bar::AddressBarState::new(),
+            address_bar_buffer,
+            browser_urls: std::collections::HashMap::new(),
+            browser_default_url: config.browser_default_url.clone(),
             status_bar,
             status_bar_data,
             start_instant: std::time::Instant::now(),
@@ -493,7 +607,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             workspace_menu: super::WorkspaceMenuState::default(),
             workspace_menu_buffers: ws_menu_buffers,
             workspace_menu_hover: None,
-            animation: crate::animation::AnimationEngine::default(),
+            tab_menu: super::TabContextMenuState::default(),
+            tab_menu_buffers,
+            tab_menu_hover: None,
+            animation: {
+                let mut engine = crate::animation::AnimationEngine::default();
+                if !crate::effects::is_animations_enabled() {
+                    engine.set_reduced_motion(true);
+                }
+                engine
+            },
             focus_glow_anim: None,
             tab_hover: None,
             tab_hover_anim: None,
@@ -507,16 +630,19 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             scale_factor: initial_scale_factor,
             terminal_font_family: config.font_family.clone(),
             terminal_font_size: config.font_size,
+            locale,
+            live_browser_sids: std::collections::HashSet::new(),
         });
 
-        // Override sidebar width from saved session (takes priority over config default).
-        if let Some(sw) = restored_sidebar_width {
-            if let Some(ref mut state) = self.state {
+        // Override sidebar width and collapsed state from saved session.
+        if let Some(ref mut state) = self.state {
+            if let Some(sw) = restored_sidebar_width {
                 state.sidebar.width = (sw as f32).clamp(
                     crate::sidebar::MIN_SIDEBAR_WIDTH,
                     crate::sidebar::MAX_SIDEBAR_WIDTH,
                 );
             }
+            state.sidebar.collapsed = restored_sidebar_collapsed;
         }
     }
 
@@ -527,11 +653,15 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     state.window.request_redraw();
                 }
             }
-            WmuxEvent::PtyExited { success } => {
+            WmuxEvent::PtyExited { pane_id, success } => {
                 if let Some(state) = self.state.as_mut() {
-                    state.process_exited = true;
+                    // Only block input for the focused pane — other panes
+                    // and UI elements (address bar, sidebar) must keep working.
+                    if pane_id == state.focused_pane {
+                        state.process_exited = true;
+                    }
                     state.window.request_redraw();
-                    tracing::info!(success, "shell process exited");
+                    tracing::info!(%pane_id, success, "shell process exited");
                 }
             }
             WmuxEvent::ShowToast(notification) => {
@@ -565,19 +695,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 tracing::info!(surface_id = %surface_id, url = %url, "CreateBrowserPanel event received");
                 if let Some(state) = self.state.as_mut() {
                     if let Some(ref mut mgr) = state.browser_manager {
-                        // Use the actual pane viewport if available, else a reasonable fallback.
+                        // Use browser_viewport (below tab bar + address bar) for initial bounds.
                         let rect = state
                             .last_viewports
                             .iter()
                             .find(|vp| vp.surface_ids.contains(&surface_id))
-                            .map(wmux_render::PaneRenderer::terminal_viewport)
+                            .map(wmux_render::PaneRenderer::browser_viewport)
                             .unwrap_or_else(|| {
-                                // Fallback: use the focused pane's viewport, or a default.
                                 state
                                     .last_viewports
                                     .iter()
                                     .find(|vp| vp.focused)
-                                    .map(wmux_render::PaneRenderer::terminal_viewport)
+                                    .map(wmux_render::PaneRenderer::browser_viewport)
                                     .unwrap_or_else(|| {
                                         wmux_core::rect::Rect::new(0.0, 0.0, 800.0, 600.0)
                                     })
@@ -588,6 +717,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                     let _ = panel.navigate(&url);
                                     let _ = panel.focus_webview();
                                 }
+                                // Track URL for address bar display.
+                                state.browser_urls.insert(surface_id, url.clone());
+                                state.address_bar.set_url(&url);
                                 tracing::info!(
                                     surface_id = %surface_id,
                                     url = %url,
@@ -653,6 +785,13 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
                     state.window.request_redraw();
                 }
+            }
+
+            WindowEvent::Moved(_) => {
+                // WS_POPUP browser panels use screen coordinates — they do NOT
+                // move automatically with the parent. Trigger a redraw so
+                // render() repositions them via set_bounds + ClientToScreen.
+                state.window.request_redraw();
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -727,6 +866,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 if matches!(state.workspace_menu, super::WorkspaceMenuState::Open { .. }) {
                     state.workspace_menu = super::WorkspaceMenuState::Closed;
                     state.workspace_menu_hover = None;
+                    if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                        state.window.request_redraw();
+                        return;
+                    }
+                }
+
+                // Close tab context menu on any keypress.
+                if matches!(state.tab_menu, super::TabContextMenuState::Open { .. }) {
+                    state.tab_menu = super::TabContextMenuState::Closed;
+                    state.tab_menu_hover = None;
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                         state.window.request_redraw();
                         return;
@@ -822,6 +971,16 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
+                // Priority 1.3: notification panel — Escape closes the panel.
+                if state.notification_panel.open
+                    && event.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                {
+                    state.notification_panel.toggle();
+                    state.window.request_redraw();
+                    return;
+                }
+
                 // Priority 1.5: search overlay input — intercepted when search is active.
                 // Must be before the process_exited check so search works even
                 // after the shell process has exited.
@@ -831,7 +990,34 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
-                // Don't send input to a dead process.
+                // Priority 1.6: address bar editing — intercepts keyboard when
+                // the user is typing a URL in the browser address bar.
+                // Must be before process_exited check so URL editing works
+                // even when the shell in the same pane has exited.
+                if state.address_bar.editing {
+                    if let Some(url) = handlers::handle_address_bar_key(state, &event) {
+                        // Navigate the focused browser panel to the entered URL.
+                        if let Some(ref mut mgr) = state.browser_manager {
+                            // Find the focused browser surface ID.
+                            if let Some(focused_vp) =
+                                state.last_viewports.iter().find(|vp| vp.focused)
+                            {
+                                let active_sid =
+                                    focused_vp.surface_ids.get(focused_vp.active_tab).copied();
+                                if let Some(sid) = active_sid {
+                                    if let Some(panel) = mgr.get_panel(sid) {
+                                        let _ = panel.navigate(&url);
+                                    }
+                                    state.browser_urls.insert(sid, url);
+                                }
+                            }
+                        }
+                    }
+                    state.window.request_redraw();
+                    return;
+                }
+
+                // Don't send terminal input to a dead process.
                 if state.process_exited {
                     return;
                 }
@@ -969,6 +1155,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                                     index: workspace_index,
                                                     text: name,
                                                     cursor,
+                                                    selected_all: false,
                                                 };
                                         }
                                     }
@@ -996,6 +1183,133 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         state.window.request_redraw();
                         // Don't return — let click propagate.
                     }
+                }
+
+                // Tab context menu click handling — highest priority when open.
+                if let super::TabContextMenuState::Open {
+                    pane_id,
+                    tab_index,
+                    surface_id,
+                    menu_x,
+                    menu_y,
+                } = state.tab_menu.clone()
+                {
+                    let item_h = 32.0_f32;
+                    let menu_w = 200.0_f32;
+                    let menu_items = super::TAB_MENU_ITEMS;
+                    let menu_h = item_h * menu_items as f32 + 8.0;
+
+                    if elem_state == ElementState::Pressed
+                        && button == winit::event::MouseButton::Left
+                    {
+                        if px >= menu_x
+                            && px < menu_x + menu_w
+                            && py >= menu_y
+                            && py < menu_y + menu_h
+                        {
+                            let raw = py - menu_y - 4.0;
+                            if raw < 0.0 {
+                                state.tab_menu = super::TabContextMenuState::Closed;
+                                state.tab_menu_hover = None;
+                                state.window.request_redraw();
+                                return;
+                            }
+                            let item_idx = (raw / item_h).floor() as usize;
+                            if item_idx < menu_items {
+                                state.tab_menu = super::TabContextMenuState::Closed;
+                                state.tab_menu_hover = None;
+                                match item_idx {
+                                    0 => {
+                                        // Rename Tab — start inline editing.
+                                        let title = state
+                                            .last_viewports
+                                            .iter()
+                                            .find(|vp| vp.pane_id == pane_id)
+                                            .and_then(|vp| vp.tab_titles.get(tab_index).cloned())
+                                            .unwrap_or_default();
+                                        let cursor = title.chars().count();
+                                        state.tab_edit = super::TabEditState::Editing {
+                                            pane_id,
+                                            tab_index,
+                                            surface_id,
+                                            text: title,
+                                            cursor,
+                                            selected_all: false,
+                                        };
+                                        tracing::debug!(
+                                            pane_id = %pane_id,
+                                            tab_index,
+                                            "tab: started inline editing via context menu"
+                                        );
+                                    }
+                                    1 => {
+                                        // Close Tab.
+                                        tracing::info!(
+                                            pane_id = %pane_id,
+                                            surface_id = %surface_id,
+                                            "surface closed via tab context menu"
+                                        );
+                                        self.app_state.close_surface(pane_id, surface_id);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        // Click outside menu — close it.
+                        state.tab_menu = super::TabContextMenuState::Closed;
+                        state.tab_menu_hover = None;
+                        state.window.request_redraw();
+                        // Don't return — let click propagate.
+                    }
+                }
+
+                // Notification panel click handling.
+                if state.notification_panel.open
+                    && elem_state == ElementState::Pressed
+                    && button == winit::event::MouseButton::Left
+                {
+                    let sw = state.gpu.width() as f32;
+                    if state.notification_panel.contains_x(px, sw) {
+                        // Header hit-test (close / clear all).
+                        if let Some(action) = state.notification_panel.hit_test_header(px, py, sw) {
+                            match action {
+                                crate::notification_panel::HeaderAction::Close => {
+                                    state.notification_panel.toggle();
+                                }
+                                crate::notification_panel::HeaderAction::ClearAll => {
+                                    let app = self.app_state.clone();
+                                    self.rt_handle.spawn(async move {
+                                        app.clear_all_notifications().await;
+                                    });
+                                }
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        // Item click — focus source workspace.
+                        let total = state.notification_cache.len();
+                        if let Some(idx) = state.notification_panel.hit_test(py, total) {
+                            if let Some(notif) = state.notification_cache.get(idx) {
+                                if let Some(ws_id) = notif.source_workspace {
+                                    let app = self.app_state.clone();
+                                    self.rt_handle.spawn(async move {
+                                        app.select_workspace_by_id(ws_id).await;
+                                    });
+                                }
+                            }
+                            state.notification_panel.toggle();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        // Click in panel but not on header/item — consume event.
+                        return;
+                    }
+                    // Click outside notification panel — close it.
+                    state.notification_panel.toggle();
+                    state.window.request_redraw();
+                    // Don't return — let click propagate.
                 }
 
                 // Sidebar resize: start on left-click when hovering the resize edge.
@@ -1051,8 +1365,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         if let Some(row_index) =
                             state.sidebar.hit_test_row(py, state.workspace_cache.len())
                         {
-                            if state.mouse.click_count() >= 2 {
-                                // Double-click: start inline editing.
+                            if !state.sidebar.collapsed && state.mouse.click_count() >= 2 {
+                                // Double-click: start inline editing (expanded only).
                                 let name = state
                                     .workspace_cache
                                     .get(row_index)
@@ -1063,6 +1377,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                     index: row_index,
                                     text: name,
                                     cursor,
+                                    selected_all: false,
                                 };
                                 tracing::debug!(row_index, "sidebar: started inline editing");
                             } else {
@@ -1129,8 +1444,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         }
                     }
 
-                    // Right-click on sidebar row — open workspace context menu.
-                    if elem_state == ElementState::Pressed
+                    // Right-click on sidebar row — open workspace context menu (expanded only).
+                    if !state.sidebar.collapsed
+                        && elem_state == ElementState::Pressed
                         && button == winit::event::MouseButton::Right
                     {
                         if let Some(row_index) =
@@ -1280,6 +1596,71 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             && py >= vp.rect.y
                             && py < tab_bar_bottom
                         {
+                            // Toggle mode: segmented control hit-test.
+                            if vp.is_toggle_mode() {
+                                // Close button hit-test (priority).
+                                if let Some((bx, by, bw, bh)) =
+                                    wmux_render::pane::PaneRenderer::toggle_close_button_rect(vp)
+                                {
+                                    if px >= bx && px < bx + bw && py >= by && py < by + bh {
+                                        if let Some(sid) =
+                                            vp.surface_ids.get(vp.active_tab).copied()
+                                        {
+                                            tracing::info!(
+                                                pane_id = %vp.pane_id,
+                                                surface_id = %sid,
+                                                "surface closed via toggle close button"
+                                            );
+                                            self.app_state.close_surface(vp.pane_id, sid);
+                                            state.window.request_redraw();
+                                        }
+                                        tab_clicked = true;
+                                        break;
+                                    }
+                                }
+
+                                for seg in 0..2usize {
+                                    if let Some((sx, sy, sw, sh)) =
+                                        wmux_render::pane::PaneRenderer::toggle_segment_rect(
+                                            vp, seg,
+                                        )
+                                    {
+                                        if px >= sx && px < sx + sw && py >= sy && py < sy + sh {
+                                            if vp.pane_id != state.focused_pane {
+                                                state.set_focused_pane(vp.pane_id);
+                                                self.app_state.focus_pane(vp.pane_id);
+                                            }
+                                            if let Some(tab_idx) =
+                                                wmux_render::pane::PaneRenderer::toggle_segment_to_tab(
+                                                    vp, seg,
+                                                )
+                                            {
+                                                if tab_idx != vp.active_tab {
+                                                    self.app_state.cycle_surface_to_index(
+                                                        vp.pane_id, tab_idx,
+                                                    );
+                                                }
+                                            }
+                                            tab_clicked = true;
+                                            state.window.request_redraw();
+                                            break;
+                                        }
+                                    }
+                                }
+                                if tab_clicked {
+                                    break;
+                                }
+                                // Click in tab bar area but outside toggle segments —
+                                // treat as focus-only click.
+                                if vp.pane_id != state.focused_pane {
+                                    state.set_focused_pane(vp.pane_id);
+                                    self.app_state.focus_pane(vp.pane_id);
+                                }
+                                tab_clicked = true;
+                                state.window.request_redraw();
+                                break;
+                            }
+
                             // Split button hit-test (priority over "+" and tabs).
                             if let Some((sbx, sby, sbw, sbh)) =
                                 wmux_render::pane::PaneRenderer::split_button_rect(vp)
@@ -1416,6 +1797,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                         surface_id: sid,
                                         text: title,
                                         cursor,
+                                        selected_all: false,
                                     };
                                     tracing::debug!(
                                         pane_id = %vp.pane_id,
@@ -1452,6 +1834,125 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     }
                     if tab_clicked {
                         return;
+                    }
+                }
+
+                // Address bar click handling — only for browser panes.
+                if elem_state == ElementState::Pressed && button == winit::event::MouseButton::Left
+                {
+                    let viewports = state.last_viewports.clone();
+                    for vp in &viewports {
+                        let active_type = vp
+                            .surface_types
+                            .get(vp.active_tab)
+                            .copied()
+                            .unwrap_or(wmux_render::SurfaceType::Terminal);
+                        if active_type != wmux_render::SurfaceType::Browser {
+                            continue;
+                        }
+                        let bar_rect = wmux_render::PaneRenderer::address_bar_rect(vp);
+                        let hit = state.address_bar.hit_test(px, py, &bar_rect, vp.scale);
+                        match hit {
+                            crate::address_bar::AddressBarHit::Back => {
+                                if let Some(sid) = vp.surface_ids.get(vp.active_tab).copied() {
+                                    if let Some(ref mut mgr) = state.browser_manager {
+                                        if let Some(panel) = mgr.get_panel(sid) {
+                                            let _ = panel.back();
+                                        }
+                                    }
+                                }
+                                state.window.request_redraw();
+                                return;
+                            }
+                            crate::address_bar::AddressBarHit::Forward => {
+                                if let Some(sid) = vp.surface_ids.get(vp.active_tab).copied() {
+                                    if let Some(ref mut mgr) = state.browser_manager {
+                                        if let Some(panel) = mgr.get_panel(sid) {
+                                            let _ = panel.forward();
+                                        }
+                                    }
+                                }
+                                state.window.request_redraw();
+                                return;
+                            }
+                            crate::address_bar::AddressBarHit::UrlField => {
+                                // Focus the pane if needed.
+                                if vp.pane_id != state.focused_pane {
+                                    state.set_focused_pane(vp.pane_id);
+                                    self.app_state.focus_pane(vp.pane_id);
+                                }
+                                state.address_bar.start_editing();
+                                state.window.request_redraw();
+                                return;
+                            }
+                            crate::address_bar::AddressBarHit::None => {}
+                        }
+                    }
+                }
+
+                // Right-click on tab bar — open tab context menu.
+                if elem_state == ElementState::Pressed && button == winit::event::MouseButton::Right
+                {
+                    let viewports = state.last_viewports.clone();
+                    for vp in &viewports {
+                        let tab_bar_bottom = vp.rect.y + vp.tab_bar_height();
+                        if px >= vp.rect.x
+                            && px < vp.rect.x + vp.rect.width
+                            && py >= vp.rect.y
+                            && py < tab_bar_bottom
+                        {
+                            // Find which tab was right-clicked.
+                            let mut clicked_tab = None;
+                            if vp.is_toggle_mode() {
+                                // Toggle mode: right-click on a segment.
+                                for seg in 0..2usize {
+                                    if let Some((sx, sy, sw, sh)) =
+                                        wmux_render::pane::PaneRenderer::toggle_segment_rect(
+                                            vp, seg,
+                                        )
+                                    {
+                                        if px >= sx && px < sx + sw && py >= sy && py < sy + sh {
+                                            clicked_tab =
+                                                wmux_render::pane::PaneRenderer::toggle_segment_to_tab(
+                                                    vp, seg,
+                                                );
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Pill mode: right-click on a tab pill.
+                                for i in 0..vp.tab_count {
+                                    let (tw, tx) =
+                                        wmux_render::pane::PaneRenderer::tab_metrics(vp, i);
+                                    if px >= tx && px < tx + tw {
+                                        clicked_tab = Some(i);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if let Some(tab_index) = clicked_tab {
+                                if let Some(sid) = vp.surface_ids.get(tab_index).copied() {
+                                    state.tab_menu = super::TabContextMenuState::Open {
+                                        pane_id: vp.pane_id,
+                                        tab_index,
+                                        surface_id: sid,
+                                        menu_x: px,
+                                        menu_y: py,
+                                    };
+                                    state.tab_menu_hover = None;
+                                    tracing::debug!(
+                                        pane_id = %vp.pane_id,
+                                        tab_index,
+                                        "tab: opened context menu"
+                                    );
+                                    state.window.request_redraw();
+                                    return;
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
 
@@ -1564,6 +2065,53 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     }
                 }
 
+                // Tab context menu hover tracking.
+                if let super::TabContextMenuState::Open { menu_x, menu_y, .. } = state.tab_menu {
+                    let item_h = 32.0;
+                    let menu_w = 200.0;
+                    let menu_items = super::TAB_MENU_ITEMS;
+                    let menu_h = item_h * menu_items as f32 + 8.0;
+                    let new_hover = if px >= menu_x
+                        && px < menu_x + menu_w
+                        && py >= menu_y
+                        && py < menu_y + menu_h
+                    {
+                        let raw = py - menu_y - 4.0;
+                        if raw >= 0.0 {
+                            let idx = (raw / item_h).floor() as usize;
+                            if idx < menu_items {
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if new_hover != state.tab_menu_hover {
+                        state.tab_menu_hover = new_hover;
+                        state.window.request_redraw();
+                    }
+                }
+
+                // Notification panel hover tracking.
+                if state.notification_panel.open {
+                    let sw = state.gpu.width() as f32;
+                    if state.notification_panel.contains_x(px, sw) {
+                        let total = state.notification_cache.len();
+                        let old = state.notification_panel.hovered_item;
+                        state.notification_panel.update_hover(py, total);
+                        if state.notification_panel.hovered_item != old {
+                            state.window.request_redraw();
+                        }
+                    } else if state.notification_panel.hovered_item.is_some() {
+                        state.notification_panel.hovered_item = None;
+                        state.window.request_redraw();
+                    }
+                }
+
                 // Tab drag: transition Pressing → Dragging on threshold.
                 match state.tab_drag {
                     TabDragState::Pressing {
@@ -1603,13 +2151,25 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             && py >= vp.rect.y
                             && py < tab_bar_bottom
                         {
-                            for i in 0..vp.tab_count {
+                            if vp.is_toggle_mode() {
+                                // Toggle mode: single close button.
                                 if let Some((bx, by, bw, bh)) =
-                                    wmux_render::pane::PaneRenderer::close_button_rect(vp, i)
+                                    wmux_render::pane::PaneRenderer::toggle_close_button_rect(vp)
                                 {
                                     if px >= bx && px < bx + bw && py >= by && py < by + bh {
-                                        new_hover = Some((vp.pane_id, i));
-                                        break;
+                                        new_hover = Some((vp.pane_id, vp.active_tab));
+                                    }
+                                }
+                            } else {
+                                // Pill mode: per-tab close buttons.
+                                for i in 0..vp.tab_count {
+                                    if let Some((bx, by, bw, bh)) =
+                                        wmux_render::pane::PaneRenderer::close_button_rect(vp, i)
+                                    {
+                                        if px >= bx && px < bx + bw && py >= by && py < by + bh {
+                                            new_hover = Some((vp.pane_id, i));
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -1622,10 +2182,13 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     }
                 }
 
-                // General tab hover tracking (for background highlight animation).
+                // General tab hover tracking (for background highlight animation, skip toggle mode).
                 {
                     let mut new_tab_hover = None;
                     for vp in &state.last_viewports {
+                        if vp.is_toggle_mode() {
+                            continue;
+                        }
                         let tab_bar_bottom = vp.rect.y + vp.tab_bar_height();
                         if px >= vp.rect.x
                             && px < vp.rect.x + vp.rect.width
@@ -1697,8 +2260,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     let in_sidebar = px < state.sidebar.effective_width();
                     let ws_count = state.workspace_cache.len();
 
-                    // Check if we should transition from Pressing to Dragging.
-                    if state.sidebar.should_start_drag(py) {
+                    // Check if we should transition from Pressing to Dragging (expanded only).
+                    if !state.sidebar.collapsed && state.sidebar.should_start_drag(py) {
                         if let SidebarInteraction::Pressing { row, .. } = state.sidebar.interaction
                         {
                             state.sidebar.interaction = SidebarInteraction::Dragging {
@@ -1800,6 +2363,23 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                // Notification panel scroll — intercept when cursor is over the panel.
+                if state.notification_panel.open {
+                    let sw = state.gpu.width() as f32;
+                    let px = state.cursor_pos.0 as f32;
+                    if state.notification_panel.contains_x(px, sw) {
+                        let pixel_delta = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
+                            MouseScrollDelta::PixelDelta(pos) => -pos.y as f32,
+                        };
+                        let sh = state.gpu.height() as f32;
+                        let total = state.notification_cache.len();
+                        state.notification_panel.scroll(pixel_delta, total, sh);
+                        state.window.request_redraw();
+                        return;
+                    }
+                }
+
                 let mouse_mode = state.terminal_modes.contains(TerminalMode::MOUSE_REPORTING);
 
                 let lines = match delta {
@@ -2020,12 +2600,13 @@ fn fill_second(
     }
 }
 
-/// Send current UI state (sidebar width + window geometry) to the actor for session persistence.
+/// Send current UI state (sidebar width, collapsed, window geometry) to the actor for session persistence.
 fn send_ui_state(state: &super::UiState<'_>, app_state: &AppStateHandle) {
     let size = state.window.inner_size();
     let pos = state.window.outer_position().unwrap_or_default();
     app_state.update_ui_state(
         state.sidebar.width as u16,
+        state.sidebar.collapsed,
         Some(wmux_core::WindowGeometry {
             x: pos.x,
             y: pos.y,
@@ -2054,7 +2635,7 @@ fn handle_browser_command(
             let url = params
                 .get("url")
                 .and_then(|v| v.as_str())
-                .unwrap_or("about:blank")
+                .unwrap_or(state.browser_default_url.as_str())
                 .to_owned();
 
             // Create a backing pane (with PTY — needed by the surface system).
@@ -2111,6 +2692,10 @@ fn handle_browser_command(
             panel
                 .navigate(url)
                 .map_err(|e| format!("navigate failed: {e}"))?;
+
+            // Track URL for address bar display.
+            state.browser_urls.insert(surface_id, url.to_owned());
+            state.address_bar.set_url(url);
 
             Ok(serde_json::json!({"ok": true}))
         }

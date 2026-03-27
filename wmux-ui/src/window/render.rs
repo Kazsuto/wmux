@@ -70,7 +70,7 @@ impl UiState<'_> {
         );
         // Render edit cursor overlay when inline renaming.
         self.sidebar
-            .render_edit_cursor(&mut self.quads, &self.ui_chrome);
+            .render_edit_cursor(&mut self.quads, &self.ui_chrome, self.scale_factor);
 
         // Sidebar separator is rendered by sidebar.render_quads() as a 1px border_glow line.
 
@@ -96,6 +96,20 @@ impl UiState<'_> {
             .into_iter()
             .map(crate::divider::Divider::from)
             .collect();
+
+        // Auto-correct stale focused_pane: if the current focused pane is not in
+        // the layout (e.g., workspace was closed), snap to the first available pane.
+        if !layout.iter().any(|(id, _)| *id == self.focused_pane) {
+            if let Some((first_id, _)) = layout.first() {
+                tracing::info!(
+                    old = %self.focused_pane,
+                    new = %first_id,
+                    "focused_pane corrected (stale reference)"
+                );
+                self.focused_pane = *first_id;
+                app_state.focus_pane(*first_id);
+            }
+        }
 
         // Collect render data for all panes first (surface info needed for viewports).
         let mut render_data_map: HashMap<PaneId, PaneRenderData> =
@@ -181,84 +195,86 @@ impl UiState<'_> {
                 self.ui_chrome.shadow,
             );
 
-            // Tab hover background highlight (animated).
-            if let Some((hover_pane, hover_idx)) = self.tab_hover {
-                if hover_pane == vp.pane_id && hover_idx != vp.active_tab {
-                    let alpha = self
-                        .tab_hover_anim
-                        .and_then(|id| self.animation.get(id))
-                        .unwrap_or(1.0);
-                    let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, hover_idx);
-                    let s = self.scale_factor;
-                    let pill_y = vp.rect.y + 4.0 * s;
-                    let pill_h = vp.tab_bar_height() - 8.0 * s;
-                    let s2 = self.ui_chrome.surface_2;
-                    let hover_bg = [s2[0], s2[1], s2[2], s2[3] * 0.5 * alpha];
-                    self.quads
-                        .push_rounded_quad(tx, pill_y, tw, pill_h, hover_bg, 4.0 * s);
-                }
-            }
-
-            // Close button hover highlight (only when ≥ 2 tabs).
-            if let Some((hover_pane, hover_idx)) = self.tab_close_hover {
-                if hover_pane == vp.pane_id {
-                    if let Some((bx, by, bw, bh)) =
-                        wmux_render::pane::PaneRenderer::close_button_rect(vp, hover_idx)
-                    {
-                        let hover_bg = [
-                            self.ui_chrome.error[0],
-                            self.ui_chrome.error[1],
-                            self.ui_chrome.error[2],
-                            0.3,
-                        ];
-                        self.quads.push_rounded_quad(bx, by, bw, bh, hover_bg, 3.0);
+            // Tab hover background highlight (animated) — skip in toggle mode.
+            if !vp.is_toggle_mode() {
+                if let Some((hover_pane, hover_idx)) = self.tab_hover {
+                    if hover_pane == vp.pane_id && hover_idx != vp.active_tab {
+                        let alpha = self
+                            .tab_hover_anim
+                            .and_then(|id| self.animation.get(id))
+                            .unwrap_or(1.0);
+                        let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, hover_idx);
+                        let s = self.scale_factor;
+                        let pill_y = vp.rect.y + 4.0 * s;
+                        let pill_h = vp.tab_bar_height() - 8.0 * s;
+                        let s2 = self.ui_chrome.surface_2;
+                        let hover_bg = [s2[0], s2[1], s2[2], s2[3] * 0.5 * alpha];
+                        self.quads
+                            .push_rounded_quad(tx, pill_y, tw, pill_h, hover_bg, 4.0 * s);
                     }
                 }
-            }
 
-            // Split button icon — rendered as SVG CustomGlyph in the text area section.
-
-            // Tab edit: draw input box background when editing a tab title.
-            if let super::TabEditState::Editing {
-                pane_id: edit_pane,
-                tab_index: edit_idx,
-                ..
-            } = &self.tab_edit
-            {
-                if *edit_pane == vp.pane_id {
-                    let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, *edit_idx);
-                    let s = self.scale_factor;
-                    let pill_y = vp.rect.y + 4.0 * s;
-                    let pill_h = vp.tab_bar_height() - 8.0 * s;
-                    // Background fill.
-                    self.quads.push_rounded_quad(
-                        tx,
-                        pill_y,
-                        tw,
-                        pill_h,
-                        self.ui_chrome.surface_base,
-                        6.0 * s,
-                    );
-                    // Accent border (top).
-                    self.quads.push_rounded_quad(
-                        tx,
-                        pill_y,
-                        tw,
-                        1.0 * s,
-                        self.ui_chrome.accent,
-                        6.0 * s,
-                    );
-                    // Accent border (bottom).
-                    self.quads.push_rounded_quad(
-                        tx,
-                        pill_y + pill_h - 1.0 * s,
-                        tw,
-                        1.0 * s,
-                        self.ui_chrome.accent,
-                        6.0 * s,
-                    );
+                // Close button hover highlight (only when ≥ 2 tabs).
+                if let Some((hover_pane, hover_idx)) = self.tab_close_hover {
+                    if hover_pane == vp.pane_id {
+                        if let Some((bx, by, bw, bh)) =
+                            wmux_render::pane::PaneRenderer::close_button_rect(vp, hover_idx)
+                        {
+                            let hover_bg = [
+                                self.ui_chrome.error[0],
+                                self.ui_chrome.error[1],
+                                self.ui_chrome.error[2],
+                                0.3,
+                            ];
+                            self.quads.push_rounded_quad(bx, by, bw, bh, hover_bg, 3.0);
+                        }
+                    }
                 }
-            }
+
+                // Split button icon — rendered as SVG CustomGlyph in the text area section.
+
+                // Tab edit: draw input box background when editing a tab title.
+                if let super::TabEditState::Editing {
+                    pane_id: edit_pane,
+                    tab_index: edit_idx,
+                    ..
+                } = &self.tab_edit
+                {
+                    if *edit_pane == vp.pane_id {
+                        let (tw, tx) = wmux_render::pane::PaneRenderer::tab_metrics(vp, *edit_idx);
+                        let s = self.scale_factor;
+                        let pill_y = vp.rect.y + 4.0 * s;
+                        let pill_h = vp.tab_bar_height() - 8.0 * s;
+                        // Background fill.
+                        self.quads.push_rounded_quad(
+                            tx,
+                            pill_y,
+                            tw,
+                            pill_h,
+                            self.ui_chrome.surface_base,
+                            6.0 * s,
+                        );
+                        // Accent border (top).
+                        self.quads.push_rounded_quad(
+                            tx,
+                            pill_y,
+                            tw,
+                            1.0 * s,
+                            self.ui_chrome.accent,
+                            6.0 * s,
+                        );
+                        // Accent border (bottom).
+                        self.quads.push_rounded_quad(
+                            tx,
+                            pill_y + pill_h - 1.0 * s,
+                            tw,
+                            1.0 * s,
+                            self.ui_chrome.accent,
+                            6.0 * s,
+                        );
+                    }
+                }
+            } // end if !vp.is_toggle_mode()
         }
 
         // Collect live pane IDs once — used to prune stale tab title buffers and renderers.
@@ -302,6 +318,57 @@ impl UiState<'_> {
                         None,
                     );
                     buf.shape_until_scroll(self.glyphon.font_system(), false);
+                }
+            }
+        }
+
+        // Update toggle label buffers for panes in toggle mode.
+        {
+            let metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
+            let attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+
+            self.toggle_label_buffers
+                .retain(|id, _| live_ids.contains(id));
+
+            for vp in &viewports {
+                if !vp.is_toggle_mode() {
+                    self.toggle_label_buffers.remove(&vp.pane_id);
+                    continue;
+                }
+
+                let labels = [self.locale.t("tab.shell"), self.locale.t("tab.browser")];
+                let bufs = self
+                    .toggle_label_buffers
+                    .entry(vp.pane_id)
+                    .or_insert_with(|| {
+                        [
+                            glyphon::Buffer::new(self.glyphon.font_system(), metrics),
+                            glyphon::Buffer::new(self.glyphon.font_system(), metrics),
+                        ]
+                    });
+
+                let seg_width = wmux_render::pane::PaneRenderer::toggle_segment_rect(vp, 0)
+                    .map(|(_, _, w, _)| w)
+                    .unwrap_or(100.0);
+                let s = vp.scale;
+                let icon_reserve = 30.0 * s; // icon padding (10) + icon gap (20)
+                let text_max = (seg_width - icon_reserve - 4.0 * s).max(1.0);
+
+                for (i, label) in labels.iter().enumerate() {
+                    bufs[i].set_metrics(self.glyphon.font_system(), metrics);
+                    bufs[i].set_size(
+                        self.glyphon.font_system(),
+                        Some(text_max),
+                        Some(TAB_LINE_HEIGHT),
+                    );
+                    bufs[i].set_text(
+                        self.glyphon.font_system(),
+                        label,
+                        &attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    bufs[i].shape_until_scroll(self.glyphon.font_system(), false);
                 }
             }
         }
@@ -384,9 +451,17 @@ impl UiState<'_> {
         // Remove renderers for panes that no longer exist in the layout.
         self.renderers.retain(|id, _| live_ids.contains(id));
 
-        // Position/show/hide browser panels based on active surface type.
+        // Render address bars and position/show/hide browser panels.
         if let Some(ref mut mgr) = self.browser_manager {
+            // Collect all surface IDs still referenced by viewports — used for orphan cleanup.
+            self.live_browser_sids.clear();
+
             for vp in &viewports {
+                // Track all surface IDs in this viewport.
+                for sid in &vp.surface_ids {
+                    self.live_browser_sids.insert(*sid);
+                }
+
                 let active_type = vp
                     .surface_types
                     .get(vp.active_tab)
@@ -395,13 +470,58 @@ impl UiState<'_> {
                 let active_sid = vp.surface_ids.get(vp.active_tab).copied();
 
                 if active_type == wmux_render::SurfaceType::Browser {
+                    // Render the address bar between tab bar and browser content.
+                    let bar_rect = wmux_render::PaneRenderer::address_bar_rect(vp);
+                    self.address_bar.render_quads(
+                        &mut self.quads,
+                        &bar_rect,
+                        &self.ui_chrome,
+                        vp.scale,
+                    );
+
+                    // Address bar text caret (proportional interpolation).
+                    if self.address_bar.editing {
+                        let url_rect =
+                            crate::address_bar::AddressBarState::url_text_rect(&bar_rect, vp.scale);
+                        let total_w = self
+                            .address_bar_buffer
+                            .layout_runs()
+                            .next()
+                            .map_or(0.0, |run| run.line_w);
+                        let char_count = self.address_bar.url.chars().count().max(1) as f32;
+                        let cursor_offset =
+                            total_w * (self.address_bar.cursor_pos as f32 / char_count);
+                        let caret_x = url_rect.x + cursor_offset * vp.scale;
+                        let caret_y = url_rect.y + 2.0 * vp.scale;
+                        let caret_h = url_rect.height - 4.0 * vp.scale;
+                        let caret_color = [
+                            self.ui_chrome.text_primary[0],
+                            self.ui_chrome.text_primary[1],
+                            self.ui_chrome.text_primary[2],
+                            self.ui_chrome.cursor_alpha,
+                        ];
+                        self.quads
+                            .push_quad(caret_x, caret_y, 1.5, caret_h, caret_color);
+                    }
+
+                    // Update address bar URL for the focused browser pane.
+                    if vp.focused {
+                        if let Some(sid) = active_sid {
+                            if let Some(url) = self.browser_urls.get(&sid) {
+                                self.address_bar.set_url(url);
+                            }
+                        }
+                    }
+
                     if let Some(sid) = active_sid {
                         if mgr.get_panel(sid).is_some() {
-                            let terminal_rect = wmux_render::PaneRenderer::terminal_viewport(vp);
-                            let _ = mgr.resize_panel(sid, &terminal_rect);
+                            // Position browser panel below the address bar.
+                            let browser_rect = wmux_render::PaneRenderer::browser_viewport(vp);
+                            let _ = mgr.resize_panel(sid, &browser_rect);
                             let _ = mgr.show_panel(sid);
-                            // Give WebView2 keyboard focus when its pane is focused.
-                            if vp.focused {
+                            // Give WebView2 keyboard focus when pane is focused
+                            // and address bar is NOT being edited.
+                            if vp.focused && !self.address_bar.editing {
                                 if let Some(panel) = mgr.get_panel(sid) {
                                     let _ = panel.focus_webview();
                                 }
@@ -415,6 +535,18 @@ impl UiState<'_> {
                     if i != vp.active_tab && mgr.get_panel(*sid).is_some() {
                         let _ = mgr.hide_panel(*sid);
                     }
+                }
+            }
+
+            // Remove orphaned browser panels — panels whose surface was closed
+            // but whose WebView2 HWND is still alive. Without this cleanup, the
+            // WS_POPUP HWND stays visible and frozen at its last position.
+            let panel_ids = mgr.panel_ids();
+            for sid in panel_ids {
+                if !self.live_browser_sids.contains(&sid) {
+                    tracing::info!(surface_id = %sid, "removing orphaned browser panel");
+                    self.browser_urls.remove(&sid);
+                    let _ = mgr.remove_panel(sid);
                 }
             }
         }
@@ -959,6 +1091,195 @@ impl UiState<'_> {
             }
         }
 
+        // Tab context menu (renders on top of tab bar).
+        if let super::TabContextMenuState::Open { menu_x, menu_y, .. } = self.tab_menu {
+            let item_h = 32.0;
+            let menu_w = 200.0;
+            let menu_items = super::TAB_MENU_ITEMS as f32;
+            let menu_h = item_h * menu_items + 8.0;
+            let menu_radius = 8.0;
+
+            // Shadow
+            let sd = &self.ui_chrome.shadow_md;
+            self.shadows.push_shadow(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                menu_radius,
+                sd.sigma,
+                0.0,
+                sd.offset_y,
+                self.ui_chrome.shadow,
+            );
+
+            // Background
+            self.quads.push_rounded_quad(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                self.ui_chrome.surface_2,
+                menu_radius,
+            );
+
+            // Border
+            self.quads.push_rounded_quad(
+                menu_x,
+                menu_y,
+                menu_w,
+                menu_h,
+                [
+                    self.ui_chrome.border_subtle[0],
+                    self.ui_chrome.border_subtle[1],
+                    self.ui_chrome.border_subtle[2],
+                    0.3,
+                ],
+                menu_radius,
+            );
+
+            // Hover highlight
+            if let Some(hover_idx) = self.tab_menu_hover {
+                let hy = menu_y + 4.0 + hover_idx as f32 * item_h;
+                let hover_bg = [
+                    self.ui_chrome.accent[0],
+                    self.ui_chrome.accent[1],
+                    self.ui_chrome.accent[2],
+                    0.15,
+                ];
+                self.quads
+                    .push_rounded_quad(menu_x + 4.0, hy, menu_w - 8.0, item_h, hover_bg, 4.0);
+            }
+        }
+
+        // Notification panel overlay (right-side slide-out).
+        //
+        // Step 1: Fetch notifications from actor (only when panel is open).
+        // Step 2: Shape text buffers for visible items.
+        // Step 3: Render background/item quads.
+        // Text areas are collected later in the text phase.
+        if self.notification_panel.open {
+            self.notification_cache = rt.block_on(app_state.list_notifications(50));
+
+            let notif_refs: Vec<&wmux_core::Notification> =
+                self.notification_cache.iter().collect();
+
+            // Always reshape text buffers — timestamps are time-dependent ("just now" → "1 min ago").
+            {
+                let ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+                let ui_bold = glyphon::Attrs::new()
+                    .family(glyphon::Family::Name("Segoe UI"))
+                    .weight(glyphon::Weight::BOLD);
+                let text_max_w = crate::notification_panel::PANEL_WIDTH
+                    - crate::notification_panel::TEXT_LEFT_OFFSET
+                    - 8.0;
+
+                for (i, notif) in notif_refs
+                    .iter()
+                    .take(crate::notification_panel::MAX_VISIBLE_ITEMS)
+                    .enumerate()
+                {
+                    // Category label (severity name).
+                    let category_text = match notif.severity {
+                        wmux_core::NotificationSeverity::Info => {
+                            self.locale.t("notification.severity_info")
+                        }
+                        wmux_core::NotificationSeverity::Warning => {
+                            self.locale.t("notification.severity_warning")
+                        }
+                        wmux_core::NotificationSeverity::Error => {
+                            self.locale.t("notification.severity_error")
+                        }
+                        wmux_core::NotificationSeverity::Success => {
+                            self.locale.t("notification.severity_success")
+                        }
+                    };
+                    let cat_buf = &mut self.notif_category_buffers[i];
+                    cat_buf.set_size(
+                        self.glyphon.font_system(),
+                        Some(text_max_w),
+                        Some(typography::CAPTION_LINE_HEIGHT),
+                    );
+                    cat_buf.set_text(
+                        self.glyphon.font_system(),
+                        category_text,
+                        &ui_attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    cat_buf.shape_until_scroll(self.glyphon.font_system(), false);
+
+                    // Title (bold).
+                    let title_text = notif.title.as_deref().unwrap_or(&notif.body);
+                    let title_buf = &mut self.notif_title_buffers[i];
+                    title_buf.set_size(
+                        self.glyphon.font_system(),
+                        Some(text_max_w),
+                        Some(typography::BODY_LINE_HEIGHT),
+                    );
+                    title_buf.set_text(
+                        self.glyphon.font_system(),
+                        title_text,
+                        &ui_bold,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    title_buf.shape_until_scroll(self.glyphon.font_system(), false);
+
+                    // Body text.
+                    let body_text = if notif.title.is_some() {
+                        notif.body.as_str()
+                    } else {
+                        notif.subtitle.as_deref().unwrap_or("")
+                    };
+                    let body_buf = &mut self.notif_body_buffers[i];
+                    body_buf.set_size(
+                        self.glyphon.font_system(),
+                        Some(text_max_w),
+                        Some(typography::CAPTION_LINE_HEIGHT),
+                    );
+                    body_buf.set_text(
+                        self.glyphon.font_system(),
+                        body_text,
+                        &ui_attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    body_buf.shape_until_scroll(self.glyphon.font_system(), false);
+
+                    // Timestamp.
+                    let time_text =
+                        crate::notification_panel::format_time_ago(notif.timestamp, &self.locale);
+                    let time_buf = &mut self.notif_time_buffers[i];
+                    time_buf.set_size(
+                        self.glyphon.font_system(),
+                        Some(80.0),
+                        Some(typography::CAPTION_LINE_HEIGHT),
+                    );
+                    time_buf.set_text(
+                        self.glyphon.font_system(),
+                        &time_text,
+                        &ui_attrs,
+                        glyphon::Shaping::Advanced,
+                        None,
+                    );
+                    time_buf.shape_until_scroll(self.glyphon.font_system(), false);
+                }
+            }
+
+            // Render panel quads (background, header, items, stripes, hover).
+            self.notification_panel.render_quads(
+                &mut self.quads,
+                &notif_refs,
+                surface_width as f32,
+                surface_height as f32,
+                &self.ui_chrome,
+            );
+        } else if !self.notification_cache.is_empty() {
+            // Panel closed — clear cache.
+            self.notification_cache.clear();
+        }
+
         // Command palette overlay (fullscreen dim + palette chrome + text buffers).
         //
         // Step 1: Pre-compute search results + update result_count BEFORE render_quads
@@ -1190,6 +1511,40 @@ impl UiState<'_> {
             }
         }
 
+        // Update address bar text buffer for focused browser pane.
+        {
+            let text: &str = if self.address_bar.url.is_empty() && !self.address_bar.editing {
+                ""
+            } else {
+                &self.address_bar.url
+            };
+            let attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+            // Use focused browser pane width if available, else a reasonable max.
+            let buf_width = viewports
+                .iter()
+                .find(|vp| {
+                    vp.focused
+                        && vp.surface_types.get(vp.active_tab).copied()
+                            == Some(wmux_render::SurfaceType::Browser)
+                })
+                .map(|vp| vp.rect.width)
+                .unwrap_or(800.0);
+            self.address_bar_buffer.set_size(
+                self.glyphon.font_system(),
+                Some(buf_width),
+                Some(crate::address_bar::ADDRESS_BAR_HEIGHT),
+            );
+            self.address_bar_buffer.set_text(
+                self.glyphon.font_system(),
+                text,
+                &attrs,
+                glyphon::Shaping::Advanced,
+                None,
+            );
+            self.address_bar_buffer
+                .shape_until_scroll(self.glyphon.font_system(), false);
+        }
+
         // Upload GPU data.
         self.shadows.prepare(&self.gpu.queue);
         self.quads.prepare(&self.gpu.queue);
@@ -1244,6 +1599,92 @@ impl UiState<'_> {
         }
 
         for vp in &viewports {
+            // Toggle mode: render segment labels + icons instead of pill tabs.
+            if vp.is_toggle_mode() {
+                if let Some(bufs) = self.toggle_label_buffers.get(&vp.pane_id) {
+                    let active_seg =
+                        wmux_render::pane::PaneRenderer::active_toggle_segment(vp).unwrap_or(0);
+                    for (seg, label_buf) in bufs.iter().enumerate() {
+                        if let Some((sx, sy, sw, sh)) =
+                            wmux_render::pane::PaneRenderer::toggle_segment_rect(vp, seg)
+                        {
+                            let is_active = seg == active_seg;
+                            let text_color = if is_active {
+                                self.ui_chrome.text_inverse
+                            } else {
+                                self.ui_chrome.text_secondary
+                            };
+
+                            // Icon (terminal or globe).
+                            let cg_ref = if seg == 0 {
+                                &self.cg_terminal
+                            } else {
+                                &self.cg_globe
+                            };
+                            let s = self.scale_factor;
+                            let icon_x = sx + 10.0 * s;
+                            let icon_top = sy + (sh - TAB_LINE_HEIGHT) / 2.0;
+                            let icon_size = 24.0 * s;
+                            all_text_areas.push(glyphon::TextArea {
+                                buffer: &self.icon_empty_buffer,
+                                left: icon_x,
+                                top: icon_top,
+                                scale: s,
+                                bounds: glyphon::TextBounds {
+                                    left: (icon_x - 2.0 * s) as i32,
+                                    top: (icon_top - 2.0 * s) as i32,
+                                    right: (icon_x + icon_size) as i32,
+                                    bottom: (icon_top + icon_size) as i32,
+                                },
+                                default_color: rgba_to_glyphon(text_color),
+                                custom_glyphs: cg_ref,
+                            });
+
+                            // Label text ("Shell" / "Browser").
+                            let text_left = icon_x + 20.0 * s;
+                            all_text_areas.push(glyphon::TextArea {
+                                buffer: label_buf,
+                                left: text_left,
+                                top: icon_top,
+                                scale: s,
+                                bounds: glyphon::TextBounds {
+                                    left: text_left as i32,
+                                    top: sy as i32,
+                                    right: (sx + sw - 4.0 * s) as i32,
+                                    bottom: (sy + sh) as i32,
+                                },
+                                default_color: rgba_to_glyphon(text_color),
+                                custom_glyphs: &[],
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+            // Precompute tab edit cursor offset via proportional interpolation.
+            let tab_edit_cursor_offset: Option<f32> = if let super::TabEditState::Editing {
+                ref text,
+                cursor,
+                pane_id: edit_pane,
+                ..
+            } = &self.tab_edit
+            {
+                if *edit_pane == vp.pane_id {
+                    // Measure full text width from the edit buffer, then interpolate.
+                    let total_w = self
+                        .tab_edit_buffer
+                        .as_ref()
+                        .and_then(|eb| eb.layout_runs().next())
+                        .map_or(0.0, |run| run.line_w);
+                    let char_count = text.chars().count().max(1) as f32;
+                    Some(total_w * (*cursor as f32 / char_count))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             {
                 if let Some(bufs) = self.tab_title_buffers.get(&vp.pane_id) {
                     for (i, buf) in bufs.iter().enumerate() {
@@ -1273,18 +1714,35 @@ impl UiState<'_> {
                                     custom_glyphs: &[],
                                 });
 
-                                // Edit cursor.
+                                // Selection highlight when all text is selected.
+                                if let super::TabEditState::Editing {
+                                    selected_all: true, ..
+                                } = &self.tab_edit
+                                {
+                                    self.quads.push_quad(
+                                        tab_x + TAB_TEXT_PADDING,
+                                        vp.rect.y + TAB_TEXT_TOP_OFFSET,
+                                        tab_width - TAB_TEXT_PADDING * 2.0,
+                                        TAB_LINE_HEIGHT,
+                                        self.ui_chrome.accent_muted,
+                                    );
+                                }
+
+                                // Edit cursor — use precomputed offset.
                                 if let super::TabEditState::Editing { cursor, .. } = &self.tab_edit
                                 {
-                                    let char_width = TAB_FONT_SIZE * 0.6;
-                                    let cursor_x =
-                                        tab_x + TAB_TEXT_PADDING + (*cursor as f32 * char_width);
+                                    let cursor_offset = tab_edit_cursor_offset
+                                        .unwrap_or(*cursor as f32 * TAB_FONT_SIZE * 0.6);
+                                    // Multiply by scale — glyphon renders at glyph_x * scale.
+                                    let cursor_x = tab_x
+                                        + TAB_TEXT_PADDING
+                                        + cursor_offset * self.scale_factor;
                                     let cursor_y = vp.rect.y + TAB_TEXT_TOP_OFFSET;
                                     let cursor_color = [
                                         self.ui_chrome.text_primary[0],
                                         self.ui_chrome.text_primary[1],
                                         self.ui_chrome.text_primary[2],
-                                        0.85,
+                                        self.ui_chrome.cursor_alpha,
                                     ];
                                     self.quads.push_quad(
                                         cursor_x,
@@ -1370,13 +1828,12 @@ impl UiState<'_> {
         // Draw × and + button icons via SVG CustomGlyph.
         for vp in &viewports {
             // × close button — SVG close icon.
-            for i in 0..vp.tab_count {
+            if vp.is_toggle_mode() {
+                // Toggle mode: single close button to the right of the toggle container.
                 if let Some((bx, by, _bw, _bh)) =
-                    wmux_render::pane::PaneRenderer::close_button_rect(vp, i)
+                    wmux_render::pane::PaneRenderer::toggle_close_button_rect(vp)
                 {
-                    let is_hovered = self
-                        .tab_close_hover
-                        .is_some_and(|(hp, hi)| hp == vp.pane_id && hi == i);
+                    let is_hovered = self.tab_close_hover.is_some_and(|(hp, _)| hp == vp.pane_id);
                     let close_color = if is_hovered {
                         rgba_to_glyphon(self.ui_chrome.text_primary)
                     } else {
@@ -1397,70 +1854,105 @@ impl UiState<'_> {
                         custom_glyphs: &self.cg_close,
                     });
                 }
+            } else {
+                // Pill mode: one close button per tab.
+                for i in 0..vp.tab_count {
+                    if let Some((bx, by, _bw, _bh)) =
+                        wmux_render::pane::PaneRenderer::close_button_rect(vp, i)
+                    {
+                        let is_hovered = self
+                            .tab_close_hover
+                            .is_some_and(|(hp, hi)| hp == vp.pane_id && hi == i);
+                        let close_color = if is_hovered {
+                            rgba_to_glyphon(self.ui_chrome.text_primary)
+                        } else {
+                            rgba_to_glyphon(self.ui_chrome.text_muted)
+                        };
+                        all_text_areas.push(glyphon::TextArea {
+                            buffer: &self.icon_empty_buffer,
+                            left: bx + 2.0,
+                            top: by + 2.0,
+                            scale: self.scale_factor,
+                            bounds: glyphon::TextBounds {
+                                left: bx as i32,
+                                top: by as i32,
+                                right: (bx + 18.0) as i32,
+                                bottom: (by + 18.0) as i32,
+                            },
+                            default_color: close_color,
+                            custom_glyphs: &self.cg_close,
+                        });
+                    }
+                }
             }
 
-            // "+" button — SVG add icon.
-            if let Some((px, py, pw, ph)) = wmux_render::pane::PaneRenderer::plus_button_rect(vp) {
-                all_text_areas.push(glyphon::TextArea {
-                    buffer: &self.icon_empty_buffer,
-                    left: px + (pw - 16.0) / 2.0,
-                    top: py + (ph - 16.0) / 2.0,
-                    scale: self.scale_factor,
-                    bounds: glyphon::TextBounds {
-                        left: px as i32,
-                        top: py as i32,
-                        right: (px + pw) as i32,
-                        bottom: (py + ph) as i32,
-                    },
-                    default_color: rgba_to_glyphon(self.ui_chrome.text_primary),
-                    custom_glyphs: &self.cg_add,
-                });
-            }
-
-            // Split button — SVG split-horizontal icon.
-            if let Some((sx, sy, sw, sh)) = wmux_render::pane::PaneRenderer::split_button_rect(vp) {
-                all_text_areas.push(glyphon::TextArea {
-                    buffer: &self.icon_empty_buffer,
-                    left: sx + (sw - 16.0) / 2.0,
-                    top: sy + (sh - 16.0) / 2.0,
-                    scale: self.scale_factor,
-                    bounds: glyphon::TextBounds {
-                        left: sx as i32,
-                        top: sy as i32,
-                        right: (sx + sw) as i32,
-                        bottom: (sy + sh) as i32,
-                    },
-                    default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
-                    custom_glyphs: &self.cg_split,
-                });
-            }
-
-            // Globe button — open a new browser surface (only when WebView2 is available).
-            if self.browser_manager.is_some() {
-                if let Some((gx, gy, gw, gh)) =
-                    wmux_render::pane::PaneRenderer::globe_button_rect(vp)
+            // "+" button — SVG add icon (skip for toggle-mode panes).
+            if !vp.is_toggle_mode() {
+                if let Some((px, py, pw, ph)) =
+                    wmux_render::pane::PaneRenderer::plus_button_rect(vp)
                 {
                     all_text_areas.push(glyphon::TextArea {
                         buffer: &self.icon_empty_buffer,
-                        left: gx + (gw - 16.0) / 2.0,
-                        top: gy + (gh - 16.0) / 2.0,
+                        left: px + (pw - 16.0) / 2.0,
+                        top: py + (ph - 16.0) / 2.0,
                         scale: self.scale_factor,
                         bounds: glyphon::TextBounds {
-                            left: gx as i32,
-                            top: gy as i32,
-                            right: (gx + gw) as i32,
-                            bottom: (gy + gh) as i32,
+                            left: px as i32,
+                            top: py as i32,
+                            right: (px + pw) as i32,
+                            bottom: (py + ph) as i32,
                         },
-                        default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
-                        custom_glyphs: &self.cg_globe,
+                        default_color: rgba_to_glyphon(self.ui_chrome.text_primary),
+                        custom_glyphs: &self.cg_add,
                     });
                 }
-            }
+
+                // Split button — SVG split-horizontal icon.
+                if let Some((sx, sy, sw, sh)) =
+                    wmux_render::pane::PaneRenderer::split_button_rect(vp)
+                {
+                    all_text_areas.push(glyphon::TextArea {
+                        buffer: &self.icon_empty_buffer,
+                        left: sx + (sw - 16.0) / 2.0,
+                        top: sy + (sh - 16.0) / 2.0,
+                        scale: self.scale_factor,
+                        bounds: glyphon::TextBounds {
+                            left: sx as i32,
+                            top: sy as i32,
+                            right: (sx + sw) as i32,
+                            bottom: (sy + sh) as i32,
+                        },
+                        default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                        custom_glyphs: &self.cg_split,
+                    });
+                }
+
+                // Globe button — open a new browser surface (only when WebView2 is available).
+                if self.browser_manager.is_some() {
+                    if let Some((gx, gy, gw, gh)) =
+                        wmux_render::pane::PaneRenderer::globe_button_rect(vp)
+                    {
+                        all_text_areas.push(glyphon::TextArea {
+                            buffer: &self.icon_empty_buffer,
+                            left: gx + (gw - 16.0) / 2.0,
+                            top: gy + (gh - 16.0) / 2.0,
+                            scale: self.scale_factor,
+                            bounds: glyphon::TextBounds {
+                                left: gx as i32,
+                                top: gy as i32,
+                                right: (gx + gw) as i32,
+                                bottom: (gy + gh) as i32,
+                            },
+                            default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                            custom_glyphs: &self.cg_globe,
+                        });
+                    }
+                }
+            } // end !is_toggle_mode() guard for +, split, globe buttons
         }
 
         // Append sidebar text areas (workspace names + subtitles + icons).
         if self.sidebar.visible {
-            let sidebar_icon = Some((&self.icon_empty_buffer, self.cg_workspace.as_slice()));
             let ws_status_icons: Vec<Vec<(String, String)>> = self
                 .workspace_cache
                 .iter()
@@ -1471,7 +1963,7 @@ impl UiState<'_> {
                 surface_h,
                 &self.ui_chrome,
                 self.scale_factor,
-                sidebar_icon,
+                &self.workspace_cache,
                 &ws_status_icons,
                 &self.icon_empty_buffer,
                 &self.status_icon_cgs,
@@ -1545,6 +2037,79 @@ impl UiState<'_> {
             }
         }
 
+        // Append address bar text area + back/forward icon glyphs for browser panes.
+        for vp in &viewports {
+            let active_type = vp
+                .surface_types
+                .get(vp.active_tab)
+                .copied()
+                .unwrap_or(wmux_render::SurfaceType::Terminal);
+            if active_type != wmux_render::SurfaceType::Browser {
+                continue;
+            }
+            let bar_rect = wmux_render::PaneRenderer::address_bar_rect(vp);
+            let url_rect = crate::address_bar::AddressBarState::url_text_rect(&bar_rect, vp.scale);
+
+            // URL text.
+            let url_color = if self.address_bar.url.is_empty() {
+                rgba_to_glyphon(self.ui_chrome.text_muted)
+            } else {
+                rgba_to_glyphon(self.ui_chrome.text_primary)
+            };
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.address_bar_buffer,
+                left: url_rect.x,
+                top: url_rect.y + (url_rect.height - crate::typography::CAPTION_LINE_HEIGHT) / 2.0,
+                scale: vp.scale,
+                bounds: glyphon::TextBounds {
+                    left: url_rect.x as i32,
+                    top: bar_rect.y as i32,
+                    right: (url_rect.x + url_rect.width) as i32,
+                    bottom: (bar_rect.y + bar_rect.height) as i32,
+                },
+                default_color: url_color,
+                custom_glyphs: &[],
+            });
+
+            // Back button icon (arrow-left).
+            let (back_cx, back_cy) =
+                crate::address_bar::AddressBarState::back_button_center(&bar_rect, vp.scale);
+            let icon_size = 14.0 * vp.scale;
+            let icon_half = icon_size / 2.0;
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.icon_empty_buffer,
+                left: back_cx - icon_half,
+                top: back_cy - icon_half,
+                scale: vp.scale,
+                bounds: glyphon::TextBounds {
+                    left: (back_cx - icon_half - 2.0) as i32,
+                    top: (back_cy - icon_half - 2.0) as i32,
+                    right: (back_cx + icon_half + 2.0) as i32,
+                    bottom: (back_cy + icon_half + 2.0) as i32,
+                },
+                default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                custom_glyphs: &self.cg_arrows[1], // ArrowLeft
+            });
+
+            // Forward button icon (arrow-right).
+            let (fwd_cx, fwd_cy) =
+                crate::address_bar::AddressBarState::forward_button_center(&bar_rect, vp.scale);
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.icon_empty_buffer,
+                left: fwd_cx - icon_half,
+                top: fwd_cy - icon_half,
+                scale: vp.scale,
+                bounds: glyphon::TextBounds {
+                    left: (fwd_cx - icon_half - 2.0) as i32,
+                    top: (fwd_cy - icon_half - 2.0) as i32,
+                    right: (fwd_cx + icon_half + 2.0) as i32,
+                    bottom: (fwd_cy + icon_half + 2.0) as i32,
+                },
+                default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                custom_glyphs: &self.cg_arrows[0], // ArrowRight
+            });
+        }
+
         // Append status bar text area.
         all_text_areas.push(self.status_bar.text_area(
             0.0,
@@ -1553,6 +2118,11 @@ impl UiState<'_> {
             &self.ui_chrome,
             self.scale_factor,
         ));
+
+        // ── Overlay text areas (menus) ─────────────────────────────────
+        // Track where overlay text starts so we can filter base text that
+        // bleeds through opaque menu backgrounds (quad z < glyphon text z).
+        let overlay_start = all_text_areas.len();
 
         // Append split menu text areas (labels + shortcut hints + direction icons).
         if let super::SplitMenuState::Open { menu_x, menu_y, .. } = self.split_menu {
@@ -1624,6 +2194,32 @@ impl UiState<'_> {
                 let ty = iy + (item_h - 18.0) / 2.0;
                 all_text_areas.push(glyphon::TextArea {
                     buffer: &self.workspace_menu_buffers[i],
+                    left: label_x,
+                    top: ty,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: label_x as i32,
+                        top: iy as i32,
+                        right: (menu_x + menu_w - 8.0) as i32,
+                        bottom: (iy + item_h) as i32,
+                    },
+                    default_color: label_color,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
+        // Append tab context menu text areas.
+        if let super::TabContextMenuState::Open { menu_x, menu_y, .. } = self.tab_menu {
+            let item_h = 32.0;
+            let menu_w = 200.0;
+            let label_x = menu_x + 12.0;
+            let label_color = rgba_to_glyphon(self.ui_chrome.text_primary);
+            for i in 0..super::TAB_MENU_ITEMS {
+                let iy = menu_y + 4.0 + i as f32 * item_h;
+                let ty = iy + (item_h - 18.0) / 2.0;
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.tab_menu_buffers[i],
                     left: label_x,
                     top: ty,
                     scale: self.scale_factor,
@@ -1755,6 +2351,73 @@ impl UiState<'_> {
                     },
                     default_color: shortcut_color,
                     custom_glyphs: &[],
+                });
+            }
+        }
+
+        // Append notification panel text areas.
+        // Buffers struct must outlive all_text_areas, so declare at this scope.
+        let notif_buffers = crate::notification_panel::NotificationBuffers {
+            header: &self.notif_header_buffer,
+            clear_all: &self.notif_clear_all_buffer,
+            empty: &self.notif_empty_buffer,
+            categories: &self.notif_category_buffers,
+            titles: &self.notif_title_buffers,
+            bodies: &self.notif_body_buffers,
+            timestamps: &self.notif_time_buffers,
+        };
+        if self.notification_panel.open {
+            let refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();
+            all_text_areas.extend(self.notification_panel.text_areas(
+                &refs,
+                surface_w as f32,
+                surface_h as f32,
+                self.scale_factor,
+                &self.ui_chrome,
+                &notif_buffers,
+            ));
+        }
+
+        // Filter base text areas that overlap with open overlay menus.
+        // The render pipeline is: quads (painter's algo) → glyphon text (single pass).
+        // Menu background quads are opaque, but underlying text (tab titles, sidebar)
+        // renders AFTER all quads, bleeding through menu backgrounds.
+        // Fix: remove base text areas whose bounds intersect any open menu rect.
+        {
+            let mut overlay_rects = [(0.0f32, 0.0f32, 0.0f32, 0.0f32); 3];
+            let mut overlay_count = 0usize;
+            if let super::SplitMenuState::Open { menu_x, menu_y, .. } = self.split_menu {
+                let mh = 4.0 * 32.0 + 8.0;
+                overlay_rects[overlay_count] = (menu_x, menu_y, 240.0, mh);
+                overlay_count += 1;
+            }
+            if let super::WorkspaceMenuState::Open { menu_x, menu_y, .. } = self.workspace_menu {
+                let mh = super::WORKSPACE_MENU_ITEMS as f32 * 32.0 + 8.0;
+                overlay_rects[overlay_count] = (menu_x, menu_y, 200.0, mh);
+                overlay_count += 1;
+            }
+            if let super::TabContextMenuState::Open { menu_x, menu_y, .. } = self.tab_menu {
+                let mh = super::TAB_MENU_ITEMS as f32 * 32.0 + 8.0;
+                overlay_rects[overlay_count] = (menu_x, menu_y, 200.0, mh);
+                overlay_count += 1;
+            }
+
+            if overlay_count > 0 {
+                let active_rects = &overlay_rects[..overlay_count];
+                let mut idx = 0;
+                all_text_areas.retain(|ta| {
+                    let is_overlay = idx >= overlay_start;
+                    idx += 1;
+                    if is_overlay {
+                        return true; // Keep overlay text (menu labels).
+                    }
+                    let tl = ta.bounds.left as f32;
+                    let tt = ta.bounds.top as f32;
+                    let tr = ta.bounds.right as f32;
+                    let tb = ta.bounds.bottom as f32;
+                    !active_rects
+                        .iter()
+                        .any(|&(mx, my, mw, mh)| tl < mx + mw && tr > mx && tt < my + mh && tb > my)
                 });
             }
         }

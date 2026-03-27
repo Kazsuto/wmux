@@ -247,6 +247,11 @@ impl BrowserManager {
         Ok(())
     }
 
+    /// Return all tracked panel surface IDs.
+    pub fn panel_ids(&self) -> Vec<SurfaceId> {
+        self.panels.keys().copied().collect()
+    }
+
     /// Return a reference to a panel by its surface ID.
     pub fn get_panel(&self, id: SurfaceId) -> Option<&BrowserPanel> {
         self.panels.get(&id)

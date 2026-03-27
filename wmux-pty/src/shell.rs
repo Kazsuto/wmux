@@ -44,11 +44,15 @@ pub struct ShellInfo {
 ///
 /// Detection priority: pwsh → powershell → cmd.exe.
 /// Falls back to cmd.exe which is always available on Windows.
+///
+/// Note: bash (Git Bash) is NOT included in auto-detection because
+/// Git Bash's `bash.exe` does not work reliably under ConPTY — it
+/// requires the MSYS2 PTY layer. Users who want bash can set it
+/// explicitly via `shell = bash` in the wmux config.
 pub fn detect_shell() -> Result<ShellInfo, PtyError> {
     let candidates = [
         ("pwsh", ShellType::Pwsh, "PowerShell 7"),
         ("powershell", ShellType::PowerShell, "Windows PowerShell"),
-        ("bash", ShellType::Bash, "Bash"),
         ("cmd", ShellType::Cmd, "Command Prompt"),
     ];
 
@@ -115,5 +119,30 @@ mod tests {
         // cmd.exe should always be findable on Windows
         let result = find_in_path("cmd");
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn detect_shell_is_not_bash() {
+        // Bash should NOT be auto-detected (Git Bash doesn't work under ConPTY).
+        let info = detect_shell().unwrap();
+        assert_ne!(
+            info.shell_type,
+            ShellType::Bash,
+            "detect_shell returned bash — expected pwsh, powershell, or cmd. Got: {} at {}",
+            info.name,
+            info.path.display()
+        );
+    }
+
+    #[test]
+    fn detect_shell_prefers_powershell() {
+        // On a standard Windows system, powershell should be detected.
+        let info = detect_shell().unwrap();
+        assert!(
+            info.shell_type == ShellType::Pwsh || info.shell_type == ShellType::PowerShell,
+            "expected PowerShell, got: {} ({})",
+            info.name,
+            info.path.display()
+        );
     }
 }

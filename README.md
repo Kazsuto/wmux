@@ -24,16 +24,18 @@ AI agents compatible with cmux work with wmux with minimal adaptation (Named Pip
 |---------|-------------|
 | **GPU Terminal** | wgpu/Direct3D 12 rendering, VTE parsing, <16ms input-to-display latency, ligatures, emoji, Nerd Fonts |
 | **Split Panes** | Horizontal/vertical splits, draggable dividers, zoom toggle, directional focus navigation |
-| **Workspaces** | Vertical sidebar with git branch, ports, agent status, drag-and-drop reorder, inline rename |
-| **Surfaces** | Tabs within each pane — terminal or browser — with keyboard cycling |
+| **Workspaces** | Vertical sidebar (expanded + collapsed icon-only mode) with git branch, port badges, agent status, inline rename |
+| **Surfaces** | Tabs within each pane — terminal or browser — with keyboard cycling and shell/browser toggle |
 | **Integrated Browser** | WebView2 (Chromium) panes alongside terminals, scriptable via IPC |
+| **Command Palette** | Ctrl+Shift+P fuzzy-search over commands, workspaces, and surfaces with filter tabs |
 | **CLI & IPC** | 80+ JSON-RPC v2 commands over Named Pipes, HMAC-SHA256 auth, cmux-compatible protocol |
 | **Session Persistence** | Auto-save every 8s, restore layout + scrollback on relaunch |
 | **Terminal Search** | Ctrl+F in-pane search with regex support and match highlighting |
-| **SSH Remote** | Connect to remote hosts with PTY relay via Go daemon (wmuxd-remote) |
-| **Notifications** | WinRT Toast API, OSC detection, visual badges, sidebar indicators |
-| **Ghostty Config** | Compatible config format — themes, fonts, keybindings |
+| **Notifications** | Notification panel (Ctrl+Shift+I) with severity-colored items, sidebar badges, WinRT Toast, OSC detection |
+| **Theme Engine** | Ghostty-compatible config format, bundled themes (Digital Obsidian, Stitch Blue, etc.), full color pipeline |
+| **i18n** | English + French, system locale detection, manual override in config |
 | **Auto-Update** | GitHub Releases update checks |
+| **SSH Remote** | Remote workspace model + CLI commands (Go daemon integration pending) |
 
 ---
 
@@ -83,14 +85,17 @@ wmux surface split --direction right
 wmux surface split --direction down
 
 # Send input to a pane
-wmux input send-text --text "cargo test"
-wmux input send-key --key Enter
+wmux surface send-text --text "cargo test"
+wmux surface send-key --key Enter
 
 # Read terminal content
-wmux input read-text --surface-id <id>
+wmux surface read-text --surface-id <id>
 
 # Browser control
 wmux browser open --url "http://localhost:3000"
+
+# SSH remote (daemon integration pending)
+wmux ssh connect user@host
 ```
 
 Output is human-readable by default. Add `--json` for machine-parseable output — ideal for AI agents.
@@ -102,11 +107,11 @@ Output is human-readable by default. Add `--json` for machine-parseable output �
 |-----------|----------|
 | `system` | `ping`, `capabilities`, `identify` |
 | `workspace` | `list`, `create`, `current`, `select`, `close`, `rename` |
-| `surface` | `split`, `list`, `focus`, `close` |
-| `input` | `send-text`, `send-key`, `read-text` |
+| `surface` | `split`, `list`, `focus`, `close`, `send-text`, `send-key`, `read-text` |
 | `browser` | `open`, `identify`, `navigate`, `reload`, `devtools` |
 | `sidebar` | `toggle`, `set-text`, `set-badge` |
 | `notify` | `send`, `clear` |
+| `ssh` | `connect`, `disconnect` |
 
 </details>
 
@@ -118,14 +123,14 @@ Output is human-readable by default. Add `--json` for machine-parseable output �
 graph TD
     A[wmux-app] --> B[wmux-ui]
     A --> C[wmux-ipc]
-    A --> D[wmux-config]
+    A --> F[wmux-core]
+    B --> D[wmux-config]
     B --> E[wmux-render]
-    B --> F[wmux-core]
+    B --> F
+    B --> G[wmux-pty]
+    B --> H[wmux-browser]
     C --> F
     E --> F
-    A --> G[wmux-pty]
-    A --> H[wmux-browser]
-    G --> F
     I[wmux-cli] -.->|Named Pipe| C
 ```
 
@@ -151,16 +156,21 @@ graph TD
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+D` | Split pane right |
-| `Ctrl+Shift+D` | Split pane down |
+| `Alt+D` | Split pane down |
 | `Ctrl+W` | Close pane |
+| `Ctrl+Shift+W` | Close workspace |
 | `Ctrl+Shift+Enter` | Toggle zoom |
-| `Ctrl+Alt+Arrows` | Focus navigation |
+| `Alt+Arrows` | Focus navigation |
 | `Ctrl+N` | New workspace |
 | `Ctrl+1-9` | Switch workspace |
 | `Ctrl+T` | New surface (tab) |
+| `Ctrl+Shift+L` | New browser surface |
 | `Ctrl+Tab` | Cycle surfaces |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+Shift+P` | Command palette |
 | `Ctrl+F` | Search in terminal |
+| `Ctrl+Shift+I` | Notification panel |
+| `Ctrl+Shift+U` | Jump to last unread |
 | `Ctrl+Shift+C/V` | Copy / Paste |
 
 ---
@@ -214,12 +224,12 @@ wmux/
 - [x] WebView2 integrated browser
 - [x] Session auto-save/restore
 - [x] Terminal search with regex
-- [x] SSH remote support
-- [ ] Notification panel & OSC actions
-- [ ] Command palette
-- [ ] Ghostty-compat theme engine
-- [ ] Auto-update from GitHub Releases
-- [ ] i18n (English + French)
+- [x] Notification panel with severity & OSC detection
+- [x] Command palette with filter tabs
+- [x] Ghostty-compat theme engine (8 bundled themes)
+- [x] Auto-update from GitHub Releases
+- [x] i18n (English + French)
+- [ ] SSH remote (model ready, Go daemon integration pending)
 - [ ] Performance profiling & optimization
 
 ---

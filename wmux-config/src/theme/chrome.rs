@@ -49,22 +49,9 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let (r, g, b) = hsl_to_rgb(ah, boosted_s, al);
     let accent = [r, g, b, 1.0];
 
-    // Accent hover: shift lightness toward visible contrast (like surface elevation)
-    let hover_delta = if al > 0.5 { -0.08 } else { 0.08 };
-    let hover_l = (al + hover_delta).clamp(0.05, 0.95);
-    let (rh, gh, bh) = hsl_to_rgb(ah, boosted_s, hover_l);
-    let accent_hover = [rh, gh, bh, 1.0];
-
-    // Accent pressed: shift lightness toward background (opposite of hover)
-    let pressed_delta = if al > 0.5 { 0.10 } else { -0.10 };
-    let pressed_l = (al + pressed_delta).clamp(0.05, 0.95);
-    let (rp, gp, bp) = hsl_to_rgb(ah, boosted_s, pressed_l);
-    let accent_pressed = [rp, gp, bp, 1.0];
-
     let accent_muted = [r, g, b, 0.30];
     let accent_glow = [r, g, b, 0.30];
     let accent_glow_core = [r, g, b, 0.80];
-    let accent_tint = [r, g, b, 0.08];
 
     // Text hierarchy — UI foreground boosted toward white (dark) or black (light)
     // for WCAG AAA contrast on chrome surfaces. Terminal foreground stays unchanged.
@@ -79,11 +66,10 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     // Borders from surface_3
     let border_subtle = [surface_3[0], surface_3[1], surface_3[2], 0.40];
     let border_default = [surface_3[0], surface_3[1], surface_3[2], 0.60];
-    let border_strong = [surface_3[0], surface_3[1], surface_3[2], 0.80];
     let border_glow = [r, g, b, 0.45];
 
-    // Overlays
-    let overlay_dim = [0.0, 0.0, 0.0, 0.50];
+    // Overlays — dim derived from background for subtle theme tint
+    let overlay_dim = [bg_r * 0.15, bg_g * 0.15, bg_b * 0.15, 0.50];
     let overlay_tint = [r, g, b, 0.08];
 
     // Semantic from ANSI colors
@@ -93,7 +79,6 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let success_muted = [success[0], success[1], success[2], 0.12];
     let warning = u8_to_f32_color(palette.ansi[3].0, palette.ansi[3].1, palette.ansi[3].2);
     let warning_muted = [warning[0], warning[1], warning[2], 0.12];
-    let info = accent;
     let info_muted = [r, g, b, 0.12];
 
     // Selection from palette.selection
@@ -105,9 +90,9 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let search_match = [warning[0], warning[1], warning[2], 0.30];
     let search_match_active = [warning[0], warning[1], warning[2], 0.50];
 
-    // Drop shadow — black with moderate alpha
+    // Drop shadow — derived from background for theme coherence
     let shadow_alpha = if l > 0.5 { 0.20 } else { 0.30 };
-    let shadow = [0.0, 0.0, 0.0, shadow_alpha];
+    let shadow = [bg_r * 0.10, bg_g * 0.10, bg_b * 0.10, shadow_alpha];
 
     // Shadow depth tokens (sigma, offset_y)
     let shadow_sm = ShadowDepth {
@@ -138,12 +123,9 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         surface_3,
         surface_overlay,
         accent,
-        accent_hover,
         accent_muted,
         accent_glow,
         accent_glow_core,
-        accent_tint,
-        accent_pressed,
         text_primary,
         text_secondary,
         text_muted,
@@ -151,7 +133,6 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         text_inverse,
         border_subtle,
         border_default,
-        border_strong,
         border_glow,
         overlay_dim,
         overlay_tint,
@@ -161,7 +142,6 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         success_muted,
         warning,
         warning_muted,
-        info,
         info_muted,
         selection_bg,
         search_match,
@@ -288,12 +268,9 @@ mod tests {
             chrome.surface_3,
             chrome.surface_overlay,
             chrome.accent,
-            chrome.accent_hover,
             chrome.accent_muted,
             chrome.accent_glow,
             chrome.accent_glow_core,
-            chrome.accent_tint,
-            chrome.accent_pressed,
             chrome.text_primary,
             chrome.text_secondary,
             chrome.text_muted,
@@ -301,7 +278,6 @@ mod tests {
             chrome.text_inverse,
             chrome.border_subtle,
             chrome.border_default,
-            chrome.border_strong,
             chrome.border_glow,
             chrome.overlay_dim,
             chrome.overlay_tint,
@@ -311,7 +287,6 @@ mod tests {
             chrome.success_muted,
             chrome.warning,
             chrome.warning_muted,
-            chrome.info,
             chrome.info_muted,
             chrome.selection_bg,
             chrome.search_match,
@@ -369,17 +344,14 @@ mod tests {
         let chrome = derive_ui_chrome(&palette);
 
         assert!((chrome.accent[3] - 1.0).abs() < f32::EPSILON);
-        assert!((chrome.accent_hover[3] - 1.0).abs() < f32::EPSILON);
         assert!((chrome.accent_muted[3] - 0.30).abs() < f32::EPSILON);
         assert!((chrome.accent_glow[3] - 0.30).abs() < f32::EPSILON);
         assert!((chrome.accent_glow_core[3] - 0.80).abs() < f32::EPSILON);
-        assert!((chrome.accent_tint[3] - 0.08).abs() < f32::EPSILON);
         // RGB channels must match for alpha variants
         for variant in [
             chrome.accent_muted,
             chrome.accent_glow,
             chrome.accent_glow_core,
-            chrome.accent_tint,
         ] {
             assert_eq!(chrome.accent[0], variant[0]);
             assert_eq!(chrome.accent[1], variant[1]);
@@ -423,7 +395,6 @@ mod tests {
 
         assert!((chrome.border_subtle[3] - 0.40).abs() < f32::EPSILON);
         assert!((chrome.border_default[3] - 0.60).abs() < f32::EPSILON);
-        assert!((chrome.border_strong[3] - 0.80).abs() < f32::EPSILON);
         assert!((chrome.border_glow[3] - 0.45).abs() < f32::EPSILON);
     }
 
@@ -513,10 +484,23 @@ mod tests {
         assert!((chrome.search_match[3] - 0.30).abs() < f32::EPSILON);
         assert!((chrome.search_match_active[3] - 0.50).abs() < f32::EPSILON);
 
-        // shadow is black with alpha
-        assert!((chrome.shadow[0]).abs() < f32::EPSILON);
-        assert!((chrome.shadow[1]).abs() < f32::EPSILON);
-        assert!((chrome.shadow[2]).abs() < f32::EPSILON);
+        // overlay_dim derives from background (dim tint) at 50% alpha
+        let (br, bg, bb) = palette.background;
+        let expected_dim_r = (br as f32 / 255.0) * 0.15;
+        let expected_dim_g = (bg as f32 / 255.0) * 0.15;
+        let expected_dim_b = (bb as f32 / 255.0) * 0.15;
+        assert!((chrome.overlay_dim[0] - expected_dim_r).abs() < 0.001);
+        assert!((chrome.overlay_dim[1] - expected_dim_g).abs() < 0.001);
+        assert!((chrome.overlay_dim[2] - expected_dim_b).abs() < 0.001);
+        assert!((chrome.overlay_dim[3] - 0.50).abs() < f32::EPSILON);
+
+        // shadow derives from background (near-black tint) with moderate alpha
+        let expected_shadow_r = (br as f32 / 255.0) * 0.10;
+        let expected_shadow_g = (bg as f32 / 255.0) * 0.10;
+        let expected_shadow_b = (bb as f32 / 255.0) * 0.10;
+        assert!((chrome.shadow[0] - expected_shadow_r).abs() < 0.001);
+        assert!((chrome.shadow[1] - expected_shadow_g).abs() < 0.001);
+        assert!((chrome.shadow[2] - expected_shadow_b).abs() < 0.001);
         assert!(chrome.shadow[3] > 0.0 && chrome.shadow[3] <= 0.50);
 
         // cursor_alpha default
