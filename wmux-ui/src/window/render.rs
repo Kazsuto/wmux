@@ -1,11 +1,13 @@
-use super::{TabDragState, UiState};
-use crate::divider::{self, DividerOrientation};
-use crate::search;
 use std::collections::HashMap;
+
 use wmux_core::{PaneId, PaneRenderData};
 use wmux_render::TerminalRenderer;
 
+use crate::divider::{self, DividerOrientation};
+use crate::search;
 use crate::typography;
+
+use super::{TabDragState, UiState};
 
 /// Font size for tab bar titles — uses Body token.
 const TAB_FONT_SIZE: f32 = typography::BODY_FONT_SIZE;
@@ -1354,95 +1356,59 @@ impl UiState<'_> {
                     let mut rows: Vec<(String, String, PaletteAction)> =
                         Vec::with_capacity(MAX_VISIBLE_RESULTS);
 
+                    let push_commands = |rows: &mut Vec<(String, String, PaletteAction)>| {
+                        for r in self.command_registry.search(query) {
+                            rows.push((
+                                r.entry.name.clone(),
+                                r.entry.shortcut.clone().unwrap_or_default(),
+                                PaletteAction::Command(r.entry.id.clone()),
+                            ));
+                        }
+                    };
+                    let push_workspaces = |rows: &mut Vec<(String, String, PaletteAction)>| {
+                        for (i, ws) in self.workspace_cache.iter().enumerate() {
+                            if query.is_empty() || ws.name.to_lowercase().contains(&query_lower) {
+                                let hint = if i < 9 {
+                                    format!("Ctrl+{}", i + 1)
+                                } else {
+                                    String::new()
+                                };
+                                rows.push((
+                                    ws.name.clone(),
+                                    hint,
+                                    PaletteAction::SwitchWorkspace((i + 1) as u8),
+                                ));
+                            }
+                        }
+                    };
+                    let push_surfaces = |rows: &mut Vec<(String, String, PaletteAction)>| {
+                        for vp in &viewports {
+                            for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
+                                let display = if title.is_empty() {
+                                    format!("Surface {}", tab_idx + 1)
+                                } else {
+                                    title.clone()
+                                };
+                                if query.is_empty() || display.to_lowercase().contains(&query_lower)
+                                {
+                                    rows.push((
+                                        display,
+                                        String::new(),
+                                        PaletteAction::FocusSurface(vp.pane_id, tab_idx),
+                                    ));
+                                }
+                            }
+                        }
+                    };
+
                     match filter {
-                        PaletteFilter::Commands => {
-                            for r in self.command_registry.search(query) {
-                                rows.push((
-                                    r.entry.name.clone(),
-                                    r.entry.shortcut.clone().unwrap_or_default(),
-                                    PaletteAction::Command(r.entry.id.clone()),
-                                ));
-                            }
-                        }
-                        PaletteFilter::Workspaces => {
-                            for (i, ws) in self.workspace_cache.iter().enumerate() {
-                                if query.is_empty() || ws.name.to_lowercase().contains(&query_lower)
-                                {
-                                    let hint = if i < 9 {
-                                        format!("Ctrl+{}", i + 1)
-                                    } else {
-                                        String::new()
-                                    };
-                                    rows.push((
-                                        ws.name.clone(),
-                                        hint,
-                                        PaletteAction::SwitchWorkspace((i + 1) as u8),
-                                    ));
-                                }
-                            }
-                        }
-                        PaletteFilter::Surfaces => {
-                            for vp in &viewports {
-                                for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
-                                    let display = if title.is_empty() {
-                                        format!("Surface {}", tab_idx + 1)
-                                    } else {
-                                        title.clone()
-                                    };
-                                    if query.is_empty()
-                                        || display.to_lowercase().contains(&query_lower)
-                                    {
-                                        rows.push((
-                                            display,
-                                            String::new(),
-                                            PaletteAction::FocusSurface(vp.pane_id, tab_idx),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                        PaletteFilter::Commands => push_commands(&mut rows),
+                        PaletteFilter::Workspaces => push_workspaces(&mut rows),
+                        PaletteFilter::Surfaces => push_surfaces(&mut rows),
                         PaletteFilter::All => {
-                            // Commands first, then workspaces, then surfaces.
-                            for r in self.command_registry.search(query) {
-                                rows.push((
-                                    r.entry.name.clone(),
-                                    r.entry.shortcut.clone().unwrap_or_default(),
-                                    PaletteAction::Command(r.entry.id.clone()),
-                                ));
-                            }
-                            for (i, ws) in self.workspace_cache.iter().enumerate() {
-                                if query.is_empty() || ws.name.to_lowercase().contains(&query_lower)
-                                {
-                                    let hint = if i < 9 {
-                                        format!("Ctrl+{}", i + 1)
-                                    } else {
-                                        String::new()
-                                    };
-                                    rows.push((
-                                        ws.name.clone(),
-                                        hint,
-                                        PaletteAction::SwitchWorkspace((i + 1) as u8),
-                                    ));
-                                }
-                            }
-                            for vp in &viewports {
-                                for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
-                                    let display = if title.is_empty() {
-                                        format!("Surface {}", tab_idx + 1)
-                                    } else {
-                                        title.clone()
-                                    };
-                                    if query.is_empty()
-                                        || display.to_lowercase().contains(&query_lower)
-                                    {
-                                        rows.push((
-                                            display,
-                                            String::new(),
-                                            PaletteAction::FocusSurface(vp.pane_id, tab_idx),
-                                        ));
-                                    }
-                                }
-                            }
+                            push_commands(&mut rows);
+                            push_workspaces(&mut rows);
+                            push_surfaces(&mut rows);
                         }
                     }
 

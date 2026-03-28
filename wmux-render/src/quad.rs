@@ -261,12 +261,7 @@ impl QuadPipeline {
             return;
         }
         let max_r = w.min(h) / 2.0;
-        let r = [
-            border_radius[0].clamp(0.0, max_r),
-            border_radius[1].clamp(0.0, max_r),
-            border_radius[2].clamp(0.0, max_r),
-            border_radius[3].clamp(0.0, max_r),
-        ];
+        let r = border_radius.map(|v| v.clamp(0.0, max_r));
         self.quads.push(QuadInstance {
             x,
             y,

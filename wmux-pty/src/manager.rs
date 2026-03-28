@@ -242,9 +242,7 @@ impl PtyManager {
             }
         };
         let (args, extra_env) = build_shell_args(&config.args, &shell_type, hook_dir.as_deref());
-        for (k, v) in extra_env {
-            env.insert(k, v);
-        }
+        env.extend(extra_env);
 
         // Create ConPTY with PSEUDOCONSOLE_RESIZE_QUIRK
         let pair = create_conpty(config.cols, config.rows)?;

@@ -607,11 +607,12 @@ impl PaneRenderer {
         if tab_index >= viewport.tab_count {
             return None;
         }
+        let s = viewport.scale;
         let (_tab_width, tab_x) = Self::tab_metrics(viewport, tab_index);
-        let pill_y = viewport.rect.y + 4.0;
-        // Position indicator in top-left corner of the pill with small padding
-        let indicator_x = tab_x + 4.0;
-        let indicator_y = pill_y + 2.0;
+        let pad = 4.0 * s;
+        let pill_y = viewport.rect.y + pad;
+        let indicator_x = tab_x + pad;
+        let indicator_y = pill_y + 2.0 * s;
         Some((indicator_x, indicator_y))
     }
 

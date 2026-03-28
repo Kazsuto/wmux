@@ -455,31 +455,27 @@ impl<'a> VteHandler<'a> {
     /// Parse extended color from semicolon-separated params (38;5;N or
     /// 38;2;R;G;B). `is_fg` selects foreground vs background.
     fn parse_extended_color(&mut self, iter: &mut vte::ParamsIter<'_>, is_fg: bool) {
-        match iter.next().and_then(|p| p.first().copied()) {
+        let color = match iter.next().and_then(|p| p.first().copied()) {
             // 256-color: 38;5;N
-            Some(5) => {
-                if let Some(idx) = iter.next().and_then(|p| p.first().copied()) {
-                    let color = Color::Indexed(idx as u8);
-                    if is_fg {
-                        self.state.attrs.fg = color;
-                    } else {
-                        self.state.attrs.bg = color;
-                    }
-                }
-            }
+            Some(5) => iter
+                .next()
+                .and_then(|p| p.first().copied())
+                .map(|idx| Color::Indexed(idx as u8)),
             // Truecolor: 38;2;R;G;B
             Some(2) => {
                 let r = iter.next().and_then(|p| p.first().copied()).unwrap_or(0);
                 let g = iter.next().and_then(|p| p.first().copied()).unwrap_or(0);
                 let b = iter.next().and_then(|p| p.first().copied()).unwrap_or(0);
-                let color = Color::Rgb(r as u8, g as u8, b as u8);
-                if is_fg {
-                    self.state.attrs.fg = color;
-                } else {
-                    self.state.attrs.bg = color;
-                }
+                Some(Color::Rgb(r as u8, g as u8, b as u8))
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(color) = color {
+            if is_fg {
+                self.state.attrs.fg = color;
+            } else {
+                self.state.attrs.bg = color;
+            }
         }
     }
 
@@ -675,14 +671,7 @@ impl vte::Perform for VteHandler<'_> {
         if width == 2 && col + 1 >= cols {
             if self.state.modes.contains(TerminalMode::WRAPAROUND) {
                 // Fill remainder with space.
-                let blank = Cell {
-                    grapheme: CompactString::from(" "),
-                    fg: self.state.attrs.fg,
-                    bg: self.state.attrs.bg,
-                    flags: CellFlags::empty(),
-                    hyperlink: None,
-                };
-                self.state.grid.set_cell(col, row, blank);
+                self.state.grid.set_cell(col, row, self.erase_cell());
                 self.state.grid.cursor_mut().col = 0;
                 self.linefeed();
             } else {

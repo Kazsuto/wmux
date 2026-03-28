@@ -1,4 +1,27 @@
+use std::sync::Arc;
+
+use winit::{
+    application::ApplicationHandler,
+    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event_loop::ActiveEventLoop,
+    keyboard::{Key, ModifiersState, NamedKey},
+    window::{WindowAttributes, WindowId},
+};
+use wmux_config::derive_ui_chrome;
+use wmux_core::{
+    AppEvent, AppStateHandle, PaneId, PaneTreeSnapshot, SessionState, SplitDirection, TerminalMode,
+};
+use wmux_render::GpuContext;
+
 use crate::divider::{self, DividerOrientation};
+use crate::event::WmuxEvent;
+use crate::mouse::MouseButton;
+use crate::shortcuts::ShortcutAction;
+use crate::sidebar::SidebarInteraction;
+use crate::toast;
+use crate::UiError;
+
+use super::{handlers, App, TabDragState, UiState};
 
 /// Build a CustomGlyph for an SVG icon (used at init to pre-build glyph arrays).
 fn svg_cg(icon: wmux_render::icons::Icon, size: f32) -> glyphon::CustomGlyph {
@@ -13,27 +36,6 @@ fn svg_cg(icon: wmux_render::icons::Icon, size: f32) -> glyphon::CustomGlyph {
         metadata: 0,
     }
 }
-use crate::event::WmuxEvent;
-use crate::mouse::MouseButton;
-use crate::shortcuts::ShortcutAction;
-use crate::sidebar::SidebarInteraction;
-use crate::toast;
-use crate::UiError;
-use std::sync::Arc;
-use winit::{
-    application::ApplicationHandler,
-    event::{ElementState, MouseScrollDelta, WindowEvent},
-    event_loop::ActiveEventLoop,
-    keyboard::{Key, ModifiersState, NamedKey},
-    window::{WindowAttributes, WindowId},
-};
-use wmux_config::derive_ui_chrome;
-use wmux_core::{
-    AppEvent, AppStateHandle, PaneId, PaneTreeSnapshot, SessionState, SplitDirection, TerminalMode,
-};
-use wmux_render::GpuContext;
-
-use super::{handlers, App, TabDragState, UiState};
 
 impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

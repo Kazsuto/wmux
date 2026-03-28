@@ -1,7 +1,3 @@
-use super::UiState;
-use crate::event::WmuxEvent;
-use crate::shortcuts::ShortcutAction;
-use crate::sidebar::SidebarInteraction;
 use tokio::sync::mpsc;
 use winit::event::KeyEvent;
 use winit::event_loop::EventLoopProxy;
@@ -10,6 +6,12 @@ use wmux_core::surface::SplitDirection;
 use wmux_core::surface_manager::{Surface, SurfaceManager};
 use wmux_core::{AppStateHandle, FocusDirection, PaneId, PaneState, Terminal};
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
+
+use crate::event::WmuxEvent;
+use crate::shortcuts::ShortcutAction;
+use crate::sidebar::SidebarInteraction;
+
+use super::UiState;
 
 pub(super) fn spawn_pane_pty(
     pane_id: PaneId,

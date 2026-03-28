@@ -92,18 +92,15 @@ impl Handler for BrowserHandler {
                 reply: reply_tx,
             };
 
-            tx.send(cmd).await.map_err(|_| {
-                RpcError::internal_error("browser command channel closed".to_owned())
-            })?;
+            tx.send(cmd)
+                .await
+                .map_err(|_| RpcError::internal_error("browser command channel closed"))?;
 
-            let result = reply_rx.await.map_err(|_| {
-                RpcError::internal_error("browser command reply dropped".to_owned())
-            })?;
+            let result = reply_rx
+                .await
+                .map_err(|_| RpcError::internal_error("browser command reply dropped"))?;
 
-            match result {
-                Ok(value) => Ok(value),
-                Err(msg) => Err(RpcError::internal_error(msg)),
-            }
+            result.map_err(RpcError::internal_error)
         })
     }
 }

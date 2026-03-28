@@ -1,7 +1,9 @@
-use crate::RenderError;
 use std::sync::Arc;
+
 use wgpu::{Adapter, Device, Instance, Queue, Surface, SurfaceConfiguration, TextureFormat};
 use winit::window::Window;
+
+use crate::RenderError;
 
 pub struct GpuContext<'window> {
     pub surface: Surface<'window>,

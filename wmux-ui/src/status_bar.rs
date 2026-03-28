@@ -15,33 +15,22 @@ const PADDING_X: f32 = 14.0;
 const CONNECTION_DOT_SIZE: f32 = 7.0;
 
 /// Connection state for the status bar indicator dot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectionStatus {
+    #[default]
     Connected,
     Reconnecting,
     Disconnected,
 }
 
 /// Data required to render a single status bar frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StatusBarData {
     pub workspace_name: String,
     pub pane_count: usize,
     pub connection: ConnectionStatus,
     pub branch: Option<String>,
     pub shell: String,
-}
-
-impl Default for StatusBarData {
-    fn default() -> Self {
-        Self {
-            workspace_name: String::new(),
-            pane_count: 0,
-            connection: ConnectionStatus::Connected,
-            branch: None,
-            shell: String::new(),
-        }
-    }
 }
 
 /// Status bar component — 28px strip at the bottom of the window.

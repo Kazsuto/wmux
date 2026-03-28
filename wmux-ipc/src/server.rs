@@ -442,14 +442,13 @@ fn handle_auth_login(
         }
     }
 
-    let params: AuthLoginRequest = match &request.params {
-        Some(v) => serde_json::from_value(v.clone()).unwrap_or(AuthLoginRequest {
+    let params: AuthLoginRequest = request
+        .params
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or(AuthLoginRequest {
             nonce_response: None,
-        }),
-        None => AuthLoginRequest {
-            nonce_response: None,
-        },
-    };
+        });
 
     match params.nonce_response {
         None => {

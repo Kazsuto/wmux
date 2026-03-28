@@ -1,6 +1,7 @@
-use crate::RenderError;
 use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
 use wgpu::{Device, MultisampleState, Queue, TextureFormat};
+
+use crate::RenderError;
 
 /// The UI font family name used for non-terminal chrome (sidebar, tabs, status bar).
 ///
@@ -60,11 +61,8 @@ impl GlyphonRenderer {
         tracing::info!("embedded Symbols Nerd Font Mono loaded for glyph fallback");
 
         // Probe whether Segoe UI Variable (Win11) or Segoe UI (Win10) is available.
-        let ui_font_available = font_system.db().faces().any(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == UI_FONT_FAMILY || name == UI_FONT_FAMILY_FALLBACK)
-        });
+        let ui_font_available = has_font_family(&font_system, UI_FONT_FAMILY)
+            || has_font_family(&font_system, UI_FONT_FAMILY_FALLBACK);
 
         if ui_font_available {
             tracing::info!("UI sans-serif font loaded for chrome rendering");
@@ -73,11 +71,7 @@ impl GlyphonRenderer {
         }
 
         // Probe whether Segoe Fluent Icons (Win11) is available for icon rendering.
-        let icon_font_available = font_system.db().faces().any(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == ICON_FONT_FAMILY)
-        });
+        let icon_font_available = has_font_family(&font_system, ICON_FONT_FAMILY);
 
         if icon_font_available {
             tracing::info!("Segoe Fluent Icons available for UI icon rendering");
@@ -88,16 +82,9 @@ impl GlyphonRenderer {
         }
 
         // Probe terminal font availability for smart default resolution.
-        let terminal_font_available = font_system.db().faces().any(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == TERMINAL_FONT_FAMILY)
-        });
-        let terminal_fallback_available = font_system.db().faces().any(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == TERMINAL_FONT_FAMILY_FALLBACK)
-        });
+        let terminal_font_available = has_font_family(&font_system, TERMINAL_FONT_FAMILY);
+        let terminal_fallback_available =
+            has_font_family(&font_system, TERMINAL_FONT_FAMILY_FALLBACK);
 
         if terminal_font_available {
             tracing::info!(font = TERMINAL_FONT_FAMILY, "terminal Nerd Font loaded");
@@ -230,4 +217,12 @@ impl GlyphonRenderer {
     pub fn trim_atlas(&mut self) {
         self.atlas.trim();
     }
+}
+
+/// Check whether any font face in the database has the given family name.
+fn has_font_family(font_system: &FontSystem, family: &str) -> bool {
+    font_system
+        .db()
+        .faces()
+        .any(|face| face.families.iter().any(|(name, _)| name == family))
 }
