@@ -2,6 +2,24 @@
 
 ## 2026-03-28
 
+REFACTOR: Clean up window module — deduplicate imports, extract reusable text attributes and metrics in render loop
+REFACTOR: Unify split shortcuts — replace Ctrl+D/Alt+D direct + Ctrl+K chord with single Ctrl+D → Arrow chord for all 4 directions
+REFACTOR: Add missing command palette entries (split left/up, close workspace, browser tab, cycle tabs) and wire command_id_to_action mappings
+FEATURE: Add Ctrl+V/C/X (paste/copy/cut) support in browser address bar — previously blocked by generic Ctrl+combo guard
+FIX: Dismiss address bar editing on click-away — clicking outside the URL field now cancels editing mode so keyboard input returns to the correct target
+FIX: Fix WebView2 stealing keyboard focus permanently — replace per-frame `focus_webview()` with transition-based focus, call `SetFocus(main_hwnd)` when switching away from browser pane
+FIX: Prevent panic in scroll_up_in_region when scroll amount covers entire region from row 0 — usize underflow on `bottom - n` caused crash after minimize/restore with active terminals
+FEATURE: Center status bar text and add subtle top border separator with connection dot aligned to centered text
+FIX: Offset tab inline-edit text past the type indicator icon to prevent overlap during rename
+CHORE: Compact tab bar — reduce height 40→34px, increase radius 4→6px, tighten gap 6→3px, shrink action buttons 28→24px
+FIX: Move active tab indicator bar from bottom to top, span full tab width
+FIX: Rework digital-obsidian accent — vivid blue (#2b7de6) replaces pastel (#a3c9ff) for visible Focus Glow on dark background
+FIX: Brighten ANSI 0/8 in digital-obsidian theme — black (#1b1b1c→#484f58), bright-black (#353535→#8b949e) for readability on #131313
+FIX: Reduce DIM intensity factor from 0.67 to 0.80 — gentler dimming for ultra-dark backgrounds
+FEATURE: Add DIM/faint (SGR 2) text rendering — dim text attenuated to 80% brightness, applied to glyphs and underline/strikethrough decorations
+FIX: Change default font-family from "Cascadia Code" to "JetBrainsMono Nerd Font" — enables font fallback chain (NF → Cascadia Code → system monospace)
+FIX: Switch terminal text shaping from Basic to Advanced — enable cosmic-text font fallback for Nerd Font glyphs, emoji, and Unicode symbols (fixes □ replacement squares in prompt)
+FIX: Suppress fontdb WARN about malformed system fonts via tracing filter (fontdb=error)
 REFACTOR: Consolidate render and UI patterns — simplify rendering pipeline and event handling across core/render/ui layers, remove code duplication
 REFACTOR: Split automation.rs into 4 sub-modules (navigation, dom, inspect) for wmux-browser
 REFACTOR: Split panel.rs into 4 sub-modules (attach, layout, delegation) for wmux-browser

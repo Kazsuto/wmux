@@ -6,14 +6,13 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShortcutAction {
     // Pane management
-    /// Ctrl+D or Ctrl+K Right — split focused pane right (horizontal split).
+    /// Ctrl+D → Right — split focused pane right (horizontal split).
     SplitRight,
-    /// Ctrl+K Left — split focused pane left (new pane goes left).
+    /// Ctrl+D → Left — split focused pane left (new pane goes left).
     SplitLeft,
-    /// Alt+D or Ctrl+K Down — split focused pane down (vertical split).
-    /// Note: Ctrl+Shift+D conflicts with Windows keyboard layout switcher.
+    /// Ctrl+D → Down — split focused pane down (vertical split).
     SplitDown,
-    /// Ctrl+K Up — split focused pane up (new pane goes above).
+    /// Ctrl+D → Up — split focused pane up (new pane goes above).
     SplitUp,
     /// Ctrl+W — close focused surface/pane.
     ClosePane,
@@ -65,7 +64,7 @@ pub enum ShortcutAction {
     JumpLastUnread,
 
     // Chord prefix
-    /// Ctrl+K — chord prefix for split shortcuts (Ctrl+K then Arrow).
+    /// Ctrl+D — chord prefix for split shortcuts (Ctrl+D then Arrow).
     /// Not a final action — consumed by the chord state machine.
     ChordPrefix,
 
@@ -121,7 +120,6 @@ impl ShortcutMap {
             if ctrl {
                 match (shift, alt, s) {
                     // Pane management
-                    (false, false, "d" | "D") => return Some(ShortcutAction::SplitRight),
                     (false, false, "w" | "W") => return Some(ShortcutAction::ClosePane),
 
                     // Workspace
@@ -150,8 +148,8 @@ impl ShortcutMap {
                     // Command palette
                     (true, false, "p" | "P") => return Some(ShortcutAction::CommandPalette),
 
-                    // Chord prefix: Ctrl+K starts a chord sequence for splits.
-                    (false, false, "k" | "K") => return Some(ShortcutAction::ChordPrefix),
+                    // Chord prefix: Ctrl+D starts a chord sequence for splits.
+                    (false, false, "d" | "D") => return Some(ShortcutAction::ChordPrefix),
 
                     // Find
                     (_, false, "f" | "F") => return Some(ShortcutAction::Find),
@@ -176,16 +174,6 @@ impl ShortcutMap {
                     KeyCode::Digit7 => return Some(ShortcutAction::SwitchWorkspace(7)),
                     KeyCode::Digit8 => return Some(ShortcutAction::SwitchWorkspace(8)),
                     KeyCode::Digit9 => return Some(ShortcutAction::SwitchWorkspace(9)),
-                    _ => {}
-                }
-            }
-        }
-
-        // Alt+letter shortcuts (no Ctrl) — respects keyboard layout via logical_key
-        if alt && !ctrl && !shift {
-            if let Key::Character(ch) = key {
-                match ch.as_str() {
-                    "d" | "D" => return Some(ShortcutAction::SplitDown),
                     _ => {}
                 }
             }
@@ -257,38 +245,38 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_splits_right() {
+    fn ctrl_d_chord_prefix() {
         assert_eq!(
             map().match_shortcut(
                 &char_key("d"),
                 phys(KeyCode::KeyD),
                 &mods(true, false, false)
             ),
-            Some(ShortcutAction::SplitRight)
+            Some(ShortcutAction::ChordPrefix)
         );
     }
 
     #[test]
-    fn ctrl_d_uppercase_splits_right() {
+    fn ctrl_d_uppercase_chord_prefix() {
         assert_eq!(
             map().match_shortcut(
                 &char_key("D"),
                 phys(KeyCode::KeyD),
                 &mods(true, false, false)
             ),
-            Some(ShortcutAction::SplitRight)
+            Some(ShortcutAction::ChordPrefix)
         );
     }
 
     #[test]
-    fn alt_d_splits_down() {
+    fn alt_d_no_match() {
         assert_eq!(
             map().match_shortcut(
                 &char_key("d"),
                 phys(KeyCode::KeyD),
                 &mods(false, false, true)
             ),
-            Some(ShortcutAction::SplitDown)
+            None
         );
     }
 
@@ -556,26 +544,14 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_k_chord_prefix() {
+    fn ctrl_k_no_match() {
         assert_eq!(
             map().match_shortcut(
                 &char_key("k"),
                 phys(KeyCode::KeyK),
                 &mods(true, false, false)
             ),
-            Some(ShortcutAction::ChordPrefix)
-        );
-    }
-
-    #[test]
-    fn ctrl_k_uppercase_chord_prefix() {
-        assert_eq!(
-            map().match_shortcut(
-                &char_key("K"),
-                phys(KeyCode::KeyK),
-                &mods(true, false, false)
-            ),
-            Some(ShortcutAction::ChordPrefix)
+            None
         );
     }
 }

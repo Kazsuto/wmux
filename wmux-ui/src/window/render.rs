@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wmux_core::{PaneId, PaneRenderData};
 use wmux_render::TerminalRenderer;
 
-use crate::divider::{self, DividerOrientation};
-use crate::search;
-use crate::typography;
+use crate::{
+    divider::{self, DividerOrientation},
+    search, typography,
+};
 
 use super::{TabDragState, UiState};
 
@@ -41,6 +42,16 @@ impl UiState<'_> {
     ) -> Result<(), crate::UiError> {
         // Advance all UI animations.
         self.animation.update();
+
+        // Reusable text attributes — avoid recreating per section.
+        let ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
+        let ui_attrs_bold = glyphon::Attrs::new()
+            .family(glyphon::Family::Name("Segoe UI"))
+            .weight(glyphon::Weight::BOLD);
+        let ui_attrs_light = glyphon::Attrs::new()
+            .family(glyphon::Family::Name("Segoe UI"))
+            .weight(glyphon::Weight::LIGHT);
+        let tab_metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
 
         let surface_width = self.gpu.width();
         let surface_height = self.gpu.height();
@@ -301,14 +312,10 @@ impl UiState<'_> {
         }
 
         // Collect live pane IDs once — used to prune stale tab title buffers and renderers.
-        let live_ids: std::collections::HashSet<PaneId> =
-            layout.iter().map(|(id, _)| *id).collect();
+        let live_ids: HashSet<PaneId> = layout.iter().map(|(id, _)| *id).collect();
 
         // Update tab title text buffers for panes with multiple surfaces.
         {
-            let metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
-            let attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
-
             // Remove buffers for panes that no longer exist.
             self.tab_title_buffers.retain(|id, _| live_ids.contains(id));
 
@@ -322,12 +329,12 @@ impl UiState<'_> {
                 let text_max_width = (tab_width - TAB_TEXT_PADDING * 2.0 - close_reserve).max(1.0);
 
                 bufs.resize_with(vp.tab_count, || {
-                    glyphon::Buffer::new(self.glyphon.font_system(), metrics)
+                    glyphon::Buffer::new(self.glyphon.font_system(), tab_metrics)
                 });
 
                 for (i, title) in vp.tab_titles.iter().enumerate() {
                     let buf = &mut bufs[i];
-                    buf.set_metrics(self.glyphon.font_system(), metrics);
+                    buf.set_metrics(self.glyphon.font_system(), tab_metrics);
                     buf.set_size(
                         self.glyphon.font_system(),
                         Some(text_max_width),
@@ -336,7 +343,7 @@ impl UiState<'_> {
                     buf.set_text(
                         self.glyphon.font_system(),
                         title,
-                        &attrs,
+                        &ui_attrs,
                         glyphon::Shaping::Advanced,
                         None,
                     );
@@ -347,9 +354,6 @@ impl UiState<'_> {
 
         // Update toggle label buffers for panes in toggle mode.
         {
-            let metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
-            let attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
-
             self.toggle_label_buffers
                 .retain(|id, _| live_ids.contains(id));
 
@@ -365,8 +369,8 @@ impl UiState<'_> {
                     .entry(vp.pane_id)
                     .or_insert_with(|| {
                         [
-                            glyphon::Buffer::new(self.glyphon.font_system(), metrics),
-                            glyphon::Buffer::new(self.glyphon.font_system(), metrics),
+                            glyphon::Buffer::new(self.glyphon.font_system(), tab_metrics),
+                            glyphon::Buffer::new(self.glyphon.font_system(), tab_metrics),
                         ]
                     });
 
@@ -378,7 +382,7 @@ impl UiState<'_> {
                 let text_max = (seg_width - icon_reserve - 4.0 * s).max(1.0);
 
                 for (i, label) in labels.iter().enumerate() {
-                    bufs[i].set_metrics(self.glyphon.font_system(), metrics);
+                    bufs[i].set_metrics(self.glyphon.font_system(), tab_metrics);
                     bufs[i].set_size(
                         self.glyphon.font_system(),
                         Some(text_max),
@@ -387,7 +391,7 @@ impl UiState<'_> {
                     bufs[i].set_text(
                         self.glyphon.font_system(),
                         label,
-                        &attrs,
+                        &ui_attrs,
                         glyphon::Shaping::Advanced,
                         None,
                     );
@@ -479,6 +483,9 @@ impl UiState<'_> {
             // Collect all surface IDs still referenced by viewports — used for orphan cleanup.
             self.live_browser_sids.clear();
 
+            // Determine which browser surface (if any) should have Win32 keyboard focus.
+            let mut desired_browser_focus: Option<wmux_core::SurfaceId> = None;
+
             for vp in &viewports {
                 // Track all surface IDs in this viewport.
                 for sid in &vp.surface_ids {
@@ -542,12 +549,11 @@ impl UiState<'_> {
                             let browser_rect = wmux_render::PaneRenderer::browser_viewport(vp);
                             let _ = mgr.resize_panel(sid, &browser_rect);
                             let _ = mgr.show_panel(sid);
-                            // Give WebView2 keyboard focus when pane is focused
-                            // and address bar is NOT being edited.
+                            // Track desired focus — only the focused pane's browser
+                            // should receive Win32 keyboard focus (and not while
+                            // editing the address bar).
                             if vp.focused && !self.address_bar.editing {
-                                if let Some(panel) = mgr.get_panel(sid) {
-                                    let _ = panel.focus_webview();
-                                }
+                                desired_browser_focus = Some(sid);
                             }
                         }
                     }
@@ -559,6 +565,25 @@ impl UiState<'_> {
                         let _ = mgr.hide_panel(*sid);
                     }
                 }
+            }
+
+            // Apply browser focus transitions — only on state change, not every frame.
+            if desired_browser_focus != self.browser_focus_target {
+                if let Some(sid) = desired_browser_focus {
+                    if let Some(panel) = mgr.get_panel(sid) {
+                        let _ = panel.focus_webview();
+                    }
+                } else if self.browser_focus_target.is_some() {
+                    // Reclaim Win32 keyboard focus from WebView2.
+                    // SAFETY: SetFocus is a standard Win32 call. `main_hwnd` is valid
+                    // for the lifetime of the window and we are on the UI/STA thread.
+                    unsafe {
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(
+                            self.main_hwnd,
+                        ));
+                    }
+                }
+                self.browser_focus_target = desired_browser_focus;
             }
 
             // Remove orphaned browser panels — panels whose surface was closed
@@ -865,7 +890,7 @@ impl UiState<'_> {
                 self.search_query_buffer.set_text(
                     self.glyphon.font_system(),
                     &query_display,
-                    &glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI")),
+                    &ui_attrs,
                     glyphon::Shaping::Advanced,
                     None,
                 );
@@ -878,7 +903,7 @@ impl UiState<'_> {
                 self.search_count_buffer.set_text(
                     self.glyphon.font_system(),
                     &count_display,
-                    &glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI")),
+                    &ui_attrs,
                     glyphon::Shaping::Advanced,
                     None,
                 );
@@ -972,8 +997,11 @@ impl UiState<'_> {
             self.status_bar_data.pane_count = layout.len();
             self.status_bar_data.branch = active_ws.and_then(|ws| ws.git_branch.clone());
 
-            self.status_bar
-                .update_text(self.glyphon.font_system(), &self.status_bar_data, sb_w);
+            self.status_bar.update_text(
+                self.glyphon.font_system(),
+                &self.status_bar_data,
+                sb_w / self.scale_factor,
+            );
 
             let time_secs = self.start_instant.elapsed().as_secs_f32();
 
@@ -1204,10 +1232,6 @@ impl UiState<'_> {
 
             // Always reshape text buffers — timestamps are time-dependent ("just now" → "1 min ago").
             {
-                let ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
-                let ui_bold = glyphon::Attrs::new()
-                    .family(glyphon::Family::Name("Segoe UI"))
-                    .weight(glyphon::Weight::BOLD);
                 let text_max_w = crate::notification_panel::PANEL_WIDTH
                     - crate::notification_panel::TEXT_LEFT_OFFSET
                     - 8.0;
@@ -1258,7 +1282,7 @@ impl UiState<'_> {
                     title_buf.set_text(
                         self.glyphon.font_system(),
                         title_text,
-                        &ui_bold,
+                        &ui_attrs_bold,
                         glyphon::Shaping::Advanced,
                         None,
                     );
@@ -1346,7 +1370,6 @@ impl UiState<'_> {
                     let ly_tmp = crate::command_palette::PaletteLayout::compute(sw, sh, 0);
                     let input_w = ly_tmp.input_w;
 
-                    let ui_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
                     let query = &self.command_palette.query;
                     let filter = self.command_palette.filter;
                     let query_lower = self.command_palette.query.to_lowercase();
@@ -1443,9 +1466,6 @@ impl UiState<'_> {
                     self.palette_query_buffer
                         .shape_until_scroll(self.glyphon.font_system(), false);
 
-                    let hint_attrs = glyphon::Attrs::new()
-                        .family(glyphon::Family::Name("Segoe UI"))
-                        .weight(glyphon::Weight::LIGHT);
                     for (i, (name, shortcut, _)) in rows.iter().enumerate().take(visible) {
                         self.palette_result_buffers[i].set_size(
                             self.glyphon.font_system(),
@@ -1470,7 +1490,7 @@ impl UiState<'_> {
                         self.palette_shortcut_buffers[i].set_text(
                             self.glyphon.font_system(),
                             shortcut,
-                            &hint_attrs,
+                            &ui_attrs_light,
                             glyphon::Shaping::Advanced,
                             None,
                         );
@@ -1521,7 +1541,6 @@ impl UiState<'_> {
             } else {
                 &self.address_bar.url
             };
-            let attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
             // Use focused browser pane width if available, else a reasonable max.
             let buf_width = viewports
                 .iter()
@@ -1540,7 +1559,7 @@ impl UiState<'_> {
             self.address_bar_buffer.set_text(
                 self.glyphon.font_system(),
                 text,
-                &attrs,
+                &ui_attrs,
                 glyphon::Shaping::Advanced,
                 None,
             );
@@ -1580,12 +1599,10 @@ impl UiState<'_> {
 
         // Update tab edit buffer text if editing.
         if let super::TabEditState::Editing { ref text, .. } = self.tab_edit {
-            let edit_metrics = glyphon::Metrics::new(TAB_FONT_SIZE, TAB_LINE_HEIGHT);
-            let edit_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
             let buf = self.tab_edit_buffer.get_or_insert_with(|| {
-                glyphon::Buffer::new(self.glyphon.font_system(), edit_metrics)
+                glyphon::Buffer::new(self.glyphon.font_system(), tab_metrics)
             });
-            buf.set_metrics(self.glyphon.font_system(), edit_metrics);
+            buf.set_metrics(self.glyphon.font_system(), tab_metrics);
             buf.set_size(
                 self.glyphon.font_system(),
                 Some(120.0),
@@ -1594,7 +1611,7 @@ impl UiState<'_> {
             buf.set_text(
                 self.glyphon.font_system(),
                 text,
-                &edit_attrs,
+                &ui_attrs,
                 glyphon::Shaping::Advanced,
                 None,
             );
@@ -1702,13 +1719,16 @@ impl UiState<'_> {
 
                         if is_editing {
                             if let Some(ref edit_buf) = self.tab_edit_buffer {
+                                // Match normal tab text offset past the type indicator icon.
+                                let icon_reserve = 26.0;
+                                let edit_left = tab_x + TAB_TEXT_PADDING + icon_reserve;
                                 all_text_areas.push(glyphon::TextArea {
                                     buffer: edit_buf,
-                                    left: tab_x + TAB_TEXT_PADDING,
+                                    left: edit_left,
                                     top: vp.rect.y + TAB_TEXT_TOP_OFFSET,
                                     scale: self.scale_factor,
                                     bounds: glyphon::TextBounds {
-                                        left: (tab_x + TAB_TEXT_PADDING) as i32,
+                                        left: edit_left as i32,
                                         top: vp.rect.y as i32,
                                         right: (tab_x + tab_width - TAB_TEXT_PADDING) as i32,
                                         bottom: (vp.rect.y + vp.tab_bar_height()) as i32,
@@ -1723,9 +1743,12 @@ impl UiState<'_> {
                                 } = &self.tab_edit
                                 {
                                     self.quads.push_quad(
-                                        tab_x + TAB_TEXT_PADDING,
+                                        edit_left,
                                         vp.rect.y + TAB_TEXT_TOP_OFFSET,
-                                        tab_width - TAB_TEXT_PADDING * 2.0,
+                                        tab_width
+                                            - TAB_TEXT_PADDING
+                                            - icon_reserve
+                                            - TAB_TEXT_PADDING,
                                         TAB_LINE_HEIGHT,
                                         self.ui_chrome.accent_muted,
                                     );
@@ -1737,9 +1760,7 @@ impl UiState<'_> {
                                     let cursor_offset = tab_edit_cursor_offset
                                         .unwrap_or(*cursor as f32 * TAB_FONT_SIZE * 0.6);
                                     // Multiply by scale — glyphon renders at glyph_x * scale.
-                                    let cursor_x = tab_x
-                                        + TAB_TEXT_PADDING
-                                        + cursor_offset * self.scale_factor;
+                                    let cursor_x = edit_left + cursor_offset * self.scale_factor;
                                     let cursor_y = vp.rect.y + TAB_TEXT_TOP_OFFSET;
                                     let cursor_color = [
                                         self.ui_chrome.text_primary[0],

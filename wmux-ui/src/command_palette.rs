@@ -460,7 +460,9 @@ impl CommandPalette {
 pub(crate) fn command_id_to_action(id: &str) -> Option<ShortcutAction> {
     match id {
         "split_right" => Some(ShortcutAction::SplitRight),
+        "split_left" => Some(ShortcutAction::SplitLeft),
         "split_down" => Some(ShortcutAction::SplitDown),
+        "split_up" => Some(ShortcutAction::SplitUp),
         "close_pane" => Some(ShortcutAction::ClosePane),
         "zoom_toggle" => Some(ShortcutAction::ZoomToggle),
         "focus_up" => Some(ShortcutAction::FocusUp),
@@ -468,7 +470,11 @@ pub(crate) fn command_id_to_action(id: &str) -> Option<ShortcutAction> {
         "focus_left" => Some(ShortcutAction::FocusLeft),
         "focus_right" => Some(ShortcutAction::FocusRight),
         "new_workspace" => Some(ShortcutAction::NewWorkspace),
+        "close_workspace" => Some(ShortcutAction::CloseWorkspace),
         "new_surface" => Some(ShortcutAction::NewSurface),
+        "new_browser_surface" => Some(ShortcutAction::NewBrowserSurface),
+        "cycle_surface_forward" => Some(ShortcutAction::CycleSurfaceForward),
+        "cycle_surface_backward" => Some(ShortcutAction::CycleSurfaceBackward),
         "toggle_sidebar" => Some(ShortcutAction::ToggleSidebar),
         "copy" => Some(ShortcutAction::Copy),
         "paste" => Some(ShortcutAction::Paste),

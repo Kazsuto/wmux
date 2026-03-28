@@ -1,9 +1,7 @@
 use glyphon::{Buffer, Family, Metrics, Shaping};
 use wmux_config::UiChrome;
 
-use crate::animation::MOTION_PULSE;
-use crate::f32_to_glyphon_color;
-use crate::typography;
+use crate::{animation::MOTION_PULSE, f32_to_glyphon_color, typography};
 
 /// Height of the status bar in logical pixels.
 pub const STATUS_BAR_HEIGHT: f32 = 34.0;
@@ -11,7 +9,6 @@ pub const STATUS_BAR_HEIGHT: f32 = 34.0;
 /// Status bar text — uses Caption token.
 const FONT_SIZE: f32 = typography::CAPTION_FONT_SIZE;
 const LINE_HEIGHT: f32 = typography::CAPTION_LINE_HEIGHT;
-const PADDING_X: f32 = 14.0;
 const CONNECTION_DOT_SIZE: f32 = 7.0;
 
 /// Connection state for the status bar indicator dot.
@@ -39,20 +36,27 @@ pub struct StatusBarData {
 pub struct StatusBar {
     text_buffer: Buffer,
     last_text: String,
+    last_width: f32,
 }
 
 impl StatusBar {
     /// Create a new status bar with a pre-allocated text buffer.
+    ///
+    /// `width` must be in **logical pixels** so that `Align::Center` computes
+    /// the correct center when `TextArea.scale` is applied.
     pub fn new(font_system: &mut glyphon::FontSystem, width: f32) -> Self {
         let mut buf = Buffer::new(font_system, Metrics::new(FONT_SIZE, LINE_HEIGHT));
         buf.set_size(font_system, Some(width), Some(STATUS_BAR_HEIGHT));
         Self {
             text_buffer: buf,
             last_text: String::new(),
+            last_width: width,
         }
     }
 
-    /// Update text content when data changes.
+    /// Update text content when data or width changes.
+    ///
+    /// `width` must be in **logical pixels**.
     pub fn update_text(
         &mut self,
         font_system: &mut glyphon::FontSystem,
@@ -65,11 +69,13 @@ impl StatusBar {
             .map(|b| format!(" · {b}"))
             .unwrap_or_default();
         let text = format!(
-            "  {}  ·  {} panes{}  ·  {}",
+            "{} · {} panes{} · {}",
             data.workspace_name, data.pane_count, branch_part, data.shell,
         );
 
-        if text != self.last_text {
+        let width_changed = (width - self.last_width).abs() > 0.5;
+
+        if text != self.last_text || width_changed {
             self.text_buffer
                 .set_size(font_system, Some(width), Some(STATUS_BAR_HEIGHT));
             self.text_buffer.set_text(
@@ -79,9 +85,11 @@ impl StatusBar {
                     .family(Family::Name("Segoe UI"))
                     .weight(glyphon::Weight::NORMAL),
                 Shaping::Advanced,
-                None,
+                Some(glyphon::cosmic_text::Align::Center),
             );
+            self.text_buffer.shape_until_scroll(font_system, false);
             self.last_text = text;
+            self.last_width = width;
         }
     }
 
@@ -109,13 +117,22 @@ impl StatusBar {
     ) {
         let height = STATUS_BAR_HEIGHT * scale_factor;
         let dot_size = CONNECTION_DOT_SIZE * scale_factor;
-        let pad_x = PADDING_X * scale_factor;
 
         // Background
         quads.push_quad(x, y, width, height, ui_chrome.surface_1);
 
-        // Connection dot
-        let dot_x = x + pad_x;
+        // Top border — subtle separator line
+        quads.push_quad(x, y, width, 1.0 * scale_factor, ui_chrome.border_subtle);
+
+        // Connection dot — positioned relative to centered text.
+        let text_width = self
+            .text_buffer
+            .layout_runs()
+            .next()
+            .map_or(0.0, |run| run.line_w);
+        let text_start_x = x + (width / scale_factor - text_width) / 2.0 * scale_factor;
+        let dot_gap = 6.0 * scale_factor;
+        let dot_x = text_start_x - dot_size - dot_gap;
         let dot_y = y + (height - dot_size) / 2.0;
         let dot_color = match data.connection {
             ConnectionStatus::Connected => ui_chrome.success,
@@ -141,16 +158,14 @@ impl StatusBar {
         scale_factor: f32,
     ) -> glyphon::TextArea<'_> {
         let height = STATUS_BAR_HEIGHT * scale_factor;
-        // Offset text past the connection dot (scaled)
-        let text_x = x + (PADDING_X + CONNECTION_DOT_SIZE + 8.0) * scale_factor;
 
         glyphon::TextArea {
             buffer: &self.text_buffer,
-            left: text_x,
+            left: x,
             top: y + (height - LINE_HEIGHT * scale_factor) / 2.0,
             scale: scale_factor,
             bounds: glyphon::TextBounds {
-                left: text_x as i32,
+                left: x as i32,
                 top: y as i32,
                 right: (x + width) as i32,
                 bottom: (y + height) as i32,

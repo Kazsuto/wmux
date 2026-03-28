@@ -1,7 +1,6 @@
 use std::fmt;
 
-use crate::cell::Cell;
-use crate::cursor::CursorState;
+use crate::{cell::Cell, cursor::CursorState};
 
 /// Terminal cell grid with dirty row tracking.
 ///
@@ -357,7 +356,7 @@ impl Grid {
     /// region are discarded, remaining rows shift up, and the bottom `n`
     /// rows are cleared. Marks affected rows dirty.
     pub fn scroll_up_in_region(&mut self, top: u16, bottom: u16, n: u16) {
-        if top > bottom || bottom >= self.rows {
+        if n == 0 || top > bottom || bottom >= self.rows {
             return;
         }
         let n = n.min(bottom - top + 1) as usize;
@@ -366,13 +365,15 @@ impl Grid {
         let bottom = bottom as usize;
 
         // Shift rows up: copy row[top+n..=bottom] to row[top..=bottom-n].
-        // dst < src so forward iteration is safe with split_at_mut.
-        for dst_row in top..=bottom - n {
-            let src_row = dst_row + n;
-            let dst_start = dst_row * stride;
-            let src_start = src_row * stride;
-            let (left, right) = self.cells.split_at_mut(src_start);
-            left[dst_start..dst_start + stride].clone_from_slice(&right[..stride]);
+        // checked_sub guards against usize underflow when n covers the entire region.
+        if let Some(last_dst) = bottom.checked_sub(n) {
+            for dst_row in top..=last_dst {
+                let src_row = dst_row + n;
+                let dst_start = dst_row * stride;
+                let src_start = src_row * stride;
+                let (left, right) = self.cells.split_at_mut(src_start);
+                left[dst_start..dst_start + stride].clone_from_slice(&right[..stride]);
+            }
         }
 
         // Clear the bottom n rows of the region.
@@ -393,7 +394,7 @@ impl Grid {
     /// the region are discarded, remaining rows shift down, and the top
     /// `n` rows are cleared. Marks affected rows dirty.
     pub fn scroll_down_in_region(&mut self, top: u16, bottom: u16, n: u16) {
-        if top > bottom || bottom >= self.rows {
+        if n == 0 || top > bottom || bottom >= self.rows {
             return;
         }
         let n = n.min(bottom - top + 1) as usize;
@@ -809,6 +810,55 @@ mod tests {
         assert_eq!(grid.cell(0, 1), &Cell::default()); // cleared
         assert_eq!(grid.cell(0, 2), &Cell::default()); // cleared
         assert_eq!(grid.cell(0, 3).grapheme.as_str(), "X"); // untouched
+    }
+
+    #[test]
+    fn scroll_up_full_region_from_top_zero() {
+        // Regression: scroll_up_in_region(0, bottom, n) where n > bottom
+        // caused usize underflow panic at `bottom - n`.
+        let mut grid = Grid::new(4, 4);
+        for row in 0..4u16 {
+            let cell = Cell {
+                grapheme: CompactString::from("X"),
+                ..Cell::default()
+            };
+            grid.set_cell(0, row, cell);
+        }
+
+        // n == region size (entire grid): all rows cleared, no shift.
+        grid.scroll_up_in_region(0, 3, 4);
+        for row in 0..4u16 {
+            assert_eq!(grid.cell(0, row), &Cell::default());
+        }
+
+        // n > region size: same result (clamped), must not panic.
+        let mut grid2 = Grid::new(4, 4);
+        for row in 0..4u16 {
+            let cell = Cell {
+                grapheme: CompactString::from("Y"),
+                ..Cell::default()
+            };
+            grid2.set_cell(0, row, cell);
+        }
+        grid2.scroll_up_in_region(0, 3, 100);
+        for row in 0..4u16 {
+            assert_eq!(grid2.cell(0, row), &Cell::default());
+        }
+    }
+
+    #[test]
+    fn scroll_up_single_row_grid() {
+        // 1-row grid: linefeed triggers scroll_up_in_region(0, 0, 1).
+        let mut grid = Grid::new(4, 1);
+        let cell = Cell {
+            grapheme: CompactString::from("Z"),
+            ..Cell::default()
+        };
+        grid.set_cell(0, 0, cell);
+
+        // Must not panic — clears the single row.
+        grid.scroll_up_in_region(0, 0, 1);
+        assert_eq!(grid.cell(0, 0), &Cell::default());
     }
 
     #[test]

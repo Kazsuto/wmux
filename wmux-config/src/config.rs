@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::ConfigError;
-use crate::parser::{parse_config, ParsedConfig};
+use crate::{
+    error::ConfigError,
+    parser::{parse_config, ParsedConfig},
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -26,7 +27,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            font_family: "Cascadia Code".to_string(),
+            font_family: "JetBrainsMono Nerd Font".to_string(),
             font_size: 16.0,
             theme: "digital-obsidian".to_string(),
             background: None,
@@ -219,15 +220,15 @@ fn apply_values(config: &mut Config, values: &[(String, String)]) {
             }
             k if k.starts_with("color-") => {
                 let suffix = &k["color-".len()..];
-                if let Ok(idx) = suffix.parse::<usize>() {
-                    if idx < 16 {
-                        config.palette[idx] = Some(value.clone());
-                    } else {
-                        tracing::warn!(key = %k, "color index out of range (0-15), skipping");
-                    }
-                } else {
+                let Ok(idx) = suffix.parse::<usize>() else {
                     tracing::warn!(key = %k, "invalid color index, skipping");
+                    continue;
+                };
+                if idx >= 16 {
+                    tracing::warn!(key = %k, "color index out of range (0-15), skipping");
+                    continue;
                 }
+                config.palette[idx] = Some(value.clone());
             }
             k => tracing::warn!(key = %k, "unknown config key"),
         }
@@ -250,7 +251,7 @@ mod tests {
     #[test]
     fn defaults_are_correct() {
         let c = Config::default();
-        assert_eq!(c.font_family, "Cascadia Code");
+        assert_eq!(c.font_family, "JetBrainsMono Nerd Font");
         assert_eq!(c.font_size, 16.0);
         assert_eq!(c.theme, "digital-obsidian");
         assert!(c.background.is_none());
@@ -276,7 +277,7 @@ mod tests {
     #[test]
     fn from_str_empty_gives_defaults() {
         let c = "".parse::<Config>().unwrap();
-        assert_eq!(c.font_family, "Cascadia Code");
+        assert_eq!(c.font_family, "JetBrainsMono Nerd Font");
         assert_eq!(c.font_size, 16.0);
     }
 

@@ -13,13 +13,14 @@ use wmux_core::{
 };
 use wmux_render::GpuContext;
 
-use crate::divider::{self, DividerOrientation};
-use crate::event::WmuxEvent;
-use crate::mouse::MouseButton;
-use crate::shortcuts::ShortcutAction;
-use crate::sidebar::SidebarInteraction;
-use crate::toast;
-use crate::UiError;
+use crate::{
+    divider::{self, DividerOrientation},
+    event::WmuxEvent,
+    mouse::MouseButton,
+    shortcuts::ShortcutAction,
+    sidebar::SidebarInteraction,
+    toast, UiError,
+};
 
 use super::{handlers, App, TabDragState, UiState};
 
@@ -306,8 +307,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let effect_result = crate::effects::apply_window_effects(&window, dark_mode, &title_colors);
 
         // Initialize status bar.
-        let status_bar =
-            crate::status_bar::StatusBar::new(glyphon.font_system(), gpu.width() as f32);
+        let status_bar = crate::status_bar::StatusBar::new(
+            glyphon.font_system(),
+            gpu.width() as f32 / initial_scale_factor,
+        );
         let status_bar_data = crate::status_bar::StatusBarData::default();
 
         // Pre-allocate search bar text buffers (query + match count).
@@ -486,7 +489,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
         // Split menu text buffers.
         let menu_labels = ["Split Right", "Split Left", "Split Up", "Split Down"];
-        let menu_hints = ["Ctrl-K Right", "Ctrl-K Left", "Ctrl-K Up", "Ctrl-K Down"];
+        let menu_hints = ["Ctrl-D Right", "Ctrl-D Left", "Ctrl-D Up", "Ctrl-D Down"];
         let menu_m = glyphon::Metrics::new(13.0, 18.0);
         let menu_attrs = glyphon::Attrs::new().family(glyphon::Family::Name("Segoe UI"));
         let hint_attrs = glyphon::Attrs::new()
@@ -633,6 +636,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             address_bar: crate::address_bar::AddressBarState::new(),
             address_bar_buffer,
             browser_urls: std::collections::HashMap::new(),
+            browser_focus_target: None,
             browser_default_url: config.browser_default_url.clone(),
             titlebar,
             status_bar,
@@ -761,6 +765,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                                         tracing::error!(error = %e, url = %url, "browser navigate failed");
                                     }
                                     let _ = panel.focus_webview();
+                                    state.browser_focus_target = Some(surface_id);
                                 }
                                 // Track URL for address bar display.
                                 state.browser_urls.insert(surface_id, url.clone());
@@ -953,7 +958,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     return;
                 }
 
-                // Priority 0.9: Chord completion — if a Ctrl+K chord is pending,
+                // Priority 0.9: Chord completion — if a Ctrl+D chord is pending,
                 // check the second key for split direction arrows.
                 if state.chord_state.is_pending() {
                     state.chord_state = super::ChordState::Idle;
@@ -977,7 +982,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         return;
                     }
                     // Not a recognized chord completion — fall through to normal handling.
-                    // The Ctrl+K prefix is consumed (not forwarded to terminal).
+                    // The Ctrl+D prefix is consumed (not forwarded to terminal).
                 }
 
                 // Priority 1: global shortcuts — intercepted before terminal input.
@@ -992,12 +997,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     event.physical_key,
                     &state.modifiers,
                 ) {
-                    // Ctrl+K chord prefix: enter pending state instead of dispatching.
+                    // Ctrl+D chord prefix: enter pending state instead of dispatching.
                     if action == ShortcutAction::ChordPrefix {
                         if !event.repeat {
                             state.chord_state =
                                 super::ChordState::Pending(std::time::Instant::now());
-                            tracing::debug!("chord prefix Ctrl+K — waiting for second key");
+                            tracing::debug!("chord prefix Ctrl+D — waiting for second key");
                         }
                         return;
                     }
@@ -1986,6 +1991,13 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             crate::address_bar::AddressBarHit::None => {}
                         }
                     }
+                }
+
+                // Any click that wasn't consumed by the address bar URL field
+                // dismisses the editing mode (standard click-away-to-dismiss).
+                if elem_state == ElementState::Pressed && state.address_bar.editing {
+                    state.address_bar.cancel_editing();
+                    state.window.request_redraw();
                 }
 
                 // Right-click on tab bar — open tab context menu.

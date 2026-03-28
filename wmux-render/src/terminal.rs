@@ -20,6 +20,11 @@ const BLINK_INTERVAL_MS: u128 = 500;
 /// Thickness (in pixels) for the cursor bar (vertical beam) and underline shapes.
 const CURSOR_LINE_THICKNESS: f32 = 2.0;
 
+/// Brightness multiplier for SGR 2 (faint/dim) text — 80% of original intensity.
+/// Standard terminals use ~67% (2/3), but ultra-dark backgrounds (#131313) need
+/// a gentler reduction to maintain readability.
+const DIM_INTENSITY_FACTOR: f32 = 0.80;
+
 /// Cell dimensions derived from font metrics.
 ///
 /// `cell_width` is measured by shaping the reference character 'M' in a
@@ -565,6 +570,7 @@ fn push_background_quads(
         } else {
             cell.fg
         };
+        let fg_color = apply_dim(color_to_rgba(fg, palette), cell.flags);
 
         // Underline: thin line near the bottom of the cell.
         if cell.flags.contains(CellFlags::UNDERLINE) {
@@ -573,7 +579,7 @@ fn push_background_quads(
                 y + ch - line_thickness - 1.0,
                 cw,
                 line_thickness,
-                color_to_rgba(fg, palette),
+                fg_color,
             );
         }
 
@@ -584,7 +590,7 @@ fn push_background_quads(
                 y + (ch - line_thickness) / 2.0,
                 cw,
                 line_thickness,
-                color_to_rgba(fg, palette),
+                fg_color,
             );
         }
     }
@@ -637,7 +643,7 @@ fn update_row_buffer(
             } else {
                 cell.fg
             };
-            let [r, g, b, _] = color_to_rgba(fg, palette);
+            let [r, g, b, _] = apply_dim(color_to_rgba(fg, palette), cell.flags);
             let mut attrs = Attrs::new().family(family).color(GlyphonColor::rgba(
                 (r * 255.0) as u8,
                 (g * 255.0) as u8,
@@ -654,7 +660,7 @@ fn update_row_buffer(
             (text, attrs)
         }),
         &default_attrs,
-        Shaping::Basic,
+        Shaping::Advanced,
         None,
     );
     buf.shape_until_scroll(font_system, false);
@@ -726,6 +732,16 @@ fn indexed_color_rgb(n: u8, palette: &[(u8, u8, u8); 16]) -> (u8, u8, u8) {
         let v = 8u8 + (n - 232) * 10;
         (v, v, v)
     }
+}
+
+/// Apply DIM (SGR 2 / faint) attenuation to an RGBA color if the flag is set.
+fn apply_dim(mut color: [f32; 4], flags: CellFlags) -> [f32; 4] {
+    if flags.contains(CellFlags::DIM) {
+        color[0] *= DIM_INTENSITY_FACTOR;
+        color[1] *= DIM_INTENSITY_FACTOR;
+        color[2] *= DIM_INTENSITY_FACTOR;
+    }
+    color
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +851,31 @@ mod tests {
             "expected green=1.0, got {g}"
         );
         assert_eq!(b, 0.0);
+    }
+
+    #[test]
+    fn apply_dim_reduces_brightness() {
+        let color = [1.0, 0.8, 0.5, 1.0];
+        let dimmed = apply_dim(color, CellFlags::DIM);
+        assert!((dimmed[0] - 1.0 * DIM_INTENSITY_FACTOR).abs() < 0.001);
+        assert!((dimmed[1] - 0.8 * DIM_INTENSITY_FACTOR).abs() < 0.001);
+        assert!((dimmed[2] - 0.5 * DIM_INTENSITY_FACTOR).abs() < 0.001);
+        assert!((dimmed[3] - 1.0).abs() < f32::EPSILON, "alpha unchanged");
+    }
+
+    #[test]
+    fn apply_dim_noop_without_flag() {
+        let color = [0.5, 0.6, 0.7, 1.0];
+        let result = apply_dim(color, CellFlags::empty());
+        assert_eq!(result, color);
+    }
+
+    #[test]
+    fn apply_dim_with_bold_still_dims() {
+        let color = [1.0, 1.0, 1.0, 1.0];
+        let flags = CellFlags::BOLD | CellFlags::DIM;
+        let dimmed = apply_dim(color, flags);
+        assert!((dimmed[0] - DIM_INTENSITY_FACTOR).abs() < 0.001);
     }
 
     /// TerminalMetrics requires FontSystem (no GPU) — not ignored.

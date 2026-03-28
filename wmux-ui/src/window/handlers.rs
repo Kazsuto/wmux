@@ -1,10 +1,14 @@
 use tokio::sync::mpsc;
-use winit::event::KeyEvent;
-use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
-use wmux_core::surface::SplitDirection;
-use wmux_core::surface_manager::{Surface, SurfaceManager};
-use wmux_core::{AppStateHandle, FocusDirection, PaneId, PaneState, Terminal};
+use winit::{
+    event::KeyEvent,
+    event_loop::EventLoopProxy,
+    keyboard::{Key, ModifiersState, NamedKey},
+};
+use wmux_core::{
+    surface::SplitDirection,
+    surface_manager::{Surface, SurfaceManager},
+    AppStateHandle, FocusDirection, PaneId, PaneState, Terminal,
+};
 use wmux_pty::{PtyActorHandle, PtyEvent, PtyManager, SpawnConfig};
 
 use crate::event::WmuxEvent;
@@ -196,6 +200,21 @@ fn is_ctrl_a(event: &KeyEvent, modifiers: &ModifiersState) -> bool {
     }
 
     false
+}
+
+/// Check if a key event matches Ctrl+`letter` (e.g. Ctrl+V, Ctrl+C).
+///
+/// Uses two strategies for layout independence:
+/// 1. Control character detection (Ctrl+V → SYN U+0016, Ctrl+C → ETX U+0003)
+/// 2. Logical key + Ctrl modifier
+fn is_ctrl_key(event: &KeyEvent, modifiers: &ModifiersState, letter: &str, ctrl_char: u8) -> bool {
+    if let Key::Character(ch) = &event.logical_key {
+        if ch.as_str().as_bytes() == [ctrl_char] {
+            return true;
+        }
+    }
+    modifiers.control_key()
+        && matches!(&event.logical_key, Key::Character(ch) if ch.as_str().eq_ignore_ascii_case(letter))
 }
 
 /// Check if a key event is a Ctrl+letter combination that should NOT be inserted as text.
@@ -473,6 +492,45 @@ pub(super) fn handle_address_bar_key(state: &mut UiState<'_>, event: &KeyEvent) 
     if is_ctrl_a(event, &state.modifiers) {
         state.address_bar.selected_all = true;
         state.address_bar.cursor_pos = state.address_bar.url.chars().count();
+        return None;
+    }
+
+    // Ctrl+V — paste from clipboard.
+    if is_ctrl_key(event, &state.modifiers, "v", b'\x16') {
+        if let Some(text) = state.mouse.paste_from_clipboard() {
+            // Strip newlines — URL bar is single-line.
+            let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            if state.address_bar.selected_all {
+                state.address_bar.url = clean.clone();
+                state.address_bar.selected_all = false;
+            } else {
+                let pos = state.address_bar.cursor_pos;
+                let byte_pos: usize = state
+                    .address_bar
+                    .url
+                    .chars()
+                    .take(pos)
+                    .map(char::len_utf8)
+                    .sum();
+                state.address_bar.url.insert_str(byte_pos, &clean);
+            }
+            state.address_bar.cursor_pos += clean.chars().count();
+        }
+        return None;
+    }
+
+    // Ctrl+C — copy URL to clipboard.
+    if is_ctrl_key(event, &state.modifiers, "c", b'\x03') {
+        state.mouse.copy_text_to_clipboard(&state.address_bar.url);
+        return None;
+    }
+
+    // Ctrl+X — cut URL to clipboard.
+    if is_ctrl_key(event, &state.modifiers, "x", b'\x18') {
+        state.mouse.copy_text_to_clipboard(&state.address_bar.url);
+        state.address_bar.url.clear();
+        state.address_bar.cursor_pos = 0;
+        state.address_bar.selected_all = false;
         return None;
     }
 

@@ -2,17 +2,16 @@ mod event_loop;
 mod handlers;
 mod render;
 
-use crate::divider::DragState;
-use crate::effects::EffectResult;
-use crate::input::InputHandler;
-use crate::mouse::MouseHandler;
-use crate::search::SearchState;
-use crate::shortcuts::ShortcutMap;
-use crate::sidebar::SidebarState;
-use crate::toast::ToastService;
-use crate::UiError;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+use crate::{
+    divider::DragState, effects::EffectResult, event::WmuxEvent, input::InputHandler,
+    mouse::MouseHandler, search::SearchState, shortcuts::ShortcutMap, sidebar::SidebarState,
+    toast::ToastService, UiError,
+};
 use tokio::sync::mpsc;
 use winit::{
     event_loop::{EventLoop, EventLoopProxy},
@@ -24,8 +23,6 @@ use wmux_core::{AppEvent, AppStateHandle, PaneId, SurfaceId, TerminalMode};
 use wmux_render::{
     GlyphonRenderer, GpuContext, QuadPipeline, ShadowPipeline, TerminalMetrics, TerminalRenderer,
 };
-
-use crate::event::WmuxEvent;
 
 /// UI-thread state created during window initialization.
 ///
@@ -166,7 +163,11 @@ pub(crate) struct UiState<'window> {
     /// Glyphon text buffer for the address bar URL display.
     pub(crate) address_bar_buffer: glyphon::Buffer,
     /// Last known URL per browser surface (avoids per-frame COM calls).
-    pub(crate) browser_urls: std::collections::HashMap<wmux_core::SurfaceId, String>,
+    pub(crate) browser_urls: HashMap<wmux_core::SurfaceId, String>,
+    /// Surface ID of the browser that currently has Win32 keyboard focus.
+    /// Prevents calling `focus_webview()` every frame and enables reclaiming
+    /// focus when switching away from a browser pane.
+    pub(crate) browser_focus_target: Option<wmux_core::SurfaceId>,
     /// Config-defined default browser URL.
     pub(crate) browser_default_url: String,
 
@@ -181,7 +182,7 @@ pub(crate) struct UiState<'window> {
     pub(crate) start_instant: std::time::Instant,
 
     // Chord shortcuts
-    /// State machine for Ctrl+K chord sequences.
+    /// State machine for Ctrl+D chord sequences.
     pub(crate) chord_state: ChordState,
 
     // Split menu
@@ -247,16 +248,30 @@ pub(crate) struct UiState<'window> {
 
     // Reusable allocations (avoid per-frame heap allocation)
     /// Reusable set for tracking live browser surface IDs during render.
-    pub(crate) live_browser_sids: std::collections::HashSet<SurfaceId>,
+    pub(crate) live_browser_sids: HashSet<SurfaceId>,
 }
 
 impl UiState<'_> {
     /// Change the focused pane and start a focus glow fade-in animation.
+    ///
+    /// When switching away from a browser pane, reclaims Win32 keyboard focus
+    /// from the WebView2 child HWND back to the main window so that winit
+    /// receives subsequent keyboard events.
     pub(crate) fn set_focused_pane(&mut self, pane_id: PaneId) {
         if pane_id == self.focused_pane {
             return;
         }
         self.focused_pane = pane_id;
+
+        // Reclaim Win32 keyboard focus from WebView2 if it currently holds it.
+        if self.browser_focus_target.take().is_some() {
+            // SAFETY: SetFocus is a standard Win32 call. `main_hwnd` is valid
+            // for the lifetime of the window and we are on the UI/STA thread.
+            unsafe {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.main_hwnd));
+            }
+        }
+
         if let Some(old) = self.focus_glow_anim {
             self.animation.cancel(old);
         }
@@ -283,17 +298,17 @@ pub(crate) enum TabEditState {
     },
 }
 
-/// Chord (key sequence) state machine for multi-key shortcuts like Ctrl+K → Arrow.
+/// Chord (key sequence) state machine for multi-key shortcuts like Ctrl+D → Arrow.
 #[derive(Debug, Clone, Default)]
 pub(crate) enum ChordState {
     /// No chord in progress.
     #[default]
     Idle,
-    /// Ctrl+K was pressed — waiting for the second key within the timeout.
+    /// Ctrl+D was pressed — waiting for the second key within the timeout.
     Pending(std::time::Instant),
 }
 
-/// Maximum time between Ctrl+K and the second key for a chord shortcut (ms).
+/// Maximum time between Ctrl+D and the second key for a chord shortcut (ms).
 const CHORD_TIMEOUT_MS: u128 = 1000;
 
 impl ChordState {

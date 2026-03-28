@@ -56,13 +56,25 @@ impl CommandRegistry {
                 "split_right",
                 "Split Pane Right",
                 "Split the focused pane horizontally",
-                Some("Ctrl+D"),
+                Some("Ctrl+D Right"),
+            ),
+            (
+                "split_left",
+                "Split Pane Left",
+                "Split the focused pane to the left",
+                Some("Ctrl+D Left"),
             ),
             (
                 "split_down",
                 "Split Pane Down",
                 "Split the focused pane vertically",
-                Some("Alt+D"),
+                Some("Ctrl+D Down"),
+            ),
+            (
+                "split_up",
+                "Split Pane Up",
+                "Split the focused pane upward",
+                Some("Ctrl+D Up"),
             ),
             (
                 "close_pane",
@@ -129,6 +141,30 @@ impl CommandRegistry {
                 "Paste",
                 "Paste from clipboard",
                 Some("Ctrl+Shift+V"),
+            ),
+            (
+                "close_workspace",
+                "Close Workspace",
+                "Close the active workspace",
+                Some("Ctrl+Shift+W"),
+            ),
+            (
+                "new_browser_surface",
+                "New Browser Tab",
+                "Create a new browser tab in the focused pane",
+                Some("Ctrl+Shift+L"),
+            ),
+            (
+                "cycle_surface_forward",
+                "Next Tab",
+                "Cycle to the next tab",
+                Some("Ctrl+Tab"),
+            ),
+            (
+                "cycle_surface_backward",
+                "Previous Tab",
+                "Cycle to the previous tab",
+                Some("Ctrl+Shift+Tab"),
             ),
             ("find", "Find", "Search in terminal content", Some("Ctrl+F")),
             (

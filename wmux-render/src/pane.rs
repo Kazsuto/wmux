@@ -3,7 +3,7 @@ use wmux_core::{rect::Rect, types::PaneId, SurfaceId};
 use crate::quad::QuadPipeline;
 
 /// Height in pixels of the tab bar when a pane has multiple surfaces.
-pub const TAB_BAR_HEIGHT: f32 = 40.0;
+pub const TAB_BAR_HEIGHT: f32 = 34.0;
 
 /// Height in pixels of the browser address bar.
 pub const ADDRESS_BAR_HEIGHT: f32 = 32.0;
@@ -16,10 +16,10 @@ pub const FOCUS_STRIPE_WIDTH: f32 = 3.0;
 pub const TERMINAL_PADDING: f32 = 8.0;
 
 /// Spacing between pill-style tabs.
-const TAB_GAP: f32 = 6.0;
+const TAB_GAP: f32 = 3.0;
 
 /// Border radius for pill-style tabs.
-const TAB_RADIUS: f32 = 4.0;
+const TAB_RADIUS: f32 = 6.0;
 
 /// Maximum width for a single tab pill (160px).
 const MAX_TAB_WIDTH: f32 = 160.0;
@@ -34,13 +34,13 @@ const CLOSE_BUTTON_PADDING: f32 = 8.0;
 const PLUS_BUTTON_WIDTH: f32 = 32.0;
 
 /// Height of the "+" new surface button (matches pill height).
-const PLUS_BUTTON_HEIGHT: f32 = 28.0;
+const PLUS_BUTTON_HEIGHT: f32 = 24.0;
 
 /// Width of the split direction button in the tab bar.
 const SPLIT_BUTTON_WIDTH: f32 = 32.0;
 
 /// Height of the split direction button (matches pill height).
-const SPLIT_BUTTON_HEIGHT: f32 = 28.0;
+const SPLIT_BUTTON_HEIGHT: f32 = 24.0;
 
 /// Gap between the "+" button and the split button.
 const SPLIT_BUTTON_GAP: f32 = 4.0;
@@ -49,7 +49,7 @@ const SPLIT_BUTTON_GAP: f32 = 4.0;
 const GLOBE_BUTTON_WIDTH: f32 = 32.0;
 
 /// Height of the globe (new browser) button (matches pill height).
-const GLOBE_BUTTON_HEIGHT: f32 = 28.0;
+const GLOBE_BUTTON_HEIGHT: f32 = 24.0;
 
 /// Gap between the split button and the globe button.
 const GLOBE_BUTTON_GAP: f32 = 4.0;
@@ -267,15 +267,8 @@ impl PaneRenderer {
 
             if i == viewport.active_tab {
                 quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, active_tab_bg, radius);
-                // Active indicator bar
-                quads.push_rounded_quad(
-                    tab_x + tab_width * 0.2,
-                    r.y + tbh - pad,
-                    tab_width * 0.6,
-                    2.0 * s,
-                    accent_color,
-                    1.0 * s,
-                );
+                // Active indicator bar — full-width accent at top of pill
+                quads.push_rounded_quad(tab_x, pill_y, tab_width, 2.0 * s, accent_color, 1.0 * s);
             } else {
                 quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, tab_bg, radius);
             }
