@@ -2,6 +2,7 @@
 
 ## 2026-03-28
 
+REFACTOR: Consolidate render and UI patterns — simplify rendering pipeline and event handling across core/render/ui layers, remove code duplication
 REFACTOR: Split automation.rs into 4 sub-modules (navigation, dom, inspect) for wmux-browser
 REFACTOR: Split panel.rs into 4 sub-modules (attach, layout, delegation) for wmux-browser
 REFACTOR: Remove stale #[allow(dead_code)] on UpdateChecker/UpdateInfo, add justification comments to command palette hit-test methods, pre-allocate command palette rows Vec
