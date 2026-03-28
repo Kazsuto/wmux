@@ -17,10 +17,13 @@ fn main() -> Result<()> {
 
     // Compute pipe name and set environment variable BEFORE creating the tokio
     // runtime. std::env::set_var is not thread-safe — it must be called while
-    // the process is still single-threaded.
+    // the process is still single-threaded. Child processes (PTY shells, CLI)
+    // inherit this env var to discover the IPC pipe.
     let ipc_pipe = pipe_name();
     // SAFETY: Single-threaded context — no other threads exist yet.
-    // The tokio runtime (and its worker threads) is created below.
+    // The tokio runtime (and its worker threads) is created on line 30 below.
+    // WARNING: If any code above this point ever spawns threads (rayon, std::thread,
+    // etc.), this becomes UB. On Rust edition 2024+ this is enforced by the compiler.
     unsafe {
         std::env::set_var("WMUX_SOCKET_PATH", &ipc_pipe);
     }
@@ -72,7 +75,7 @@ fn main() -> Result<()> {
             tracing::error!(error = %e, "IPC server failed");
         }
     });
-    tracing::info!(pipe = %ipc_pipe, "IPC server started");
+    tracing::debug!(pipe = %ipc_pipe, "IPC server started");
 
     // Attempt to load previous session for restore during UI init.
     let session = rt.block_on(async {
@@ -117,5 +120,7 @@ fn main() -> Result<()> {
     // cleans up all handles, pipes, and child processes.
     // This is the standard pattern used by Alacritty, WezTerm, and other
     // terminal emulators.
+    // WARNING: No Drop impls run after this point. Any cleanup that must
+    // execute (lock files, crash state) must be placed above this line.
     std::process::exit(0);
 }

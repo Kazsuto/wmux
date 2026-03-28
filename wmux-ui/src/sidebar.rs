@@ -88,6 +88,8 @@ pub struct SidebarState {
     pub width: f32,
     /// Whether the sidebar is in collapsed (icon-only) mode.
     pub collapsed: bool,
+    /// Vertical offset for the sidebar content (title bar height when custom chrome is active).
+    pub top_offset: f32,
     /// Current mouse interaction state.
     pub interaction: SidebarInteraction,
     /// One glyphon Buffer per workspace row for the name label.
@@ -118,6 +120,7 @@ impl SidebarState {
             visible: true,
             width: clamped,
             collapsed: false,
+            top_offset: 0.0,
             interaction: SidebarInteraction::Idle,
             name_buffers: Vec::new(),
             info_buffers: Vec::new(),
@@ -186,15 +189,16 @@ impl SidebarState {
     ///
     /// Returns the 0-based workspace index, or `None` if out of range.
     pub fn hit_test_row(&self, y: f32, workspace_count: usize) -> Option<usize> {
-        let top_offset = if self.collapsed {
-            COLLAPSED_TOP_PADDING
-        } else {
-            SECTION_HEADER_HEIGHT
-        };
-        if y < top_offset {
+        let content_top = self.top_offset
+            + if self.collapsed {
+                COLLAPSED_TOP_PADDING
+            } else {
+                SECTION_HEADER_HEIGHT
+            };
+        if y < content_top {
             return None;
         }
-        let adjusted_y = y - top_offset;
+        let adjusted_y = y - content_top;
         let rh = self.row_height();
         let index = (adjusted_y / rh) as usize;
         if index < workspace_count {
@@ -209,12 +213,13 @@ impl SidebarState {
     /// Returns the index where the dragged workspace would be inserted,
     /// based on whether the cursor is in the top or bottom half of a row.
     pub fn drag_target_index(&self, current_y: f32, workspace_count: usize) -> usize {
-        let top_offset = if self.collapsed {
-            COLLAPSED_TOP_PADDING
-        } else {
-            SECTION_HEADER_HEIGHT
-        };
-        let adjusted_y = current_y - top_offset;
+        let content_top = self.top_offset
+            + if self.collapsed {
+                COLLAPSED_TOP_PADDING
+            } else {
+                SECTION_HEADER_HEIGHT
+            };
+        let adjusted_y = current_y - content_top;
         let row_f = adjusted_y / self.row_height();
         let row = row_f as usize;
         let frac = row_f - row as f32;
@@ -429,27 +434,34 @@ impl SidebarState {
         quad_pipeline: &mut QuadPipeline,
         surface_height: f32,
         ui_chrome: &UiChrome,
-        scale_factor: f32,
+        _scale_factor: f32,
     ) {
         if !self.visible {
             return;
         }
 
-        let _s = scale_factor; // available for future per-element scaling
         let w = self.effective_width();
         let dot_palette = Self::workspace_palette(ui_chrome);
 
+        let y0 = self.top_offset;
+
         // ── Collapsed mode: icon-only rendering ─────────────────────────────
         if self.collapsed {
-            // Background + separator
-            quad_pipeline.push_quad(0.0, 0.0, w, surface_height, ui_chrome.surface_1);
-            quad_pipeline.push_quad(w - 1.0, 0.0, 1.0, surface_height, ui_chrome.border_subtle);
+            // Background + separator (starts at top_offset so title bar covers the gap).
+            quad_pipeline.push_quad(0.0, y0, w, surface_height - y0, ui_chrome.surface_1);
+            quad_pipeline.push_quad(
+                w - 1.0,
+                y0,
+                1.0,
+                surface_height - y0,
+                ui_chrome.border_subtle,
+            );
 
             let icon_r = COLLAPSED_ICON_SIZE / 2.0;
             let center_x = w / 2.0;
 
             for (i, ws) in workspaces.iter().enumerate() {
-                let row_y = COLLAPSED_TOP_PADDING + i as f32 * COLLAPSED_ROW_HEIGHT;
+                let row_y = y0 + COLLAPSED_TOP_PADDING + i as f32 * COLLAPSED_ROW_HEIGHT;
                 let center_y = row_y + COLLAPSED_ROW_HEIGHT / 2.0;
                 let icon_x = center_x - icon_r;
                 let icon_y = center_y - icon_r;
@@ -502,18 +514,24 @@ impl SidebarState {
             0.5,
         ];
 
-        // Background quad
-        quad_pipeline.push_quad(0.0, 0.0, w, surface_height, ui_chrome.surface_1);
+        // Background quad (starts at top_offset so title bar covers the gap).
+        quad_pipeline.push_quad(0.0, y0, w, surface_height - y0, ui_chrome.surface_1);
 
         // Separator line on right edge (neutral, subtle)
-        quad_pipeline.push_quad(w - 1.0, 0.0, 1.0, surface_height, ui_chrome.border_subtle);
+        quad_pipeline.push_quad(
+            w - 1.0,
+            y0,
+            1.0,
+            surface_height - y0,
+            ui_chrome.border_subtle,
+        );
 
         // Section header area
-        quad_pipeline.push_quad(0.0, 0.0, w, SECTION_HEADER_HEIGHT, ui_chrome.surface_1);
+        quad_pipeline.push_quad(0.0, y0, w, SECTION_HEADER_HEIGHT, ui_chrome.surface_1);
 
-        // Workspace card rows (offset by header height)
+        // Workspace card rows (offset by header height + top_offset)
         for (i, ws) in workspaces.iter().enumerate() {
-            let y = SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
+            let y = y0 + SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
 
             // Card geometry
             let card_x = CARD_MARGIN_X;
@@ -706,9 +724,10 @@ impl SidebarState {
         }
 
         let w = self.width;
+        let y0 = self.top_offset;
         let bounds = TextBounds {
             left: 0,
-            top: 0,
+            top: y0 as i32,
             right: (w - 1.0).max(0.0) as i32,
             bottom: surface_height as i32,
         };
@@ -724,7 +743,7 @@ impl SidebarState {
             areas.push(TextArea {
                 buffer: header_buf,
                 left: CARD_MARGIN_X + PADDING_X,
-                top: PADDING_Y,
+                top: y0 + PADDING_Y,
                 scale: scale_factor,
                 bounds,
                 default_color: text_muted,
@@ -739,7 +758,7 @@ impl SidebarState {
         };
 
         for (i, name_buf) in self.name_buffers.iter().enumerate() {
-            let y = SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
+            let y = y0 + SECTION_HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
             let card_y = y + CARD_GAP / 2.0;
 
             let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X;
@@ -895,7 +914,7 @@ impl SidebarState {
             return;
         }
         if let SidebarInteraction::Editing { index, .. } = &self.interaction {
-            let y = SECTION_HEADER_HEIGHT + *index as f32 * ROW_HEIGHT;
+            let y = self.top_offset + SECTION_HEADER_HEIGHT + *index as f32 * ROW_HEIGHT;
             let card_y = y + CARD_GAP / 2.0;
             let text_x = CARD_MARGIN_X + ACCENT_BAR_WIDTH + PADDING_X;
             // Multiply offset by scale — glyphon renders glyphs at (left + glyph_x * scale).

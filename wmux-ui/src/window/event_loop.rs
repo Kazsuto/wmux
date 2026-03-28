@@ -160,6 +160,14 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             }
         };
 
+        // Install custom title bar chrome (removes native title bar, enables drag/snap).
+        let custom_chrome = unsafe { crate::titlebar::install_custom_chrome(main_hwnd) };
+        if custom_chrome {
+            crate::titlebar::update_metrics(initial_scale_factor);
+        } else {
+            tracing::warn!("custom chrome failed, keeping native title bar");
+        }
+
         // Restore session or create a fresh default pane.
         let session = self.pending_session.take();
         let restored_sidebar_width = session.as_ref().and_then(|s| {
@@ -355,6 +363,12 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         // Locale for i18n string lookups.
         let locale = wmux_config::Locale::new(&config.language);
 
+        // Initialize custom title bar — buffer width in logical pixels for Align::Center.
+        let logical_width = gpu.width() as f32 / initial_scale_factor;
+        let mut titlebar =
+            crate::titlebar::TitleBarState::new(glyphon.font_system(), logical_width, &locale);
+        titlebar.custom_chrome_active = custom_chrome;
+
         // Header "Notifications" (title size)
         let mut notif_header_buffer =
             glyphon::Buffer::new(glyphon.font_system(), notif_title_metrics);
@@ -431,8 +445,6 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             b.set_size(glyphon.font_system(), Some(1.0), Some(1.0));
             b
         };
-        let _has_icon_font = glyphon.has_icon_font();
-
         // Status icon CustomGlyphs — one per Icon variant that from_name() can return.
         let status_icon_cgs: std::collections::HashMap<
             wmux_render::icons::Icon,
@@ -589,6 +601,11 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 [svg_cg(wmux_render::icons::Icon::ArrowDown, 14.0)],
             ],
             status_icon_cgs,
+            cg_chrome_buttons: [
+                svg_cg(wmux_render::icons::Icon::ChromeMinimize, 10.0),
+                svg_cg(wmux_render::icons::Icon::ChromeMaximize, 10.0),
+                svg_cg(wmux_render::icons::Icon::ChromeClose, 10.0),
+            ],
             browser_manager,
             main_hwnd,
             focused_surface_kind: wmux_core::PanelKind::Terminal,
@@ -596,6 +613,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             address_bar_buffer,
             browser_urls: std::collections::HashMap::new(),
             browser_default_url: config.browser_default_url.clone(),
+            titlebar,
             status_bar,
             status_bar_data,
             start_instant: std::time::Instant::now(),
@@ -643,6 +661,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 );
             }
             state.sidebar.collapsed = restored_sidebar_collapsed;
+            // Set sidebar top offset to title bar height when custom chrome is active.
+            if custom_chrome {
+                state.sidebar.top_offset = crate::titlebar::TITLE_BAR_HEIGHT * initial_scale_factor;
+            }
         }
     }
 
@@ -766,6 +788,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     state
                         .status_bar
                         .resize(state.glyphon.font_system(), w as f32);
+                    state
+                        .titlebar
+                        .resize(state.glyphon.font_system(), w as f32 / state.scale_factor);
 
                     // Terminal resize
                     let new_cols = ((w as f32) / state.metrics.cell_width).floor().max(1.0) as u32;
@@ -822,6 +847,15 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     state.rows = new_rows.min(u16::MAX as u32) as u16;
                     // Force all per-pane renderers to be recreated with new font size.
                     state.renderers.clear();
+                    // Update title bar metrics for the new DPI scale.
+                    if state.titlebar.custom_chrome_active {
+                        crate::titlebar::update_metrics(new_scale);
+                        state.sidebar.top_offset = crate::titlebar::TITLE_BAR_HEIGHT * new_scale;
+                        state.titlebar.resize(
+                            state.glyphon.font_system(),
+                            state.gpu.width() as f32 / new_scale,
+                        );
+                    }
                     state.window.request_redraw();
                 }
             }
@@ -1048,6 +1082,47 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             } => {
                 let px = state.cursor_pos.0 as f32;
                 let py = state.cursor_pos.1 as f32;
+
+                // Title bar button click handling — highest priority.
+                if elem_state == ElementState::Pressed && button == winit::event::MouseButton::Left
+                {
+                    if let Some(btn) = state.titlebar.hit_test_button(
+                        px,
+                        py,
+                        state.gpu.width() as f32,
+                        state.scale_factor,
+                    ) {
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            ShowWindow, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+                        };
+                        // SAFETY: ShowWindow/close are safe with a valid HWND from winit.
+                        unsafe {
+                            match btn {
+                                crate::titlebar::ChromeButton::Minimize => {
+                                    let _ = ShowWindow(state.main_hwnd, SW_MINIMIZE);
+                                }
+                                crate::titlebar::ChromeButton::Maximize => {
+                                    if state.titlebar.is_maximized {
+                                        let _ = ShowWindow(state.main_hwnd, SW_RESTORE);
+                                    } else {
+                                        let _ = ShowWindow(state.main_hwnd, SW_MAXIMIZE);
+                                    }
+                                }
+                                crate::titlebar::ChromeButton::Close => {
+                                    // WM_CLOSE triggers winit's CloseRequested → clean shutdown.
+                                    windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                                        Some(state.main_hwnd),
+                                        0x0010, // WM_CLOSE
+                                        windows::Win32::Foundation::WPARAM(0),
+                                        windows::Win32::Foundation::LPARAM(0),
+                                    )
+                                    .ok();
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
 
                 // Split menu click handling — highest priority when menu is open.
                 if let super::SplitMenuState::Open {
@@ -2002,6 +2077,20 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 state.cursor_pos = (position.x, position.y);
                 let px = position.x as f32;
                 let py = position.y as f32;
+
+                // Title bar button hover tracking.
+                {
+                    let new_hover = state.titlebar.hit_test_button(
+                        px,
+                        py,
+                        state.gpu.width() as f32,
+                        state.scale_factor,
+                    );
+                    if new_hover != state.titlebar.hovered_button {
+                        state.titlebar.hovered_button = new_hover;
+                        state.window.request_redraw();
+                    }
+                }
 
                 // Split menu hover tracking.
                 if let super::SplitMenuState::Open { menu_x, menu_y, .. } = state.split_menu {

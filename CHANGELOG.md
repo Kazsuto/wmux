@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-03-28
+
+FIX: Harden wmux-app updater — mandatory SHA-256 checksum verification (refuse unsigned updates), incremental hashing during download (eliminates TOCTOU gap and 200MB memory spike), URL validation (HTTPS + host allowlist), download size limit (200MB), zero-length download rejection, path containment for apply_pending_update, startup recovery from interrupted updates, custom redirect policy blocking HTTP downgrades
+FIX: Eliminate unsafe env var manipulation in updater tests — accept disabled flag as constructor parameter instead of reading WMUX_DISABLE_UPDATE
+FIX: Remove blocking std::fs calls from async context in updater — store current_exe at construction, use tokio::fs::canonicalize and try_exists
+CHORE: Add overflow-checks = true to release profile — prevent silent integer wrapping in release builds
+FEATURE: Add custom title bar — replace native Windows title bar with GPU-rendered custom chrome via Win32 SetWindowSubclass, WM_NCCALCSIZE, WM_NCHITTEST; Codicons SVG icons for minimize/maximize/restore/close buttons; theme-driven colors (surface_1 bg, error for close hover); preserves window drag, snap, resize, and DWM shadow
+FEATURE: Add 4 chrome button Codicons SVG icons (chrome-close, chrome-minimize, chrome-maximize, chrome-restore) to icon system
+CHORE: Add Win32_UI_Controls feature to windows crate for MARGINS/DwmExtendFrameIntoClientArea
+FIX: Fix title bar text left-aligned instead of centered — use cosmic_text::Align::Center
+FIX: Fix chrome button icons invisible — CustomGlyph positions were in physical pixels but glyphon scales them by TextArea.scale, causing double-scaling; switch to logical pixel coordinates
+FIX: Fix double title bar at startup — native Windows title bar remained because WM_NCCALCSIZE was never triggered; add SetWindowPos with SWP_FRAMECHANGED after SetWindowSubclass to force frame recalculation
+FIX: Fix title text "wmux" pushed to the right — buffer width was in physical pixels but Align::Center computes position in buffer space which gets re-scaled by TextArea.scale; pass logical width to buffer
+FIX: Fix chrome buttons not responding to clicks — WM_NCHITTEST used GetWindowRect (includes invisible DWM borders ~7px) causing button zone coordinates to mismatch client area; split into window-relative coords for resize edges and client-relative coords (via GetClientRect offset) for title bar buttons
+
 ## 2026-03-27
 
 FIX: Wire i18n locale system into wmux-ui — replace 12+ hardcoded English strings with locale.t() lookups for notification panel, tab menus, severity labels, toggle labels, and time-ago timestamps

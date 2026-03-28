@@ -85,6 +85,9 @@ browser = "Navigateur"
 close_tab = "Fermer l'onglet"
 rename_tab = "Renommer l'onglet"
 
+[titlebar]
+title = "wmux"
+
 [settings]
 font = "Police"
 theme = "Thème"

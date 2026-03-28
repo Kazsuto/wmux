@@ -85,6 +85,9 @@ browser = "Browser"
 close_tab = "Close Tab"
 rename_tab = "Rename Tab"
 
+[titlebar]
+title = "wmux"
+
 [settings]
 font = "Font"
 theme = "Theme"

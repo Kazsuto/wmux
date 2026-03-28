@@ -62,6 +62,16 @@ pub enum Icon {
     ChevronRight,
     /// Chevron down (expanded disclosure).
     ChevronDown,
+
+    // Window chrome buttons
+    /// Window close button (×).
+    ChromeClose,
+    /// Window minimize button (—).
+    ChromeMinimize,
+    /// Window maximize button (□).
+    ChromeMaximize,
+    /// Window restore button (overlapping □).
+    ChromeRestore,
 }
 
 impl Icon {
@@ -105,6 +115,12 @@ impl Icon {
             Icon::Settings => "\u{e713}", // Settings
             Icon::ChevronRight => "\u{e76c}",
             Icon::ChevronDown => "\u{e70d}",
+
+            // Window chrome
+            Icon::ChromeClose => "\u{e8bb}",    // ChromeClose
+            Icon::ChromeMinimize => "\u{e921}", // ChromeMinimize
+            Icon::ChromeMaximize => "\u{e922}", // ChromeMaximize
+            Icon::ChromeRestore => "\u{e923}",  // ChromeRestore
         }
     }
 
@@ -153,6 +169,10 @@ impl Icon {
             Icon::Settings => ICON_SETTINGS,
             Icon::ChevronRight => ICON_CHEVRON_RIGHT,
             Icon::ChevronDown => ICON_CHEVRON_DOWN,
+            Icon::ChromeClose => ICON_CHROME_CLOSE,
+            Icon::ChromeMinimize => ICON_CHROME_MINIMIZE,
+            Icon::ChromeMaximize => ICON_CHROME_MAXIMIZE,
+            Icon::ChromeRestore => ICON_CHROME_RESTORE,
         }
     }
 }
@@ -181,6 +201,10 @@ mod tests {
             Icon::Settings,
             Icon::ChevronRight,
             Icon::ChevronDown,
+            Icon::ChromeClose,
+            Icon::ChromeMinimize,
+            Icon::ChromeMaximize,
+            Icon::ChromeRestore,
         ];
         for icon in &icons {
             let cp = icon.codepoint();
@@ -212,6 +236,10 @@ mod tests {
             Icon::Settings,
             Icon::ChevronRight,
             Icon::ChevronDown,
+            Icon::ChromeClose,
+            Icon::ChromeMinimize,
+            Icon::ChromeMaximize,
+            Icon::ChromeRestore,
         ];
         for icon in &icons {
             let ch = icon.codepoint().chars().next().unwrap();
@@ -251,6 +279,10 @@ mod tests {
             Icon::Settings,
             Icon::ChevronRight,
             Icon::ChevronDown,
+            Icon::ChromeClose,
+            Icon::ChromeMinimize,
+            Icon::ChromeMaximize,
+            Icon::ChromeRestore,
         ];
         let mut seen = std::collections::HashSet::new();
         for icon in &icons {

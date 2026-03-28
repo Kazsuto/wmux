@@ -43,14 +43,19 @@ impl UiState<'_> {
         let surface_width = self.gpu.width();
         let surface_height = self.gpu.height();
 
-        // Reserve space for sidebar (left) and status bar (bottom).
+        // Reserve space for title bar (top), sidebar (left), and status bar (bottom).
+        let titlebar_height = if self.titlebar.custom_chrome_active {
+            crate::titlebar::TITLE_BAR_HEIGHT * self.scale_factor
+        } else {
+            0.0
+        };
         let sidebar_width = self.sidebar.effective_width();
         let status_bar_height = crate::status_bar::STATUS_BAR_HEIGHT;
         let surface_viewport = wmux_core::rect::Rect {
             x: sidebar_width,
-            y: 0.0,
+            y: titlebar_height,
             width: (surface_width as f32 - sidebar_width).max(1.0),
-            height: (surface_height as f32 - status_bar_height).max(1.0),
+            height: (surface_height as f32 - titlebar_height - status_bar_height).max(1.0),
         };
 
         // Refresh workspace list once per frame.
@@ -73,6 +78,22 @@ impl UiState<'_> {
             .render_edit_cursor(&mut self.quads, &self.ui_chrome, self.scale_factor);
 
         // Sidebar separator is rendered by sidebar.render_quads() as a 1px border_glow line.
+
+        // Render custom title bar AFTER sidebar — the title bar's opaque background
+        // paints over the sidebar's top region, creating a unified top strip.
+        self.titlebar.update_maximized(self.main_hwnd);
+        self.titlebar.render_quads(
+            &mut self.quads,
+            &self.ui_chrome,
+            surface_width as f32,
+            self.scale_factor,
+        );
+        // Update chrome button icon positions and store for TextArea borrowing.
+        self.cg_chrome_buttons = self.titlebar.chrome_button_glyphs(
+            surface_width as f32,
+            self.scale_factor,
+            &self.ui_chrome,
+        );
 
         // Opaque fill for the content area — ensures pane gaps are dark even when
         // Mica/Acrylic makes the clear color transparent.
@@ -2118,6 +2139,29 @@ impl UiState<'_> {
             &self.ui_chrome,
             self.scale_factor,
         ));
+
+        // Append title bar text areas (title text + chrome button icons).
+        if let Some(tb_text) =
+            self.titlebar
+                .text_area(&self.ui_chrome, surface_width as f32, self.scale_factor)
+        {
+            all_text_areas.push(tb_text);
+            // Chrome button icons via SVG CustomGlyphs.
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.icon_empty_buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: self.scale_factor,
+                bounds: glyphon::TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: surface_width as i32,
+                    bottom: (crate::titlebar::TITLE_BAR_HEIGHT * self.scale_factor) as i32,
+                },
+                default_color: crate::f32_to_glyphon_color(self.ui_chrome.text_secondary),
+                custom_glyphs: &self.cg_chrome_buttons,
+            });
+        }
 
         // ── Overlay text areas (menus) ─────────────────────────────────
         // Track where overlay text starts so we can filter base text that

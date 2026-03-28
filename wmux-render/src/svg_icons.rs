@@ -32,6 +32,10 @@ pub const ICON_ARROW_DOWN: u16 = 15;
 pub const ICON_INFO: u16 = 16;
 pub const ICON_WARNING: u16 = 17;
 pub const ICON_ERROR: u16 = 18;
+pub const ICON_CHROME_CLOSE: u16 = 19;
+pub const ICON_CHROME_MINIMIZE: u16 = 20;
+pub const ICON_CHROME_MAXIMIZE: u16 = 21;
+pub const ICON_CHROME_RESTORE: u16 = 22;
 
 /// Rasterize a custom glyph by ID. Returns `None` for unknown IDs,
 /// which tells glyphon to skip that glyph (no crash, no error).
@@ -70,6 +74,10 @@ fn icon_id_to_svg(id: u16) -> Option<&'static [u8]> {
         ICON_INFO => Some(include_bytes!("../assets/icons/info.svg")),
         ICON_WARNING => Some(include_bytes!("../assets/icons/warning.svg")),
         ICON_ERROR => Some(include_bytes!("../assets/icons/error.svg")),
+        ICON_CHROME_CLOSE => Some(include_bytes!("../assets/icons/chrome-close.svg")),
+        ICON_CHROME_MINIMIZE => Some(include_bytes!("../assets/icons/chrome-minimize.svg")),
+        ICON_CHROME_MAXIMIZE => Some(include_bytes!("../assets/icons/chrome-maximize.svg")),
+        ICON_CHROME_RESTORE => Some(include_bytes!("../assets/icons/chrome-restore.svg")),
         _ => None,
     }
 }

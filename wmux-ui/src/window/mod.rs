@@ -151,6 +151,8 @@ pub(crate) struct UiState<'window> {
     pub(crate) cg_arrows: [[glyphon::CustomGlyph; 1]; 4],
     /// Pre-built CustomGlyph arrays for status badge icons, keyed by Icon variant.
     pub(crate) status_icon_cgs: HashMap<wmux_render::icons::Icon, [glyphon::CustomGlyph; 1]>,
+    /// Pre-built CustomGlyph array for the 3 chrome button icons (minimize, maximize, close).
+    pub(crate) cg_chrome_buttons: [glyphon::CustomGlyph; 3],
 
     // Browser
     /// WebView2 browser panel manager — lives on the UI/STA thread.
@@ -167,6 +169,10 @@ pub(crate) struct UiState<'window> {
     pub(crate) browser_urls: std::collections::HashMap<wmux_core::SurfaceId, String>,
     /// Config-defined default browser URL.
     pub(crate) browser_default_url: String,
+
+    // Title bar
+    /// Custom title bar state (chrome buttons, drag zone, Win32 subclassing).
+    pub(crate) titlebar: crate::titlebar::TitleBarState,
 
     // Status bar
     pub(crate) status_bar: crate::status_bar::StatusBar,

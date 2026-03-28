@@ -12,6 +12,7 @@ pub mod search;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod status_bar;
+pub mod titlebar;
 pub mod toast;
 pub mod typography;
 pub mod window;

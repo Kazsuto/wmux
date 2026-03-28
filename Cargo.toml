@@ -61,6 +61,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_Globalization",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
     "UI_Notifications",
     "Data_Xml_Dom",
@@ -104,3 +105,4 @@ codegen-units = 1
 opt-level = 3
 strip = "symbols"
 panic = "abort"
+overflow-checks = true
