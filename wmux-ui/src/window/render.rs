@@ -50,7 +50,7 @@ impl UiState<'_> {
             0.0
         };
         let sidebar_width = self.sidebar.effective_width();
-        let status_bar_height = crate::status_bar::STATUS_BAR_HEIGHT;
+        let status_bar_height = crate::status_bar::STATUS_BAR_HEIGHT * self.scale_factor;
         let surface_viewport = wmux_core::rect::Rect {
             x: sidebar_width,
             y: titlebar_height,
@@ -630,17 +630,31 @@ impl UiState<'_> {
                 continue;
             }
 
-            // Opaque background quad for the terminal area — one level
-            // lighter than the sidebar/chrome for visual hierarchy.
-            self.quads.push_quad(
-                terminal_rect.x,
-                terminal_rect.y,
-                terminal_rect.width,
-                terminal_rect.height,
-                self.ui_chrome.surface_0,
-            );
+            // Opaque background quad for the terminal area (including padding) —
+            // one level lighter than the sidebar/chrome for visual hierarchy.
+            // Use the pre-padding rect so the background extends behind the padding.
+            {
+                let tbh = wmux_render::pane::TAB_BAR_HEIGHT * self.scale_factor;
+                let bg_rect = viewport
+                    .map(|vp| {
+                        wmux_core::rect::Rect::new(
+                            vp.rect.x,
+                            vp.rect.y + tbh,
+                            vp.rect.width,
+                            (vp.rect.height - tbh).max(0.0),
+                        )
+                    })
+                    .unwrap_or(terminal_rect);
+                self.quads.push_quad(
+                    bg_rect.x,
+                    bg_rect.y,
+                    bg_rect.width,
+                    bg_rect.height,
+                    self.ui_chrome.surface_0,
+                );
+            }
 
-            // Compute per-pane terminal dimensions from the terminal content rect.
+            // Compute per-pane terminal dimensions from the padded terminal content rect.
             let pane_cols = ((terminal_rect.width / self.metrics.cell_width)
                 .floor()
                 .max(1.0) as u32)
@@ -656,7 +670,7 @@ impl UiState<'_> {
                     self.glyphon.font_system(),
                     pane_cols,
                     pane_rows,
-                    Some(self.terminal_font_family.as_str()),
+                    self.terminal_font_family.as_deref(),
                     Some(self.terminal_font_size * self.scale_factor),
                 );
                 renderer.set_palette(
@@ -968,7 +982,7 @@ impl UiState<'_> {
                     0.0,
                     sb_y,
                     sb_w,
-                    crate::status_bar::STATUS_BAR_HEIGHT,
+                    status_bar_height,
                     0.0,
                     sd.sigma,
                     0.0,
@@ -986,6 +1000,7 @@ impl UiState<'_> {
                 sb_w,
                 time_secs,
                 &self.status_bar_data,
+                self.scale_factor,
             );
         }
 
@@ -1336,7 +1351,8 @@ impl UiState<'_> {
 
                     // --- Step 1: Build result rows + actions based on filter ---
                     // Each row: (name, shortcut_hint, action)
-                    let mut rows: Vec<(String, String, PaletteAction)> = Vec::new();
+                    let mut rows: Vec<(String, String, PaletteAction)> =
+                        Vec::with_capacity(MAX_VISIBLE_RESULTS);
 
                     match filter {
                         PaletteFilter::Commands => {

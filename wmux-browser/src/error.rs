@@ -26,6 +26,9 @@ pub enum BrowserError {
     #[error("WebView2 controller not available")]
     ControllerNotAvailable,
 
+    #[error("invalid URL scheme: {0} (only http:// and https:// are allowed)")]
+    InvalidUrlScheme(String),
+
     #[error("{0}")]
     General(String),
 

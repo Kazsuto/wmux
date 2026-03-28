@@ -63,7 +63,7 @@ fn translate_key(
     logical_key: &Key,
     ctrl: bool,
     alt: bool,
-    _shift: bool,
+    shift: bool,
     modes: TerminalMode,
 ) -> Option<Vec<u8>> {
     match logical_key {
@@ -88,7 +88,7 @@ fn translate_key(
                 Some(bytes)
             }
         }
-        Key::Named(named) => named_key_bytes(*named, ctrl, modes),
+        Key::Named(named) => named_key_bytes(*named, ctrl, shift, modes),
         Key::Dead(_) | Key::Unidentified(_) => None,
     }
 }
@@ -109,7 +109,7 @@ fn ctrl_byte(ch: char) -> Option<u8> {
 }
 
 /// Return the VT byte sequence for a named key.
-fn named_key_bytes(key: NamedKey, ctrl: bool, modes: TerminalMode) -> Option<Vec<u8>> {
+fn named_key_bytes(key: NamedKey, ctrl: bool, shift: bool, modes: TerminalMode) -> Option<Vec<u8>> {
     let app_cursor = modes.contains(TerminalMode::APPLICATION_CURSOR);
 
     let seq: &[u8] = match key {
@@ -161,6 +161,7 @@ fn named_key_bytes(key: NamedKey, ctrl: bool, modes: TerminalMode) -> Option<Vec
         NamedKey::Delete => b"\x1b[3~",
         NamedKey::Enter => b"\r",
         NamedKey::Backspace => b"\x7f",
+        NamedKey::Tab if shift => b"\x1b[Z",
         NamedKey::Tab => b"\x09",
         NamedKey::Escape => b"\x1b",
         NamedKey::Space => {
@@ -493,6 +494,20 @@ mod tests {
                 normal_modes()
             ),
             Some(b"\x09".to_vec())
+        );
+    }
+
+    #[test]
+    fn shift_tab_sends_backtab() {
+        assert_eq!(
+            translate_key(
+                &Key::Named(NamedKey::Tab),
+                false,
+                false,
+                true, // shift
+                normal_modes()
+            ),
+            Some(b"\x1b[Z".to_vec())
         );
     }
 

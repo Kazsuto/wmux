@@ -11,6 +11,10 @@ pub const ADDRESS_BAR_HEIGHT: f32 = 32.0;
 /// Width in pixels of the focused pane accent stripe (left bar).
 pub const FOCUS_STRIPE_WIDTH: f32 = 3.0;
 
+/// Inner padding (in logical pixels) between the pane edge and terminal content.
+/// Applied on all four sides to give the text breathing room.
+pub const TERMINAL_PADDING: f32 = 8.0;
+
 /// Spacing between pill-style tabs.
 const TAB_GAP: f32 = 6.0;
 
@@ -618,11 +622,12 @@ impl PaneRenderer {
     #[must_use]
     pub fn terminal_viewport(viewport: &PaneViewport) -> Rect {
         let tbh = TAB_BAR_HEIGHT * viewport.scale;
+        let pad = TERMINAL_PADDING * viewport.scale;
         Rect::new(
-            viewport.rect.x,
-            viewport.rect.y + tbh,
-            viewport.rect.width,
-            (viewport.rect.height - tbh).max(0.0),
+            viewport.rect.x + pad,
+            viewport.rect.y + tbh + pad,
+            (viewport.rect.width - 2.0 * pad).max(0.0),
+            (viewport.rect.height - tbh - 2.0 * pad).max(0.0),
         )
     }
 
@@ -711,10 +716,13 @@ mod tests {
         let rect = Rect::new(10.0, 20.0, 400.0, 300.0);
         let vp = make_viewport(rect, false, 1);
         let tv = PaneRenderer::terminal_viewport(&vp);
-        assert_eq!(tv.x, 10.0);
-        assert_eq!(tv.y, 20.0 + TAB_BAR_HEIGHT);
-        assert_eq!(tv.width, 400.0);
-        assert!((tv.height - (300.0 - TAB_BAR_HEIGHT)).abs() < f32::EPSILON);
+        // Padding is applied on all sides (scale=1.0 in tests).
+        assert_eq!(tv.x, 10.0 + TERMINAL_PADDING);
+        assert_eq!(tv.y, 20.0 + TAB_BAR_HEIGHT + TERMINAL_PADDING);
+        assert_eq!(tv.width, 400.0 - 2.0 * TERMINAL_PADDING);
+        assert!(
+            (tv.height - (300.0 - TAB_BAR_HEIGHT - 2.0 * TERMINAL_PADDING)).abs() < f32::EPSILON
+        );
     }
 
     #[test]
@@ -722,8 +730,10 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
         let vp = make_viewport(rect, false, 3);
         let tv = PaneRenderer::terminal_viewport(&vp);
-        assert_eq!(tv.y, TAB_BAR_HEIGHT);
-        assert!((tv.height - (300.0 - TAB_BAR_HEIGHT)).abs() < f32::EPSILON);
+        assert_eq!(tv.y, TAB_BAR_HEIGHT + TERMINAL_PADDING);
+        assert!(
+            (tv.height - (300.0 - TAB_BAR_HEIGHT - 2.0 * TERMINAL_PADDING)).abs() < f32::EPSILON
+        );
     }
 
     #[test]

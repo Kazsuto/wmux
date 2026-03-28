@@ -116,13 +116,18 @@ impl StatusBar {
         width: f32,
         time_secs: f32,
         data: &StatusBarData,
+        scale_factor: f32,
     ) {
+        let height = STATUS_BAR_HEIGHT * scale_factor;
+        let dot_size = CONNECTION_DOT_SIZE * scale_factor;
+        let pad_x = PADDING_X * scale_factor;
+
         // Background
-        quads.push_quad(x, y, width, STATUS_BAR_HEIGHT, ui_chrome.surface_1);
+        quads.push_quad(x, y, width, height, ui_chrome.surface_1);
 
         // Connection dot
-        let dot_x = x + PADDING_X;
-        let dot_y = y + (STATUS_BAR_HEIGHT - CONNECTION_DOT_SIZE) / 2.0;
+        let dot_x = x + pad_x;
+        let dot_y = y + (height - dot_size) / 2.0;
         let dot_color = match data.connection {
             ConnectionStatus::Connected => ui_chrome.success,
             ConnectionStatus::Reconnecting => {
@@ -134,14 +139,7 @@ impl StatusBar {
             }
             ConnectionStatus::Disconnected => ui_chrome.error,
         };
-        quads.push_rounded_quad(
-            dot_x,
-            dot_y,
-            CONNECTION_DOT_SIZE,
-            CONNECTION_DOT_SIZE,
-            dot_color,
-            CONNECTION_DOT_SIZE / 2.0,
-        );
+        quads.push_rounded_quad(dot_x, dot_y, dot_size, dot_size, dot_color, dot_size / 2.0);
     }
 
     /// Return a text area descriptor for glyphon rendering.
@@ -153,19 +151,20 @@ impl StatusBar {
         ui_chrome: &UiChrome,
         scale_factor: f32,
     ) -> glyphon::TextArea<'_> {
-        // Offset text past the connection dot
-        let text_x = x + PADDING_X + CONNECTION_DOT_SIZE + 8.0;
+        let height = STATUS_BAR_HEIGHT * scale_factor;
+        // Offset text past the connection dot (scaled)
+        let text_x = x + (PADDING_X + CONNECTION_DOT_SIZE + 8.0) * scale_factor;
 
         glyphon::TextArea {
             buffer: &self.text_buffer,
             left: text_x,
-            top: y + (STATUS_BAR_HEIGHT - LINE_HEIGHT) / 2.0,
+            top: y + (height - LINE_HEIGHT * scale_factor) / 2.0,
             scale: scale_factor,
             bounds: glyphon::TextBounds {
                 left: text_x as i32,
                 top: y as i32,
                 right: (x + width) as i32,
-                bottom: (y + STATUS_BAR_HEIGHT) as i32,
+                bottom: (y + height) as i32,
             },
             default_color: f32_to_glyphon_color(ui_chrome.text_secondary),
             custom_glyphs: &[],

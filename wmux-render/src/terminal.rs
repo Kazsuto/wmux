@@ -528,7 +528,8 @@ impl TerminalRenderer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Push non-default background color quads for a row of cells.
+/// Push non-default background color quads and underline/strikethrough
+/// decorations for a row of cells.
 ///
 /// `x_off` and `y` are the surface-space coordinates of the row's top-left
 /// corner (already including the pane origin offset).
@@ -541,6 +542,8 @@ fn push_background_quads(
     y: f32,
     palette: &[(u8, u8, u8); 16],
 ) {
+    let line_thickness = 1.0_f32.max(ch / 16.0);
+
     for (col, cell) in cells.iter().enumerate() {
         let bg = if cell.flags.contains(CellFlags::INVERSE) {
             cell.fg
@@ -554,6 +557,34 @@ fn push_background_quads(
                 cw,
                 ch,
                 color_to_rgba(bg, palette),
+            );
+        }
+
+        let fg = if cell.flags.contains(CellFlags::INVERSE) {
+            cell.bg
+        } else {
+            cell.fg
+        };
+
+        // Underline: thin line near the bottom of the cell.
+        if cell.flags.contains(CellFlags::UNDERLINE) {
+            quad_pipeline.push_quad(
+                x_off + col as f32 * cw,
+                y + ch - line_thickness - 1.0,
+                cw,
+                line_thickness,
+                color_to_rgba(fg, palette),
+            );
+        }
+
+        // Strikethrough: thin line through the middle of the cell.
+        if cell.flags.contains(CellFlags::STRIKETHROUGH) {
+            quad_pipeline.push_quad(
+                x_off + col as f32 * cw,
+                y + (ch - line_thickness) / 2.0,
+                cw,
+                line_thickness,
+                color_to_rgba(fg, palette),
             );
         }
     }

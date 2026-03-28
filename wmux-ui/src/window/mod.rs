@@ -236,8 +236,8 @@ pub(crate) struct UiState<'window> {
     pub(crate) inactive_pane_opacity: f32,
     /// Display scale factor (DPI scaling) from the OS window.
     pub(crate) scale_factor: f32,
-    /// User-configured terminal font family (e.g., "JetBrainsMono Nerd Font").
-    pub(crate) terminal_font_family: String,
+    /// Resolved terminal font family, or `None` for system monospace fallback.
+    pub(crate) terminal_font_family: Option<String>,
     /// User-configured terminal font size.
     pub(crate) terminal_font_size: f32,
 

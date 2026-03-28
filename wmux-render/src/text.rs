@@ -18,6 +18,17 @@ pub const UI_FONT_FAMILY_FALLBACK: &str = "Segoe UI";
 /// if installed. Use `has_icon_font()` to check at runtime.
 pub const ICON_FONT_FAMILY: &str = "Segoe Fluent Icons";
 
+/// Preferred terminal font — Nerd Font variant with full powerline/devicon coverage.
+/// Nerd Fonts v3 removes spaces from the original name: "JetBrains Mono" → "JetBrainsMono".
+pub const TERMINAL_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
+
+/// Fallback terminal font when the preferred Nerd Font is not installed.
+pub const TERMINAL_FONT_FAMILY_FALLBACK: &str = "Cascadia Code";
+
+/// Embedded Nerd Font symbol fallback — provides powerline, devicons, and other
+/// Nerd Font glyphs as a cosmic-text font fallback regardless of the primary font.
+const SYMBOLS_NERD_FONT: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+
 pub struct GlyphonRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -30,11 +41,23 @@ pub struct GlyphonRenderer {
     ui_font_available: bool,
     /// Whether "Segoe Fluent Icons" (Win11) is available for UI icon rendering.
     icon_font_available: bool,
+    /// Whether the preferred terminal Nerd Font is installed.
+    terminal_font_available: bool,
+    /// Whether the fallback terminal font is installed.
+    terminal_fallback_available: bool,
 }
 
 impl GlyphonRenderer {
     pub fn new(device: &Device, queue: &Queue, format: TextureFormat) -> Self {
-        let font_system = FontSystem::new();
+        let mut font_system = FontSystem::new();
+
+        // Load embedded Symbols Nerd Font into the font database so cosmic-text
+        // can use it as a glyph fallback for any primary font. This ensures
+        // powerline/devicon symbols render even without a system Nerd Font.
+        font_system
+            .db_mut()
+            .load_font_data(SYMBOLS_NERD_FONT.to_vec());
+        tracing::info!("embedded Symbols Nerd Font Mono loaded for glyph fallback");
 
         // Probe whether Segoe UI Variable (Win11) or Segoe UI (Win10) is available.
         let ui_font_available = font_system.db().faces().any(|face| {
@@ -64,6 +87,29 @@ impl GlyphonRenderer {
             );
         }
 
+        // Probe terminal font availability for smart default resolution.
+        let terminal_font_available = font_system.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name == TERMINAL_FONT_FAMILY)
+        });
+        let terminal_fallback_available = font_system.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name == TERMINAL_FONT_FAMILY_FALLBACK)
+        });
+
+        if terminal_font_available {
+            tracing::info!(font = TERMINAL_FONT_FAMILY, "terminal Nerd Font loaded");
+        } else if terminal_fallback_available {
+            tracing::info!(
+                font = TERMINAL_FONT_FAMILY_FALLBACK,
+                "preferred Nerd Font not found — using fallback terminal font"
+            );
+        } else {
+            tracing::warn!("no preferred terminal font found — using system monospace fallback");
+        }
+
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
@@ -79,6 +125,8 @@ impl GlyphonRenderer {
             viewport,
             ui_font_available,
             icon_font_available,
+            terminal_font_available,
+            terminal_fallback_available,
         }
     }
 
@@ -92,6 +140,25 @@ impl GlyphonRenderer {
     #[inline]
     pub fn has_icon_font(&self) -> bool {
         self.icon_font_available
+    }
+
+    /// Resolve the best available terminal font from the configured name.
+    ///
+    /// If `configured` matches the default (`TERMINAL_FONT_FAMILY`) and the font
+    /// is not installed, falls back to `TERMINAL_FONT_FAMILY_FALLBACK`, then
+    /// returns `None` so the caller can use `Family::Monospace`.
+    /// User-specified fonts (different from the default) are returned as-is.
+    pub fn resolve_terminal_font<'a>(&self, configured: &'a str) -> Option<&'a str> {
+        if configured != TERMINAL_FONT_FAMILY {
+            return Some(configured);
+        }
+        if self.terminal_font_available {
+            return Some(TERMINAL_FONT_FAMILY);
+        }
+        if self.terminal_fallback_available {
+            return Some(TERMINAL_FONT_FAMILY_FALLBACK);
+        }
+        None
     }
 
     /// Update the viewport resolution after a surface resize.

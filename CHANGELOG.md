@@ -2,6 +2,39 @@
 
 ## 2026-03-28
 
+REFACTOR: Remove stale #[allow(dead_code)] on UpdateChecker/UpdateInfo, add justification comments to command palette hit-test methods, pre-allocate command palette rows Vec
+REVERT: Remove broken WebView2 environment preload — fire-and-forget COM creates the environment on wrong thread (RPC_E_WRONG_THREAD), restore synchronous lazy creation at first browser panel use
+FEATURE: Embed Symbols Nerd Font Mono for automatic powerline/devicon glyph fallback — Nerd Font symbols render with any primary font
+FEATURE: Add runtime terminal font detection with fallback chain (JetBrainsMono NF → Cascadia Code → system monospace)
+FIX: Fix Nerd Font family name constant — "JetBrainsMono Nerd Font" (v3 naming, no space)
+FIX: Add empty font-family config validation — reject blank values, keep default
+FIX: Replace all blocking rx.recv() calls with recv_with_pump() in wmux-browser — prevents STA thread deadlocks by pumping Windows messages while waiting for WebView2 COM callbacks
+FIX: Add URL scheme validation to browser navigate() — reject javascript:, file://, data: schemes, only allow http(s)
+FIX: Apply WebView2 security hardening at creation — disable context menus, status bar, script dialogs; disable DevTools in release builds
+FIX: Handle ClientToScreen HRESULT failure — return error instead of silently discarding
+FIX: Log WebView2 controller.Close() and DestroyWindow errors in BrowserPanel Drop — detect zombie msedgewebview2.exe processes
+FIX: Remove TOCTOU race in ensure_user_data_dir() — call create_dir_all directly without exists() check
+FIX: Clear __wmux_errors array after reading in read_errors() — prevent unbounded accumulation
+FIX: Improve SAFETY comment on ComGuard::new() — document actual invariants (no prior MTA, balanced CoUninitialize)
+FEATURE: Add DPI awareness to browser panel set_bounds() — query and log GetDpiForWindow for diagnostics
+CHORE: Add InvalidUrlScheme error variant to BrowserError
+CHORE: Document WS_POPUP HWND architecture as deliberate ADR (DXGI flip-model occlusion workaround)
+CHORE: Document eval() security model — intentional arbitrary JS execution gated by IPC auth
+FIX: Add 30s timeout to recv_with_pump — prevent infinite hang if WebView2 COM callback fails to fire
+FIX: Trim URL whitespace before scheme validation in navigate() — normalize input at system boundary
+FIX: Disable WebView2 host object injection and web messaging (SetAreHostObjectsAllowed, SetIsWebMessageEnabled) — defense in depth
+FIX: Add upper bound check in rect_to_bounds — prevent f32 > i32::MAX saturation producing wrong window coordinates
+FIX: Make ComGuard !Send+!Sync via PhantomData — prevent accidental cross-thread COM STA misuse
+CHORE: Add Win32_Graphics_Gdi and Win32_UI_HiDpi features to windows crate dependency
+FIX: Export COLORTERM=truecolor in PTY environment — enables 24-bit color in Claude Code and other terminal apps, fixes harsh red fallback colors
+CHORE: Revert terminal text shaping to Basic — Advanced breaks monospace grid alignment on fallback font glyphs
+FIX: Send Shift+Tab as CSI Z (BackTab) to PTY — previously sent as regular Tab, breaking Claude Code permission cycling
+FEATURE: Respond to OSC 10/11 foreground/background color queries — allows terminal apps (Claude Code) to detect dark/light theme and adapt colors
+FIX: Add 8px inner padding to terminal panes — text no longer starts flush against pane edges
+FIX: Compute initial PTY cols/rows from usable terminal area (subtract sidebar, title bar, tab bar, status bar, padding) — prevent wrong dimensions at process startup
+FIX: DPI-scale status bar height in surface viewport and rendering — consistent with title bar scaling
+FEATURE: Implement CSI X (ECH — Erase Character) escape sequence — erase N chars at cursor without moving it
+FEATURE: Render underline and strikethrough text decorations as colored quads — previously stored but never drawn
 FIX: Harden wmux-app updater — mandatory SHA-256 checksum verification (refuse unsigned updates), incremental hashing during download (eliminates TOCTOU gap and 200MB memory spike), URL validation (HTTPS + host allowlist), download size limit (200MB), zero-length download rejection, path containment for apply_pending_update, startup recovery from interrupted updates, custom redirect policy blocking HTTP downgrades
 FIX: Eliminate unsafe env var manipulation in updater tests — accept disabled flag as constructor parameter instead of reading WMUX_DISABLE_UPDATE
 FIX: Remove blocking std::fs calls from async context in updater — store current_exe at construction, use tokio::fs::canonicalize and try_exists

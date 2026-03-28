@@ -13,7 +13,7 @@ use windows::Win32::System::Com::CoTaskMemFree;
 use wmux_core::rect::Rect;
 use wmux_core::types::SurfaceId;
 
-use crate::com::ComGuard;
+use crate::com::{recv_with_pump, ComGuard};
 use crate::panel::BrowserPanel;
 use crate::BrowserError;
 
@@ -103,11 +103,11 @@ impl BrowserManager {
 
     /// Create the WebView2 environment with the configured user data directory.
     ///
-    /// This is an expensive operation (~200-500ms for first instance).
-    /// The returned environment should be cached for creating multiple controllers.
+    /// This is an expensive blocking operation (~200-500 ms for first instance,
+    /// up to ~13 s on cold Edge starts). The environment is cached after first
+    /// creation — subsequent `create_panel` calls reuse it.
     pub fn create_environment(&self) -> Result<ICoreWebView2Environment, BrowserError> {
         let (tx, rx) = mpsc::sync_channel(1);
-
         let user_data_folder = self.user_data_dir.to_string_lossy().to_string();
 
         CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
@@ -140,16 +140,9 @@ impl BrowserManager {
             ))
         })?;
 
-        let env = rx
-            .recv()
-            .map_err(|e| {
-                BrowserError::EnvironmentCreationFailed(format!(
-                    "failed to receive environment: {e}"
-                ))
-            })?
-            .map_err(|e| {
-                BrowserError::EnvironmentCreationFailed(format!("environment creation error: {e}"))
-            })?;
+        let env = recv_with_pump(&rx)?.map_err(|e| {
+            BrowserError::EnvironmentCreationFailed(format!("environment creation error: {e}"))
+        })?;
 
         tracing::info!("WebView2 environment created");
         Ok(env)
@@ -157,7 +150,7 @@ impl BrowserManager {
 
     /// Return a reference to the cached environment, creating it on first call.
     ///
-    /// The environment is expensive to create (~200-500ms for first instance)
+    /// The environment is expensive to create (~200-500 ms for first instance)
     /// and is reused for all panels. Must be called on the STA thread.
     fn get_or_create_environment(&mut self) -> Result<&ICoreWebView2Environment, BrowserError> {
         if self.environment.is_none() {
@@ -291,6 +284,10 @@ impl BrowserManager {
     }
 
     /// Ensure the user data directory exists at `%APPDATA%\wmux\webview2-data`.
+    ///
+    /// Called from `BrowserManager::new()` which runs in a blocking/sync
+    /// context on the UI thread (not inside a tokio task), so `std::fs` is
+    /// appropriate here.
     fn ensure_user_data_dir() -> Result<PathBuf, BrowserError> {
         let config_dir = dirs::config_dir().ok_or_else(|| {
             BrowserError::UserDataDirFailed("could not determine %APPDATA% directory".into())
@@ -298,33 +295,34 @@ impl BrowserManager {
 
         let user_data_dir = config_dir.join("wmux").join("webview2-data");
 
-        if !user_data_dir.exists() {
-            std::fs::create_dir_all(&user_data_dir).map_err(|e| {
-                BrowserError::UserDataDirFailed(format!(
-                    "failed to create {}: {e}",
-                    user_data_dir.display()
-                ))
-            })?;
-            tracing::debug!(
-                path = %user_data_dir.display(),
-                "created WebView2 user data directory"
-            );
-        }
+        // create_dir_all is idempotent — returns Ok(()) if already exists.
+        // No exists() check needed (avoids TOCTOU race).
+        std::fs::create_dir_all(&user_data_dir).map_err(|e| {
+            BrowserError::UserDataDirFailed(format!(
+                "failed to create {}: {e}",
+                user_data_dir.display()
+            ))
+        })?;
 
         Ok(user_data_dir)
     }
 }
 
-/// Validate a `Rect`'s `f32` fields are finite and non-negative, then cast to `i32`.
+/// Maximum coordinate value for `rect_to_bounds` — prevents `f32 as i32` saturation.
+const MAX_BOUNDS_VALUE: f32 = i32::MAX as f32;
+
+/// Validate a `Rect`'s `f32` fields are finite, non-negative, and within `i32` range,
+/// then cast to `i32`.
 ///
-/// Prevents NaN → 0 and Infinity → i32::MAX from reaching the COM `SetBounds` API.
+/// Prevents NaN → 0, Infinity → i32::MAX, and f32 > i32::MAX saturation from
+/// reaching the COM `SetBounds` API.
 fn rect_to_bounds(rect: &Rect) -> Result<(i32, i32, i32, i32), BrowserError> {
     let vals = [rect.x, rect.y, rect.width, rect.height];
     for v in &vals {
-        if !v.is_finite() || *v < 0.0 {
+        if !v.is_finite() || *v < 0.0 || *v > MAX_BOUNDS_VALUE {
             return Err(BrowserError::General(format!(
-                "invalid rect values: x={}, y={}, w={}, h={} (must be finite and non-negative)",
-                rect.x, rect.y, rect.width, rect.height,
+                "invalid rect values: x={}, y={}, w={}, h={} (must be finite, non-negative, and <= {})",
+                rect.x, rect.y, rect.width, rect.height, i32::MAX,
             )));
         }
     }

@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Settings,
         COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     },
 };
@@ -11,6 +11,7 @@ use windows::core::w;
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, SetWindowPos, ShowWindow,
     CS_HREDRAW, CS_VREDRAW, HWND_TOP, SWP_NOACTIVATE, SWP_NOCOPYBITS, SW_HIDE, SW_SHOW,
@@ -18,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use wmux_core::types::SurfaceId;
 
+use crate::com::recv_with_pump;
 use crate::{automation, BrowserError};
 
 /// A hosted WebView2 browser panel.
@@ -26,6 +28,18 @@ use crate::{automation, BrowserError};
 /// view. The controller lives in a dedicated owned popup `HWND` (separate
 /// from the wgpu surface) so DWM composites WebView2 above the DirectX
 /// swap chain as an independent top-level visual.
+///
+/// ## ADR: WS_POPUP instead of WS_CHILD
+///
+/// The documented rule (`webview2-browser.md`) recommends sibling `WS_CHILD`
+/// HWNDs. We deliberately use `WS_POPUP` instead because DXGI flip-model
+/// swap chains (required by wgpu) occlude all `WS_CHILD` siblings on the
+/// same parent — the WebView2 child window becomes invisible behind the
+/// swap chain. A `WS_POPUP` owned by the parent bypasses this: DWM
+/// composites it as a separate top-level visual. Trade-offs:
+/// - Requires `ClientToScreen` conversion for positioning (vs. direct client coords)
+/// - Not auto-clipped by parent (managed via `SetWindowPos` bounds)
+/// - `WS_EX_NOACTIVATE` prevents focus theft; `WS_EX_TOOLWINDOW` hides from taskbar
 pub struct BrowserPanel {
     surface_id: SurfaceId,
     controller: Option<ICoreWebView2Controller>,
@@ -93,6 +107,55 @@ impl BrowserPanel {
             .ok_or(BrowserError::ControllerNotAvailable)
     }
 
+    /// Apply security settings to a freshly created WebView2.
+    ///
+    /// Disables context menus, status bar, script dialogs, host object injection,
+    /// and web messaging. In release builds, also disables DevTools.
+    fn apply_security_settings(webview: &ICoreWebView2) -> Result<(), BrowserError> {
+        // SAFETY: Settings() returns the ICoreWebView2Settings for this webview.
+        // The webview COM pointer is valid (just created).
+        let settings: ICoreWebView2Settings = unsafe { webview.Settings() }
+            .map_err(|e| BrowserError::General(format!("Settings: {e}")))?;
+
+        // SAFETY: All Set* methods take a plain BOOL value. The settings
+        // COM object is valid for the duration of these calls.
+        unsafe {
+            settings
+                .SetAreDefaultContextMenusEnabled(false)
+                .map_err(|e| {
+                    BrowserError::General(format!("SetAreDefaultContextMenusEnabled: {e}"))
+                })?;
+            settings
+                .SetIsStatusBarEnabled(false)
+                .map_err(|e| BrowserError::General(format!("SetIsStatusBarEnabled: {e}")))?;
+            settings
+                .SetAreDefaultScriptDialogsEnabled(false)
+                .map_err(|e| {
+                    BrowserError::General(format!("SetAreDefaultScriptDialogsEnabled: {e}"))
+                })?;
+            // Disable host object injection — wmux does not use AddHostObjectToScript.
+            settings
+                .SetAreHostObjectsAllowed(false)
+                .map_err(|e| BrowserError::General(format!("SetAreHostObjectsAllowed: {e}")))?;
+            // Disable web messaging (chrome.webview.postMessage) — not used by wmux.
+            settings
+                .SetIsWebMessageEnabled(false)
+                .map_err(|e| BrowserError::General(format!("SetIsWebMessageEnabled: {e}")))?;
+        }
+
+        // Disable DevTools in release builds to prevent page inspection
+        // and CSP bypass via IPC.
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            settings
+                .SetAreDevToolsEnabled(false)
+                .map_err(|e| BrowserError::General(format!("SetAreDevToolsEnabled: {e}")))?;
+        }
+
+        tracing::debug!("WebView2 security settings applied");
+        Ok(())
+    }
+
     /// Attach the panel to a parent window by creating a dedicated owned popup
     /// HWND and then creating the WebView2 controller inside it.
     ///
@@ -139,17 +202,19 @@ impl BrowserPanel {
             BrowserError::EnvironmentCreationFailed(format!("CreateCoreWebView2Controller: {e}"))
         })?;
 
-        let controller = rx
-            .recv()
-            .map_err(|e| BrowserError::EnvironmentCreationFailed(format!("recv controller: {e}")))?
-            .map_err(|e| {
-                BrowserError::EnvironmentCreationFailed(format!("controller error: {e}"))
-            })?;
+        let controller = recv_with_pump(&rx)?.map_err(|e| {
+            BrowserError::EnvironmentCreationFailed(format!("controller error: {e}"))
+        })?;
 
         // SAFETY: CoreWebView2() returns the ICoreWebView2 associated with the
         // controller. The controller is valid (just created above).
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|_| BrowserError::ControllerNotAvailable)?;
+
+        // Apply security hardening — disable context menus, status bar, and
+        // script dialogs (alert/confirm/prompt) to prevent page-level UI from
+        // interfering with the terminal multiplexer experience.
+        Self::apply_security_settings(&webview)?;
 
         tracing::info!(surface_id = %self.surface_id, "BrowserPanel attached to HWND");
 
@@ -172,17 +237,28 @@ impl BrowserPanel {
 
     /// Set the position and size of the browser panel within the parent window.
     ///
-    /// Coordinates `(x, y)` are in the parent's **client** coordinate space.
-    /// Since the host is a popup (top-level) window, we convert to screen
-    /// coordinates before calling `SetWindowPos`.
+    /// Coordinates `(x, y, width, height)` must be in **physical pixels**
+    /// (matching winit's `PhysicalSize`). The layout system provides physical
+    /// pixel rects; no DPI scaling is applied here to avoid double-scaling.
+    /// Since the host is a popup (top-level) window, we convert client
+    /// coordinates to screen coordinates before calling `SetWindowPos`.
     pub fn set_bounds(&self, x: i32, y: i32, width: i32, height: i32) -> Result<(), BrowserError> {
         let controller = self.require_controller()?;
+
+        // Query DPI for diagnostic logging — coordinates are already physical
+        // pixels from the layout system, so no scaling is applied.
+        // SAFETY: GetDpiForWindow is a standard Win32 API, parent_hwnd is valid.
+        let dpi = unsafe { GetDpiForWindow(self.parent_hwnd) };
 
         // Convert parent-client coords → screen coords for the popup window.
         let mut pt = windows::Win32::Foundation::POINT { x, y };
         // SAFETY: ClientToScreen converts a POINT from client to screen space.
         // parent_hwnd is the valid main window we received in attach().
-        let _ = unsafe { ClientToScreen(self.parent_hwnd, &mut pt) };
+        if !unsafe { ClientToScreen(self.parent_hwnd, &mut pt) }.as_bool() {
+            return Err(BrowserError::General(
+                "ClientToScreen failed (invalid parent HWND?)".into(),
+            ));
+        }
 
         tracing::debug!(
             client_x = x,
@@ -191,7 +267,8 @@ impl BrowserPanel {
             screen_y = pt.y,
             width = width,
             height = height,
-            "setting panel bounds"
+            dpi = dpi,
+            "setting panel bounds (physical pixels)"
         );
 
         // Reposition the popup HWND at the computed screen coordinates.
@@ -316,6 +393,10 @@ impl BrowserPanel {
     }
 
     /// Open the DevTools window for this panel (equivalent to pressing F12).
+    ///
+    /// Only available in debug builds. In release builds, DevTools are disabled
+    /// via `SetAreDevToolsEnabled(false)` at creation time.
+    #[cfg(debug_assertions)]
     pub fn open_devtools(&self) -> Result<(), BrowserError> {
         tracing::debug!(surface_id = %self.surface_id, "opening DevTools");
 
@@ -447,14 +528,28 @@ impl Drop for BrowserPanel {
             // SAFETY: Close() releases the WebView2 controller and its
             // associated browser process + child HWND.  Must be called to
             // prevent resource leaks when a panel is removed.
-            let _ = unsafe { controller.Close() };
-            tracing::debug!(surface_id = %self.surface_id, "BrowserPanel controller closed");
+            if let Err(e) = unsafe { controller.Close() } {
+                tracing::warn!(
+                    surface_id = %self.surface_id,
+                    error = %e,
+                    "failed to close WebView2 controller — possible zombie msedgewebview2.exe"
+                );
+            } else {
+                tracing::debug!(surface_id = %self.surface_id, "BrowserPanel controller closed");
+            }
         }
         if let Some(host) = self.host_hwnd.take() {
             // SAFETY: DestroyWindow destroys a valid HWND we own. Must be
             // called after Close() so WebView2 releases its child windows first.
-            let _ = unsafe { DestroyWindow(host) };
-            tracing::debug!(surface_id = %self.surface_id, "host HWND destroyed");
+            if let Err(e) = unsafe { DestroyWindow(host) } {
+                tracing::warn!(
+                    surface_id = %self.surface_id,
+                    error = %e,
+                    "failed to destroy host HWND"
+                );
+            } else {
+                tracing::debug!(surface_id = %self.surface_id, "host HWND destroyed");
+            }
         }
     }
 }

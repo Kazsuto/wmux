@@ -97,18 +97,37 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         // Capture DPI scale factor for physical pixel calculations.
         let initial_scale_factor = window.scale_factor() as f32;
 
+        // Resolve the best available terminal font: preferred Nerd Font → fallback → monospace.
+        let resolved_font = glyphon
+            .resolve_terminal_font(&config.font_family)
+            .map(|s| s.to_string());
+
         // Compute terminal dimensions from window size and DPI-scaled font metrics.
         // The font size is multiplied by the OS scale factor so cell dimensions
         // are in physical pixels — matching the wgpu surface coordinate space.
         let metrics = wmux_render::TerminalMetrics::new(
             glyphon.font_system(),
-            Some(config.font_family.as_str()),
+            resolved_font.as_deref(),
             Some(config.font_size * initial_scale_factor),
         );
-        let cols = ((gpu.width() as f32) / metrics.cell_width).floor().max(1.0) as u32;
-        let rows = ((gpu.height() as f32) / metrics.cell_height)
-            .floor()
-            .max(1.0) as u32;
+        // Subtract UI chrome from the window size to get the usable terminal area.
+        // This ensures the initial PTY dimensions match what the first frame will render.
+        //
+        // Note: sidebar.effective_width() returns unscaled logical pixels that are used
+        // directly in physical-pixel coordinate space (a pre-existing DPI inconsistency
+        // in the sidebar). We match that behavior here to avoid a startup resize.
+        let titlebar_h = crate::titlebar::TITLE_BAR_HEIGHT * initial_scale_factor;
+        let tab_bar_h = wmux_render::pane::TAB_BAR_HEIGHT * initial_scale_factor;
+        let status_bar_h = crate::status_bar::STATUS_BAR_HEIGHT * initial_scale_factor;
+        let sidebar_w = config.sidebar_width as f32;
+        let pad = wmux_render::pane::TERMINAL_PADDING * initial_scale_factor;
+
+        let usable_w = (gpu.width() as f32 - sidebar_w - 2.0 * pad).max(1.0);
+        let usable_h =
+            (gpu.height() as f32 - titlebar_h - tab_bar_h - status_bar_h - 2.0 * pad).max(1.0);
+
+        let cols = (usable_w / metrics.cell_width).floor().max(1.0) as u32;
+        let rows = (usable_h / metrics.cell_height).floor().max(1.0) as u32;
         let cols = cols.min(u16::MAX as u32) as u16;
         let rows = rows.min(u16::MAX as u32) as u16;
 
@@ -646,7 +665,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             theme_foreground,
             inactive_pane_opacity: config.inactive_pane_opacity,
             scale_factor: initial_scale_factor,
-            terminal_font_family: config.font_family.clone(),
+            terminal_font_family: resolved_font,
             terminal_font_size: config.font_size,
             locale,
             live_browser_sids: std::collections::HashSet::new(),
@@ -736,7 +755,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         match mgr.create_panel(surface_id, state.main_hwnd, &rect) {
                             Ok(_) => {
                                 if let Some(panel) = mgr.get_panel(surface_id) {
-                                    let _ = panel.navigate(&url);
+                                    if let Err(e) = panel.navigate(&url) {
+                                        tracing::error!(error = %e, url = %url, "browser navigate failed");
+                                    }
                                     let _ = panel.focus_webview();
                                 }
                                 // Track URL for address bar display.
@@ -834,7 +855,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     // Recompute cell metrics with the updated DPI scale.
                     state.metrics = wmux_render::TerminalMetrics::new(
                         state.glyphon.font_system(),
-                        Some(state.terminal_font_family.as_str()),
+                        state.terminal_font_family.as_deref(),
                         Some(state.terminal_font_size * new_scale),
                     );
                     // Recalculate global cols/rows from the new metrics in case no

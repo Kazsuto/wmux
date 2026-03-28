@@ -5,7 +5,7 @@ pub mod manager;
 pub mod panel;
 
 pub use automation::{NavigationState, WaitCondition};
-pub use com::ComGuard;
+pub use com::{recv_with_pump, ComGuard};
 pub use error::BrowserError;
 pub use manager::BrowserManager;
 pub use panel::BrowserPanel;

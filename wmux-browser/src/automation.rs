@@ -10,6 +10,7 @@ use webview2_com::{
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::System::Com::CoTaskMemFree;
 
+use crate::com::recv_with_pump;
 use crate::BrowserError;
 
 /// Serialize a value to a JSON string for embedding in JavaScript.
@@ -42,6 +43,9 @@ pub enum WaitCondition {
     /// Wait for navigation to reach the Complete state.
     LoadState,
     /// Wait until a JavaScript expression evaluates to truthy.
+    ///
+    /// **Internal-only** — the JS expression is interpolated into `Boolean(...)`.
+    /// If exposed via IPC, the same auth restrictions as `browser.eval` apply.
     JsCondition(String),
 }
 
@@ -59,8 +63,17 @@ impl std::fmt::Display for WaitCondition {
 
 /// Navigate the WebView2 to the given URL.
 ///
-/// The URL must be a valid absolute URL (e.g. `https://example.com`).
+/// Only `http://` and `https://` schemes are allowed. Other schemes
+/// (`javascript:`, `file://`, `data:`) are rejected to prevent local file
+/// exfiltration and script injection via IPC.
 pub fn navigate(webview: &ICoreWebView2, url: &str) -> Result<(), BrowserError> {
+    // Normalize and validate URL scheme — reject everything except http(s).
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("https://") && !lower.starts_with("http://") {
+        return Err(BrowserError::InvalidUrlScheme(url.to_owned()));
+    }
+
     let url_wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
     let url_pcwstr = PCWSTR::from_raw(url_wide.as_ptr());
 
@@ -127,6 +140,13 @@ pub fn current_url(webview: &ICoreWebView2) -> Result<String, BrowserError> {
 ///
 /// Returns the result as a `serde_json::Value`. If the script returns
 /// `undefined` or `null`, the corresponding JSON value is returned.
+///
+/// # Security
+///
+/// This function executes arbitrary JavaScript in the WebView2 context.
+/// This is intentional — it powers IPC commands like `browser.eval`. Access
+/// is gated by the IPC authentication layer (`SecurityMode`). Callers must
+/// ensure IPC auth is not `AllowAll` in production configurations.
 pub fn eval(webview: &ICoreWebView2, js: &str) -> Result<serde_json::Value, BrowserError> {
     let (tx, rx) = mpsc::sync_channel(1);
 
@@ -153,9 +173,7 @@ pub fn eval(webview: &ICoreWebView2, js: &str) -> Result<serde_json::Value, Brow
     )
     .map_err(|e| BrowserError::JavaScriptError(format!("ExecuteScript handler: {e}")))?;
 
-    let result_str = rx
-        .recv()
-        .map_err(|e| BrowserError::JavaScriptError(format!("recv JS result: {e}")))?;
+    let result_str = recv_with_pump(&rx)?;
 
     serde_json::from_str(&result_str)
         .map_err(|e| BrowserError::JavaScriptError(format!("JSON parse: {e} (raw: {result_str})")))
@@ -189,8 +207,7 @@ pub fn add_init_script(webview: &ICoreWebView2, js: &str) -> Result<(), BrowserE
         BrowserError::JavaScriptError(format!("AddScriptToExecuteOnDocumentCreated: {e}"))
     })?;
 
-    rx.recv()
-        .map_err(|e| BrowserError::JavaScriptError(format!("recv init script result: {e}")))?;
+    recv_with_pump(&rx)?;
 
     tracing::debug!("init script added");
     Ok(())
@@ -220,8 +237,9 @@ pub fn is_webview_focused(controller: &ICoreWebView2Controller) -> Result<bool, 
 
 /// Wait until `condition` is satisfied or `timeout_ms` milliseconds elapse.
 ///
-/// Polls every 100 ms using `std::thread::sleep` (call from a blocking
-/// context — e.g., inside `tokio::task::spawn_blocking`).
+/// Polls every 100 ms using `std::thread::sleep`. **Must** be called from a
+/// blocking context (e.g. `tokio::task::spawn_blocking`) — never from an
+/// async task, as it would block the tokio runtime.
 pub fn wait_for(
     webview: &ICoreWebView2,
     condition: &WaitCondition,
@@ -677,11 +695,12 @@ pub fn read_console(webview: &ICoreWebView2) -> Result<serde_json::Value, Browse
         .map_err(|e| BrowserError::JavaScriptError(format!("read_console JSON: {e}")))
 }
 
-/// Read captured window errors. Returns a JSON array.
+/// Read and clear captured window errors. Returns a JSON array.
 pub fn read_errors(webview: &ICoreWebView2) -> Result<serde_json::Value, BrowserError> {
     let js = r#"
 (function(){
   var errs=window.__wmux_errors||[];
+  window.__wmux_errors=[];
   return JSON.stringify(errs);
 })()
 "#;

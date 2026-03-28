@@ -16,7 +16,6 @@ const MAX_DOWNLOAD_SIZE: u64 = 200 * 1024 * 1024;
 /// Allowed HTTPS hosts for update downloads.
 const ALLOWED_DOWNLOAD_HOSTS: &[&str] = &["github.com", "objects.githubusercontent.com"];
 
-#[allow(dead_code)] // Not yet wired into the application loop.
 pub struct UpdateChecker {
     current_version: Version,
     update_dir: PathBuf,
@@ -25,7 +24,7 @@ pub struct UpdateChecker {
     client: reqwest::Client,
 }
 
-#[allow(dead_code)] // Consumed by UpdateChecker which is not yet wired.
+#[expect(dead_code, reason = "consumed by UpdateChecker which is not yet wired")]
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
     pub version: Version,
@@ -50,7 +49,7 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
-#[allow(dead_code)] // Not yet wired into the application loop.
+#[expect(dead_code, reason = "not yet wired into the application loop")]
 impl UpdateChecker {
     /// Create a new update checker.
     ///

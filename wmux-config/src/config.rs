@@ -133,7 +133,14 @@ const MIN_SIDEBAR_WIDTH: u16 = 180;
 fn apply_values(config: &mut Config, values: &[(String, String)]) {
     for (key, value) in values {
         match key.as_str() {
-            "font-family" => config.font_family = value.clone(),
+            "font-family" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    tracing::warn!("font-family is empty, keeping default");
+                } else {
+                    config.font_family = trimmed.to_string();
+                }
+            }
             "font-size" => match value.parse::<f32>() {
                 Ok(v) if v.is_finite() && (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&v) => {
                     config.font_size = v;

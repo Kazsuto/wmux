@@ -58,6 +58,10 @@ pub(crate) struct TermState {
     pub event_tx: Option<tokio::sync::mpsc::Sender<TerminalEvent>>,
     /// Active hyperlink set by OSC 8 (applied to subsequently printed cells).
     pub current_hyperlink: Option<Arc<Hyperlink>>,
+    /// Theme foreground color (for OSC 10 query responses).
+    pub theme_fg: (u8, u8, u8),
+    /// Theme background color (for OSC 11 query responses).
+    pub theme_bg: (u8, u8, u8),
 }
 
 /// Terminal emulator state machine.
@@ -108,8 +112,16 @@ impl Terminal {
                 alt_screen: None,
                 event_tx: None,
                 current_hyperlink: None,
+                theme_fg: (0xe2, 0xe2, 0xe2),
+                theme_bg: (0x13, 0x13, 0x13),
             },
         }
+    }
+
+    /// Set the theme foreground/background colors for OSC 10/11 query responses.
+    pub fn set_theme_colors(&mut self, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
+        self.state.theme_fg = fg;
+        self.state.theme_bg = bg;
     }
 
     /// Set the event channel sender for terminal events (OSC-sourced).

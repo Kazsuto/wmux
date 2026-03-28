@@ -421,7 +421,7 @@ impl CommandPalette {
 
     /// Get the layout rect for the palette (for hit testing).
     #[must_use]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in tests, not yet in production hit-testing.
     pub(crate) fn layout_rect(
         &self,
         surface_width: f32,
@@ -442,7 +442,7 @@ impl CommandPalette {
 
     /// Check if a screen position is inside the palette.
     #[must_use]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in tests, not yet in production hit-testing.
     pub(crate) fn contains(&self, x: f32, y: f32, surface_width: f32, surface_height: f32) -> bool {
         if !self.open {
             return false;

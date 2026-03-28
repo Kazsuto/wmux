@@ -503,6 +503,29 @@ impl<'a> VteHandler<'a> {
     /// OSC 7 — current working directory.
     ///
     /// Format: `\x1b]7;file://host/path\x07`
+    /// OSC 10/11 — foreground/background color query.
+    ///
+    /// When param[1] is "?" the terminal responds with the current color
+    /// in xterm format: `\x1b]N;rgb:RRRR/GGGG/BBBB\x1b\\`
+    fn osc_color_query(&mut self, params: &[&[u8]], is_foreground: bool) {
+        let Some(query) = Self::utf8_param(params, 1) else {
+            return;
+        };
+        if query != "?" {
+            return; // Setting colors is not supported — only queries.
+        }
+        let (r, g, b) = if is_foreground {
+            self.state.theme_fg
+        } else {
+            self.state.theme_bg
+        };
+        // xterm reports 16-bit color channels: duplicate the 8-bit value (e.g. 0xe2 → 0xe2e2).
+        let osc_num = if is_foreground { 10 } else { 11 };
+        let response =
+            format!("\x1b]{osc_num};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x1b\\");
+        self.emit_event(TerminalEvent::PtyWrite(response.into_bytes()));
+    }
+
     fn osc_cwd(&mut self, params: &[&[u8]]) {
         let Some(uri_str) = Self::utf8_param(params, 1) else {
             return;
@@ -856,6 +879,19 @@ impl vte::Perform for VteHandler<'_> {
             // Scroll region (DECSTBM).
             'r' => self.csi_set_scroll_region(params),
 
+            // ECH — Erase Character: erase N chars at cursor without moving it.
+            'X' => {
+                let n = Self::param(params, 0, 1);
+                let cols = self.state.grid.cols();
+                let cursor_row = self.state.grid.cursor().row as u16;
+                let cursor_col = self.state.grid.cursor().col as u16;
+                let end = cursor_col.saturating_add(n).min(cols);
+                let blank = self.erase_cell();
+                self.state
+                    .grid
+                    .fill_cells(cursor_col, end, cursor_row, &blank);
+            }
+
             _ => {}
         }
     }
@@ -924,6 +960,10 @@ impl vte::Perform for VteHandler<'_> {
             7 => self.osc_cwd(params),
             8 => self.osc_hyperlink(params),
             9 => self.osc_notification_iterm(params),
+            // OSC 10: query/set foreground color.
+            10 => self.osc_color_query(params, true),
+            // OSC 11: query/set background color.
+            11 => self.osc_color_query(params, false),
             99 => self.osc_notification_kitty(params),
             133 => self.osc_prompt_mark(params),
             777 => self.osc_notification_rxvt(params),
