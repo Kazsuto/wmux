@@ -2,6 +2,8 @@
 
 ## 2026-03-28
 
+REFACTOR: Split automation.rs into 4 sub-modules (navigation, dom, inspect) for wmux-browser
+REFACTOR: Split panel.rs into 4 sub-modules (attach, layout, delegation) for wmux-browser
 REFACTOR: Remove stale #[allow(dead_code)] on UpdateChecker/UpdateInfo, add justification comments to command palette hit-test methods, pre-allocate command palette rows Vec
 REVERT: Remove broken WebView2 environment preload — fire-and-forget COM creates the environment on wrong thread (RPC_E_WRONG_THREAD), restore synchronous lazy creation at first browser panel use
 FEATURE: Embed Symbols Nerd Font Mono for automatic powerline/devicon glyph fallback — Nerd Font symbols render with any primary font
