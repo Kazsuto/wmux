@@ -105,18 +105,22 @@ pub(crate) struct UiState<'window> {
     /// Actions for the currently visible palette results (set during render, read by Enter handler).
     pub(crate) palette_actions: Vec<crate::command_palette::PaletteAction>,
     /// Last query used for palette search — dirty tracking to skip re-search when unchanged.
-    pub(crate) palette_last_query: String,
+    /// `None` means the palette has never rendered (guarantees dirty=true on first open).
+    pub(crate) palette_last_query: Option<String>,
     /// Last filter used for palette search — dirty tracking.
-    pub(crate) palette_last_filter: crate::command_palette::PaletteFilter,
+    /// `None` means the palette has never rendered (guarantees dirty=true on first open).
+    pub(crate) palette_last_filter: Option<crate::command_palette::PaletteFilter>,
     /// Last `scroll_offset` used when populating the visible buffer window.
     /// When the user scrolls, the slot→row mapping changes and we must
     /// re-fill `palette_result_buffers[0..visible]` from the new slice.
-    pub(crate) palette_last_scroll: usize,
+    /// `None` means the palette has never rendered.
+    pub(crate) palette_last_scroll: Option<usize>,
     /// Last `selected` observed by the render loop. Used to decide whether
     /// to snap `scroll_offset` back onto the selection this frame: on a
     /// selection change we follow; on a pure wheel scroll we leave the
     /// viewport where the user put it.
-    pub(crate) palette_last_selected: usize,
+    /// `None` means the palette has never rendered.
+    pub(crate) palette_last_selected: Option<usize>,
     /// Full row list backing the visible window. Stored separately from
     /// `palette_actions` so the renderer can rebuild slot buffers on scroll
     /// changes without re-running the search.
@@ -282,6 +286,10 @@ pub(crate) struct UiState<'window> {
     // Reusable allocations (avoid per-frame heap allocation)
     /// Reusable set for tracking live browser surface IDs during render.
     pub(crate) live_browser_sids: HashSet<SurfaceId>,
+    /// Scratch map for per-pane render data — cleared and reused each frame (C5).
+    pub(crate) pane_render_data_scratch: HashMap<PaneId, wmux_core::PaneRenderData>,
+    /// Scratch set for live pane IDs — cleared and reused each frame (C5).
+    pub(crate) live_pane_ids_scratch: HashSet<PaneId>,
 }
 
 impl UiState<'_> {

@@ -1,6 +1,4 @@
-use std::collections::{HashMap, HashSet};
-
-use wmux_core::{PaneId, PaneRenderData};
+use wmux_core::PaneId;
 use wmux_render::TerminalRenderer;
 
 use crate::{
@@ -197,11 +195,15 @@ impl UiState<'_> {
         }
 
         // Collect render data for all panes first (surface info needed for viewports).
-        let mut render_data_map: HashMap<PaneId, PaneRenderData> =
-            HashMap::with_capacity(layout.len());
+        // Snapshot Copy fields so the closure below can mutate the scratch map
+        // without triggering a double borrow of self.
+        let focused_pane = self.focused_pane;
+        let scale_factor = self.scale_factor;
+
+        self.pane_render_data_scratch.clear();
         for (pane_id, _) in &layout {
             if let Some(data) = rt.block_on(app_state.get_render_data(*pane_id)) {
-                render_data_map.insert(*pane_id, data);
+                self.pane_render_data_scratch.insert(*pane_id, data);
             }
         }
 
@@ -209,19 +211,19 @@ impl UiState<'_> {
         let viewports: Vec<wmux_render::PaneViewport> = layout
             .iter()
             .map(|(id, rect)| {
-                let (tab_count, tab_titles, surface_ids, surface_kinds, active_tab) =
-                    render_data_map
-                        .get_mut(id)
-                        .map(|d| {
-                            (
-                                d.surface_count,
-                                std::mem::take(&mut d.surface_titles),
-                                std::mem::take(&mut d.surface_ids),
-                                std::mem::take(&mut d.surface_kinds),
-                                d.active_surface,
-                            )
-                        })
-                        .unwrap_or((1, vec![], vec![], vec![], 0));
+                let (tab_count, tab_titles, surface_ids, surface_kinds, active_tab) = self
+                    .pane_render_data_scratch
+                    .get_mut(id)
+                    .map(|d| {
+                        (
+                            d.surface_count,
+                            std::mem::take(&mut d.surface_titles),
+                            std::mem::take(&mut d.surface_ids),
+                            std::mem::take(&mut d.surface_kinds),
+                            d.active_surface,
+                        )
+                    })
+                    .unwrap_or((1, vec![], vec![], vec![], 0));
                 let surface_types = surface_kinds
                     .iter()
                     .map(|k| match k {
@@ -240,7 +242,7 @@ impl UiState<'_> {
                 wmux_render::PaneViewport {
                     pane_id: *id,
                     rect: *rect,
-                    focused: *id == self.focused_pane,
+                    focused: *id == focused_pane,
                     tab_count,
                     tab_titles,
                     surface_ids,
@@ -248,7 +250,7 @@ impl UiState<'_> {
                     zoomed: false,
                     surface_types,
                     unsaved: vec![false; tab_count],
-                    scale: self.scale_factor,
+                    scale: scale_factor,
                 }
             })
             .collect();
@@ -364,7 +366,11 @@ impl UiState<'_> {
         }
 
         // Collect live pane IDs once — used to prune stale tab title buffers and renderers.
-        let live_ids: HashSet<PaneId> = layout.iter().map(|(id, _)| *id).collect();
+        // Take the scratch set out of self so other self borrows can proceed freely (C5).
+        self.live_pane_ids_scratch.clear();
+        self.live_pane_ids_scratch
+            .extend(layout.iter().map(|(id, _)| *id));
+        let live_ids = std::mem::take(&mut self.live_pane_ids_scratch);
 
         // Update tab title text buffers for panes with multiple surfaces.
         {
@@ -453,6 +459,12 @@ impl UiState<'_> {
         }
 
         // Cache viewports for mouse hit-testing.
+        // C6 tradeoff: a slim PaneHitTest struct (pane_id + rect only) would avoid
+        // cloning the Vec<String>/Vec<SurfaceId>/Vec<bool> fields, but last_viewports
+        // has 10+ callsites in event_loop.rs that need the full PaneViewport data
+        // (tab bar hit-testing, browser panel positioning, drag-and-drop, etc.).
+        // Migrating all callsites is high-risk; clone_from at least reuses the
+        // Vec allocation across frames instead of allocating a fresh Vec every frame.
         self.last_viewports.clone_from(&viewports);
 
         // Validate tab_edit against current viewports (surface may have been closed via IPC).
@@ -529,6 +541,8 @@ impl UiState<'_> {
 
         // Remove renderers for panes that no longer exist in the layout.
         self.renderers.retain(|id, _| live_ids.contains(id));
+        // Return the scratch set to self to preserve its allocation for the next frame (C5).
+        self.live_pane_ids_scratch = live_ids;
 
         // Render address bars and position/show/hide browser panels.
         if let Some(ref mut mgr) = self.browser_manager {
@@ -700,7 +714,7 @@ impl UiState<'_> {
                 // Still consume render data to update focused pane metadata,
                 // but don't render any wgpu content (no background, no text,
                 // no cursor) — the WebView2 child HWND occupies this area.
-                if let Some(data) = render_data_map.remove(pane_id) {
+                if let Some(data) = self.pane_render_data_scratch.remove(pane_id) {
                     if *pane_id == self.focused_pane {
                         self.process_exited = data.process_exited;
                         self.terminal_modes = data.modes;
@@ -768,7 +782,7 @@ impl UiState<'_> {
             }
 
             // Use pre-collected render data for this pane.
-            if let Some(data) = render_data_map.remove(pane_id) {
+            if let Some(data) = self.pane_render_data_scratch.remove(pane_id) {
                 if *pane_id == self.focused_pane {
                     self.process_exited = data.process_exited;
                     self.terminal_modes = data.modes;
@@ -924,10 +938,10 @@ impl UiState<'_> {
 
                 // Update search text buffers for glyphon rendering (must happen
                 // before cursor position query and before text area collection).
-                let query_display: String = if self.search.query.is_empty() {
-                    "Search\u{2026}".to_owned()
+                let query_display: &str = if self.search.query.is_empty() {
+                    "Search\u{2026}"
                 } else {
-                    self.search.query.clone()
+                    &self.search.query
                 };
                 let count_display = self.search.match_count_display();
 
@@ -941,7 +955,7 @@ impl UiState<'_> {
                 );
                 self.search_query_buffer.set_text(
                     self.glyphon.font_system(),
-                    &query_display,
+                    query_display,
                     &ui_attrs,
                     glyphon::Shaping::Advanced,
                     None,
@@ -1276,12 +1290,16 @@ impl UiState<'_> {
         // Step 2: Shape text buffers for visible items.
         // Step 3: Render background/item quads.
         // Text areas are collected later in the text phase.
+        //
+        // notif_refs is declared at this scope so the text-area phase (C7: ~2900 lines
+        // below) can reuse the same borrow instead of collecting a second Vec.
         if self.notification_panel.open {
             self.notification_cache = rt.block_on(app_state.list_notifications(50));
-
-            let notif_refs: Vec<&wmux_core::Notification> =
-                self.notification_cache.iter().collect();
-
+        } else if !self.notification_cache.is_empty() {
+            self.notification_cache.clear();
+        }
+        let notif_refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();
+        if self.notification_panel.open {
             // Always reshape text buffers — timestamps are time-dependent ("just now" → "1 min ago").
             {
                 let text_max_w = crate::notification_panel::PANEL_WIDTH
@@ -1389,9 +1407,6 @@ impl UiState<'_> {
                 surface_height as f32,
                 &self.ui_chrome,
             );
-        } else if !self.notification_cache.is_empty() {
-            // Panel closed — clear cache.
-            self.notification_cache.clear();
         }
 
         // Command palette overlay (fullscreen dim + palette chrome + text buffers).
@@ -1406,13 +1421,21 @@ impl UiState<'_> {
                 INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS, RESULT_HEIGHT, SHORTCUT_COL_WIDTH,
             };
 
+            /// Hard cap on the total number of rows stored in the palette cache.
+            /// Prevents unbounded growth when there are hundreds of workspaces
+            /// or surfaces — keeps `palette_actions`, `palette_row_sections`, and
+            /// `palette_row_icons` in sync at the same capped length.
+            const PALETTE_MAX_ROWS: usize = 500;
+
             if self.command_palette.open {
                 let sw = surface_width as f32;
                 let sh = surface_height as f32;
 
                 // Dirty check: skip expensive search + buffer updates when unchanged.
-                let palette_dirty = self.palette_last_query != self.command_palette.query
-                    || self.palette_last_filter != self.command_palette.filter;
+                // Uses Option sentinels so the very first open is always dirty (C1).
+                let palette_dirty = self.palette_last_query.as_deref()
+                    != Some(self.command_palette.query.as_str())
+                    || self.palette_last_filter != Some(self.command_palette.filter);
 
                 // `input_w` is needed by both the search rebuild (inside the
                 // dirty branch) and the viewport repaint (outside it, when
@@ -1421,16 +1444,16 @@ impl UiState<'_> {
                 let input_w = ly_tmp.input_w;
 
                 if palette_dirty {
-                    self.palette_last_query
-                        .clone_from(&self.command_palette.query);
-                    self.palette_last_filter = self.command_palette.filter;
+                    self.palette_last_query = Some(self.command_palette.query.clone());
+                    self.palette_last_filter = Some(self.command_palette.filter);
 
                     let query = &self.command_palette.query;
                     let filter = self.command_palette.filter;
                     let query_lower = self.command_palette.query.to_lowercase();
 
                     // --- Step 1: Build result rows + actions based on filter ---
-                    let mut rows: Vec<PaletteRow> = Vec::with_capacity(MAX_VISIBLE_RESULTS);
+                    let mut rows: Vec<PaletteRow> =
+                        Vec::with_capacity(PALETTE_MAX_ROWS.min(MAX_VISIBLE_RESULTS * 4));
 
                     let push_commands = |rows: &mut Vec<PaletteRow>, with_section: bool| {
                         let results = self.command_registry.search(query);
@@ -1444,8 +1467,10 @@ impl UiState<'_> {
                         // WORKSPACE, TABS, EDIT, VIEW, SEARCH, OTHER).
                         let use_categories = query.is_empty();
                         if with_section && !use_categories {
-                            let label =
-                                format!("COMMANDS \u{2014} MATCHING \u{201C}{query}\u{201D}");
+                            let label = format!(
+                                "{} \u{2014} \u{201C}{query}\u{201D}",
+                                self.locale.t("palette.section_commands")
+                            );
                             rows.push(PaletteRow {
                                 name: String::new(),
                                 desc: String::new(),
@@ -1496,7 +1521,9 @@ impl UiState<'_> {
                                 desc: String::new(),
                                 shortcut: String::new(),
                                 action: PaletteAction::Command(String::new()),
-                                section: Some("WORKSPACES".to_string()),
+                                section: Some(
+                                    self.locale.t("palette.section_workspaces").to_string(),
+                                ),
                             });
                         }
                         for (i, ws) in matches {
@@ -1510,7 +1537,11 @@ impl UiState<'_> {
                             if let Some(ref branch) = ws.git_branch {
                                 meta_parts.push(branch.clone());
                             }
-                            meta_parts.push(format!("{} panes", ws.pane_count));
+                            meta_parts.push(
+                                self.locale
+                                    .t("palette.panes_suffix")
+                                    .replace("{n}", &ws.pane_count.to_string()),
+                            );
                             if let Some(ref cwd) = ws.cwd {
                                 meta_parts.push(cwd.clone());
                             }
@@ -1529,7 +1560,9 @@ impl UiState<'_> {
                         for vp in &viewports {
                             for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
                                 let display = if title.is_empty() {
-                                    format!("Surface {}", tab_idx + 1)
+                                    self.locale
+                                        .t("palette.surface_fallback")
+                                        .replace("{n}", &(tab_idx + 1).to_string())
                                 } else {
                                     title.clone()
                                 };
@@ -1548,7 +1581,9 @@ impl UiState<'_> {
                                 desc: String::new(),
                                 shortcut: String::new(),
                                 action: PaletteAction::Command(String::new()),
-                                section: Some("SURFACES".to_string()),
+                                section: Some(
+                                    self.locale.t("palette.section_surfaces").to_string(),
+                                ),
                             });
                         }
                         for (pane_id, tab_idx, display) in matched {
@@ -1572,6 +1607,10 @@ impl UiState<'_> {
                             push_surfaces(&mut rows, true);
                         }
                     }
+
+                    // Cap total rows to prevent unbounded growth (B2).
+                    // Truncate before populating parallel vecs so their lengths stay in sync.
+                    rows.truncate(PALETTE_MAX_ROWS);
 
                     // Store the full row set — navigation uses `result_count`
                     // to wrap, `scroll_offset` defines which rows render in the
@@ -1643,9 +1682,8 @@ impl UiState<'_> {
                     }
 
                     // Update text buffers (only when dirty).
-                    // TODO(i18n): palette.search_placeholder
-                    let query_display = if self.command_palette.query.is_empty() {
-                        "Type a command\u{2026}"
+                    let query_display: &str = if self.command_palette.query.is_empty() {
+                        self.locale.t("palette.search_placeholder")
                     } else {
                         &self.command_palette.query
                     };
@@ -1681,10 +1719,10 @@ impl UiState<'_> {
                 // Only follow the selection with scroll when it actually
                 // moved — otherwise the mouse-wheel-set offset would be
                 // snapped back every frame.
-                if self.command_palette.selected != self.palette_last_selected {
+                if Some(self.command_palette.selected) != self.palette_last_selected {
                     self.command_palette
                         .scroll_to_selected(ly_scroll.visible_results, total_rows);
-                    self.palette_last_selected = self.command_palette.selected;
+                    self.palette_last_selected = Some(self.command_palette.selected);
                 }
                 // Always clamp (e.g. after a resize the max_offset can shrink).
                 let max_offset = total_rows.saturating_sub(ly_scroll.visible_results);
@@ -1692,9 +1730,9 @@ impl UiState<'_> {
                     self.command_palette.scroll_offset = max_offset;
                 }
                 let offset = self.command_palette.scroll_offset;
-                let window_dirty = palette_dirty || self.palette_last_scroll != offset;
+                let window_dirty = palette_dirty || self.palette_last_scroll != Some(offset);
                 if window_dirty {
-                    self.palette_last_scroll = offset;
+                    self.palette_last_scroll = Some(offset);
                     let slot_count = ly_scroll
                         .visible_results
                         .min(total_rows.saturating_sub(offset));
@@ -1889,24 +1927,29 @@ impl UiState<'_> {
         // Collect text areas from ALL pane renderers + sidebar + tabs, then prepare glyphon once.
         let surface_w = self.gpu.width();
         let surface_h = self.gpu.height();
-        let mut all_text_areas: Vec<_> = layout
-            .iter()
-            .filter_map(|(pane_id, pane_rect)| {
-                let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
-                let terminal_rect = vp
-                    .map(wmux_render::PaneRenderer::terminal_viewport)
-                    .unwrap_or(*pane_rect);
-                self.renderers.get(pane_id).map(|r| {
-                    r.text_areas(
-                        (terminal_rect.x, terminal_rect.y),
-                        terminal_rect,
-                        surface_w,
-                        surface_h,
-                    )
+        // Pre-allocate with a rough estimate: ~30 rows per pane + 128 for UI chrome
+        // (sidebar, tab bars, overlays). Avoids repeated reallocations as we extend (S4).
+        let estimated_areas = layout.len().saturating_mul(30).saturating_add(128);
+        let mut all_text_areas: Vec<glyphon::TextArea<'_>> = Vec::with_capacity(estimated_areas);
+        all_text_areas.extend(
+            layout
+                .iter()
+                .filter_map(|(pane_id, pane_rect)| {
+                    let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
+                    let terminal_rect = vp
+                        .map(wmux_render::PaneRenderer::terminal_viewport)
+                        .unwrap_or(*pane_rect);
+                    self.renderers.get(pane_id).map(|r| {
+                        r.text_areas(
+                            (terminal_rect.x, terminal_rect.y),
+                            terminal_rect,
+                            surface_w,
+                            surface_h,
+                        )
+                    })
                 })
-            })
-            .flatten()
-            .collect();
+                .flatten(),
+        );
 
         // Append tab title text areas + close button × glyphs.
         // Also update the tab edit buffer if editing.
@@ -2845,9 +2888,9 @@ impl UiState<'_> {
             timestamps: &self.notif_time_buffers,
         };
         if self.notification_panel.open {
-            let refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();
+            // Reuse notif_refs collected at the start of the notification block (C7).
             all_text_areas.extend(self.notification_panel.text_areas(
-                &refs,
+                &notif_refs,
                 surface_w as f32,
                 surface_h as f32,
                 self.scale_factor,

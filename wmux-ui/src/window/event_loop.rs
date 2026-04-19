@@ -392,17 +392,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         let palette_footer_metrics = glyphon::Metrics::new(10.5, 14.0);
         let palette_footer_attrs =
             glyphon::Attrs::new().family(glyphon::Family::Name("JetBrains Mono"));
-        let mut palette_footer_hints_buffer =
+        // Text is filled below after `locale` is created so we can use locale.t().
+        let palette_footer_hints_buffer =
             glyphon::Buffer::new(glyphon.font_system(), palette_footer_metrics);
-        palette_footer_hints_buffer.set_size(glyphon.font_system(), Some(500.0), Some(24.0));
-        palette_footer_hints_buffer.set_text(
-            glyphon.font_system(),
-            "\u{2191}\u{2193} navigate    \u{21b5} select    Tab filter    ESC close",
-            &palette_footer_attrs,
-            glyphon::Shaping::Advanced,
-            None,
-        );
-        palette_footer_hints_buffer.shape_until_scroll(glyphon.font_system(), false);
         let palette_brand_attrs = glyphon::Attrs::new()
             .family(glyphon::Family::Name("Segoe UI"))
             .weight(glyphon::Weight(600));
@@ -438,6 +430,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
         // Locale for i18n string lookups.
         let locale = wmux_config::Locale::new(&config.language);
+
+        // Finish footer hints buffer now that locale is available.
+        let mut palette_footer_hints_buffer = palette_footer_hints_buffer;
+        palette_footer_hints_buffer.set_size(glyphon.font_system(), Some(500.0), Some(24.0));
+        palette_footer_hints_buffer.set_text(
+            glyphon.font_system(),
+            locale.t("palette.footer_hints"),
+            &palette_footer_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        palette_footer_hints_buffer.shape_until_scroll(glyphon.font_system(), false);
 
         // Initialize custom title bar — buffer width in logical pixels for Align::Center.
         let logical_width = gpu.width() as f32 / initial_scale_factor;
@@ -655,10 +659,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             palette_row_icons: Vec::new(),
             palette_row_sections: Vec::new(),
             palette_actions: Vec::new(),
-            palette_last_query: String::new(),
-            palette_last_filter: crate::command_palette::PaletteFilter::All,
-            palette_last_scroll: 0,
-            palette_last_selected: 0,
+            palette_last_query: None,
+            palette_last_filter: None,
+            palette_last_scroll: None,
+            palette_last_selected: None,
             palette_rows_cache: Vec::new(),
             search: crate::search::SearchState::new(),
             last_search_rows: Vec::new(),
@@ -736,6 +740,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             terminal_font_size: config.font_size,
             locale,
             live_browser_sids: std::collections::HashSet::new(),
+            pane_render_data_scratch: std::collections::HashMap::new(),
+            live_pane_ids_scratch: std::collections::HashSet::new(),
         });
 
         // Override sidebar width and collapsed state from saved session.
@@ -2596,7 +2602,7 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             // next frame by pre-advancing `palette_last_selected`
                             // to the current selection — the render loop only
                             // snaps when the two differ.
-                            state.palette_last_selected = state.command_palette.selected;
+                            state.palette_last_selected = Some(state.command_palette.selected);
                             state.window.request_redraw();
                         }
                         return;

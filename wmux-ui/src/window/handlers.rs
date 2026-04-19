@@ -585,6 +585,11 @@ pub(super) fn handle_palette_key(
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
             state.command_palette.close();
+            // Reset sentinels so the next open is always dirty (C1).
+            state.palette_last_query = None;
+            state.palette_last_filter = None;
+            state.palette_last_scroll = None;
+            state.palette_last_selected = None;
         }
         Key::Named(NamedKey::Backspace) => {
             state.command_palette.query.pop();
@@ -629,6 +634,11 @@ pub(super) fn handle_palette_key(
             if let Some(idx) = state.command_palette.selected_index() {
                 if let Some(action) = state.palette_actions.get(idx).cloned() {
                     state.command_palette.close();
+                    // Reset sentinels so the next open is always dirty (C1).
+                    state.palette_last_query = None;
+                    state.palette_last_filter = None;
+                    state.palette_last_scroll = None;
+                    state.palette_last_selected = None;
                     match action {
                         crate::command_palette::PaletteAction::Command(ref id) => {
                             if let Some(sa) = crate::command_palette::command_id_to_action(id) {
@@ -654,9 +664,17 @@ pub(super) fn handle_palette_key(
                     }
                 } else {
                     state.command_palette.close();
+                    state.palette_last_query = None;
+                    state.palette_last_filter = None;
+                    state.palette_last_scroll = None;
+                    state.palette_last_selected = None;
                 }
             } else {
                 state.command_palette.close();
+                state.palette_last_query = None;
+                state.palette_last_filter = None;
+                state.palette_last_scroll = None;
+                state.palette_last_selected = None;
             }
         }
         Key::Named(NamedKey::Space) => {
@@ -999,6 +1017,11 @@ pub(super) fn handle_shortcut(
         ShortcutAction::CommandPalette => {
             if state.command_palette.open {
                 state.command_palette.close();
+                // Reset sentinels so the next open is always dirty (C1).
+                state.palette_last_query = None;
+                state.palette_last_filter = None;
+                state.palette_last_scroll = None;
+                state.palette_last_selected = None;
             } else {
                 // Close other overlays — only one at a time.
                 if state.search.active {
