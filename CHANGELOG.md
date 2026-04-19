@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+FEATURE: Inherit the calling process's current directory for initial PTY spawns in `wmux-pty` — `SpawnConfig { working_directory: None }` now resolves to `std::env::current_dir()` when it is a user path, falling back to `$HOME` then `"."`. Windows system roots (`C:\Windows\System32`, `SysWOW64`, `C:\Windows`, `C:\`) are filtered so Start Menu/taskbar launches still land in HOME. Unblocks `cargo run -p wmux-cli -- system ping` from a pane of a wmux-app started in a project directory
 REFACTOR: Bump vte from 0.13 to 0.15 and pass full byte slice to `Parser::advance` in `Terminal::process` — eliminates per-byte loop and handler reconstruction, picks up SGR perf fix (0.13.1) and grapheme boundary crash fix (0.14.1)
 CHORE: Bump rand from 0.8 to 0.9 — fixes RUSTSEC-2026-0097 (unsound with custom logger), renames `thread_rng()` to `rng()` in wmux-ipc auth module
 CHORE: Bump toml from 0.8 to 1.1 — major version jump, API remains backward compatible for wmux-config usage

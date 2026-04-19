@@ -21,7 +21,9 @@ pub struct SpawnConfig {
     pub args: Vec<String>,
     /// Extra environment variables to inject into the spawned process.
     pub env: HashMap<String, String>,
-    /// Working directory. Falls back to user home directory, then `"."`.
+    /// Working directory. When `None`, the resolver tries the calling
+    /// process's current directory (filtered to skip Windows system paths
+    /// like `C:\Windows\System32`), then the user home directory, then `"."`.
     pub working_directory: Option<PathBuf>,
     /// Number of terminal columns.
     pub cols: u16,
@@ -208,9 +210,15 @@ impl PtyManager {
             }
         };
 
-        // Resolve working directory
+        // Resolve working directory:
+        //   1. explicit config.working_directory (e.g. session restore)
+        //   2. the calling process's current directory — lets shells launched
+        //      from `wmux-app` inherit the directory the user was in
+        //   3. user home directory
+        //   4. "." as a last-ditch fallback
         let cwd = config
             .working_directory
+            .or_else(inherited_cwd)
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
         let cwd = if cwd.is_dir() {
@@ -273,6 +281,32 @@ impl Default for PtyManager {
     }
 }
 
+/// Returns the calling process's current directory when it is a meaningful
+/// user path, `None` otherwise.
+///
+/// Windows launches `wmux.exe` from `C:\Windows\System32` when it is started
+/// from the Start Menu, the taskbar, or File Explorer. Spawning shells there
+/// surprises users who expect HOME, so those roots are filtered out.
+fn inherited_cwd() -> Option<PathBuf> {
+    let dir = std::env::current_dir().ok()?;
+    if is_system_path(&dir) {
+        None
+    } else {
+        Some(dir)
+    }
+}
+
+/// Returns true when `p` points at a Windows system root that should never be
+/// used as a shell's initial working directory.
+fn is_system_path(p: &Path) -> bool {
+    let normalized = p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let trimmed = normalized.trim_end_matches('\\');
+    matches!(
+        trimmed,
+        "c:\\windows\\system32" | "c:\\windows\\syswow64" | "c:\\windows" | "c:" | ""
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +341,27 @@ mod tests {
     }
 
     #[test]
+    fn is_system_path_flags_windows_roots() {
+        assert!(is_system_path(Path::new(r"C:\Windows\System32")));
+        assert!(is_system_path(Path::new(r"c:\windows\system32")));
+        assert!(is_system_path(Path::new(r"C:\Windows\System32\")));
+        assert!(is_system_path(Path::new(r"C:\Windows\SysWOW64")));
+        assert!(is_system_path(Path::new(r"C:\Windows")));
+        assert!(is_system_path(Path::new("C:/Windows/System32")));
+        assert!(is_system_path(Path::new(r"C:\")));
+    }
+
+    #[test]
+    fn is_system_path_accepts_user_paths() {
+        assert!(!is_system_path(Path::new(
+            r"F:\Workspaces\open-source\wmux"
+        )));
+        assert!(!is_system_path(Path::new(r"C:\Users\someone")));
+        assert!(!is_system_path(Path::new(r"C:\Users\someone\Documents")));
+        assert!(!is_system_path(Path::new(r"D:\projects")));
+    }
+
+    #[test]
     fn spawn_config_defaults() {
         let config = SpawnConfig::default();
         assert!(config.shell.is_none());
@@ -319,7 +374,7 @@ mod tests {
 
     #[test]
     fn pty_manager_default() {
-        let _manager = PtyManager::default();
+        let _manager = PtyManager;
     }
 
     #[test]
@@ -390,8 +445,10 @@ mod tests {
     #[ignore] // Requires real ConPTY
     fn spawn_nonexistent_cwd_falls_back() {
         let manager = PtyManager::new();
-        let mut config = SpawnConfig::default();
-        config.working_directory = Some(PathBuf::from("C:\\nonexistent_dir_12345"));
+        let config = SpawnConfig {
+            working_directory: Some(PathBuf::from("C:\\nonexistent_dir_12345")),
+            ..Default::default()
+        };
 
         // Should not fail — falls back to home dir
         let handle = manager.spawn(config);

@@ -370,7 +370,7 @@ mod tests {
         let s: String = block
             .split(|&c| c == 0)
             .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf16_lossy(s))
+            .map(String::from_utf16_lossy)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(s.contains("WMUX_TEST=hello"));
