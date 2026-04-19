@@ -9,3 +9,6 @@ Cargo.lock
 .env
 .claude/
 docs/stitch/
+docs/output/
+docs/Reviews/
+.obsidian/

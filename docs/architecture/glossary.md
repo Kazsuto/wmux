@@ -28,3 +28,10 @@
 | **wmuxd-remote** | Go daemon running on remote SSH hosts. Manages remote sessions, browser proxy, CLI relay. Reused from cmux (cmuxd-remote) | SSH remote support |
 | **SOCKS5 / HTTP CONNECT** | Proxy protocols used by wmuxd-remote to relay browser traffic from local wmux to remote web servers | SSH browser proxy |
 | **Ring Buffer** | Circular buffer (VecDeque) for terminal scrollback. Fixed capacity, oldest lines evicted when full | wmux-core scrollback |
+| **Codicons** | VS Code icon font, rendered as SVG and converted to glyphon `CustomGlyph` by `wmux-render/src/svg_icons.rs`. Used for titlebar controls, sidebar icons, palette items. Colorized via theme | wmux-render icons, wmux-ui chrome |
+| **Custom Title Bar** | GPU-rendered non-client area implemented in `wmux-ui/src/titlebar.rs`. Uses `WM_NCCALCSIZE` + `WM_NCHITTEST` via `SetWindowSubclass` to draw the whole window frame in wgpu. Min/max/restore/close are Codicons | wmux-ui titlebar |
+| **MetadataStore** | Owner of sidebar state per workspace: keyed statuses, progress entries, log entries. Runs a PID sweep every 30s to clear statuses from dead processes. Also owns notifications | wmux-core metadata_store |
+| **Focus Glow** | Visual cue on the active pane, rendered by `wmux-render/src/pane.rs::render_focus_glow` and called from the main render loop. Accent color driven by theme | wmux-render pane, theme |
+| **Command Registry** | Action catalog consumed by the Command Palette and the shortcut dispatcher. Stores action name, description, localized label, optional shortcut | wmux-core command_registry |
+| **Port Scanner** | Listening port detector polling `netstat`/`ss` equivalents, grouped per workspace. Drives the colored port pills in the sidebar | wmux-core port_scanner |
+| **Git Detector** | `git rev-parse` + `git status` spawner triggered by OSC 7 CWD change. Populates branch name and dirty flag on the workspace metadata | wmux-core git_detector |

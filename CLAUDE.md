@@ -1,31 +1,31 @@
 # wmux — Windows Terminal Multiplexer
 
-Native Windows terminal multiplexer in Rust — GPU-accelerated, split panes, workspaces, integrated browser (WebView2), CLI/IPC for AI agents.
+Native Windows terminal multiplexer in Rust, GPU-accelerated, split panes, workspaces, integrated browser (WebView2), CLI/IPC for AI agents.
 
 @docs/architecture/INDEX.md
 
 ## Commands
 
 ### Development
-- `cargo run -p wmux-app` — Run main application
-- `cargo run -p wmux-cli` — Run CLI client
-- `cargo build --workspace` — Build all crates
+- `cargo run -p wmux-app`, Run main application
+- `cargo run -p wmux-cli`, Run CLI client
+- `cargo build --workspace`, Build all crates
 
 ### Quality (run before every commit)
-- `cargo clippy --workspace -- -W clippy::all` — Lint (zero warnings policy)
-- `cargo fmt --all` — Format code
-- `cargo test --workspace` — Run all unit tests
-- `cargo test --workspace -- --ignored` — Run ignored tests (require GPU/PTY)
+- `cargo clippy --workspace -- -W clippy::all`, Lint (zero warnings policy)
+- `cargo fmt --all`, Format code
+- `cargo test --workspace`, Run all unit tests
+- `cargo test --workspace -- --ignored`, Run ignored tests (require GPU/PTY)
 
 ### Single Crate
-- `cargo test -p wmux-core` — Test one crate
-- `cargo clippy -p wmux-render` — Lint one crate
+- `cargo test -p wmux-core`, Test one crate
+- `cargo clippy -p wmux-render`, Lint one crate
 
 ### Dead Code Detection
-- `cargo machete` — Detect unused dependencies in Cargo.toml (fast, stable)
-- `cargo machete --with-metadata` — Same with compilation-based precision
-- `cargo clippy --workspace -- -W dead_code` — Detect dead code intra-crate
-- `cargo +nightly udeps --workspace --all-targets` — Unused deps via compilation (nightly required)
+- `cargo machete`, Detect unused dependencies in Cargo.toml (fast, stable)
+- `cargo machete --with-metadata`, Same with compilation-based precision
+- `cargo clippy --workspace -- -W dead_code`, Detect dead code intra-crate
+- `cargo +nightly udeps --workspace --all-targets`, Unused deps via compilation (nightly required)
 
 ## Key Documents
 
@@ -38,35 +38,35 @@ Native Windows terminal multiplexer in Rust — GPU-accelerated, split panes, wo
 
 ## Critical Rules (NEVER violate)
 
-Detailed rules in `.claude/rules/` (10 path-scoped files, loaded automatically). Below are the highest-priority constraints that apply everywhere.
+Detailed rules in `.claude/rules/` (16 files, loaded automatically). Below are the highest-priority constraints that apply everywhere.
 
 ### Platform
-- **NEVER** use TCP for IPC — Named Pipes only (`\\.\pipe\wmux-*`)
-- **NEVER** skip Win10 1809+ fallback — Mica/Acrylic are Win11-only, ALWAYS fallback to opaque
-- **NEVER** use MessageBox or balloon tips — WinRT Toast Notification API only
+- **NEVER** use TCP for IPC: Named Pipes only (`\\.\pipe\wmux-*`)
+- **NEVER** skip Win10 1809+ fallback: Mica/Acrylic are Win11-only, ALWAYS fallback to opaque
+- **NEVER** use MessageBox or balloon tips: WinRT Toast Notification API only
 
 ### Rendering
-- **NEVER** use iced/egui for terminal grid — custom wgpu renderer only
-- **NEVER** place WebView2 inside the wgpu surface — separate child HWND always
-- **NEVER** ship a visual feature that requires multiple render layers (quads + text + icons) without implementing ALL layers — a background quad without its text label is a visual artifact, not a feature. Implement complete or don't implement at all.
-- wgpu 28 + glyphon 0.10 have breaking API changes from prior versions — **read `.claude/rules/rendering.md` before touching render code**
+- **NEVER** use iced/egui for terminal grid: custom wgpu renderer only
+- **NEVER** place WebView2 inside the wgpu surface: separate child HWND always
+- **NEVER** ship a visual feature that requires multiple render layers (quads + text + icons) without implementing ALL layers. A background quad without its text label is a visual artifact, not a feature. Implement complete or don't implement at all.
+- wgpu 28 + glyphon 0.10 have breaking API changes from prior versions: **read `.claude/rules/rendering.md` before touching render code**
 
 ### Architecture
-- **NEVER** expose `anyhow::Error` in library crate public APIs — use `thiserror` v2
-- **NEVER** block tokio with `std::thread::sleep` or `std::fs::*` — use async equivalents
-- **NEVER** use unbounded channels — always bounded `mpsc::channel(N)`
-- **NEVER** hardcode user-visible strings — all UI text goes through i18n system
-- **NEVER** use `println!`/`eprintln!` in library crates — `tracing` crate only
+- **NEVER** expose `anyhow::Error` in library crate public APIs: use `thiserror` v2
+- **NEVER** block tokio with `std::thread::sleep` or `std::fs::*`: use async equivalents
+- **NEVER** use unbounded channels: always bounded `mpsc::channel(N)`
+- **NEVER** hardcode user-visible strings: all UI text goes through i18n system
+- **NEVER** use `println!`/`eprintln!` in library crates: `tracing` crate only
 
 ### IPC & Security
 - Method names MUST match cmux: `workspace.list`, `surface.send_text`, etc.
 - JSON-RPC v2 with newline-delimited messages
-- **NEVER** log auth secrets or HMAC tokens — even in debug mode
+- **NEVER** log auth secrets or HMAC tokens, even in debug mode
 
 ### Terminal
-- **NEVER** write a custom VTE parser — use the `vte` crate
-- **NEVER** panic on malformed escape sequences — silently discard
-- Grid cells stored contiguously (`Vec<Cell>`) — NEVER `Vec<Vec<Cell>>`
+- **NEVER** write a custom VTE parser: use the `vte` crate
+- **NEVER** panic on malformed escape sequences: silently discard
+- Grid cells stored contiguously (`Vec<Cell>`). NEVER `Vec<Vec<Cell>>`
 
 ## Conventions
 
@@ -98,7 +98,7 @@ Detailed rules in `.claude/rules/` (10 path-scoped files, loaded automatically).
 1. `cargo clippy --workspace -- -W clippy::all` (zero warnings)
 2. `cargo fmt --all`
 3. `cargo test --workspace`
-4. **Update CHANGELOG.md** (only for application code changes — skip docs/specs/architecture/config-only changes)
+4. **Update CHANGELOG.md** (only for application code changes, skip docs/specs/architecture/config-only changes)
 
 ## Rules Files Reference
 
@@ -107,9 +107,11 @@ Detailed domain rules in `.claude/rules/` (loaded automatically by path scope):
 | File | Scope | When critical |
 |------|-------|---------------|
 | `rust-architecture.md` | `**/*.rs` | Crate boundaries, async, memory, unsafe, logging |
-| `rendering.md` | `wmux-render/`, `wmux-ui/` | **Read before touching render code** — wgpu 28 / glyphon 0.10 API gotchas |
+| `rendering.md` | `wmux-render/`, `wmux-ui/` | **Read before touching render code**, wgpu 28 / glyphon 0.10 API gotchas |
 | `ipc-protocol.md` | `wmux-ipc/`, `wmux-cli/` | JSON-RPC v2 format, security modes, CLI conventions |
 | `windows-platform.md` | `**/*.rs` | Win10/11 compat, Named Pipes, WebView2, ConPTY |
+| `webview2-browser.md` | `wmux-browser/` | COM STA, deadlock prevention, HWND sibling architecture, resize anti-flicker |
+| `icons.md` | `wmux-render/`, `wmux-ui/` | Codicons SVG registry, CustomGlyph rendering, icon colorization via theme |
 | `testing.md` | `**/*.rs` | Testing strategy, clippy zero-warnings policy |
 | `terminal-vte.md` | `wmux-core/` | VTE parsing, grid/scrollback, cursor modes |
 | `notifications.md` | `wmux-core/`, `wmux-ui/` | OSC detection, Toast API, visual indicators |
@@ -118,4 +120,5 @@ Detailed domain rules in `.claude/rules/` (loaded automatically by path scope):
 | `workspace-surface.md` | `wmux-core/` | Surface lifecycle, workspace switching, cleanup ordering |
 | `focus-navigation.md` | `wmux-ui/`, `wmux-core/` | Keyboard layout independence, winit input, Win32 focus |
 | `visual-integrity.md` | `wmux-render/`, `wmux-ui/`, `wmux-config/src/theme.rs` | **Theme pipeline, z-ordering, component wiring, no hardcoded colors** |
+| `rust-skill-routing.md` | *(meta)* | Which Claude Code skill to invoke for a given Rust task |
 | `changelog.md` | *(always active)* | Changelog update after every code change |

@@ -8,7 +8,7 @@ Exhaustive table of dependencies, data flows, and event triggers between compone
 
 ## 13.1 Terminal I/O Relations (Critical Path)
 
-The hot path from keystroke to rendered frame — every millisecond matters here.
+The hot path from keystroke to rendered frame. Every millisecond matters here.
 
 | From | Relation | To | Description |
 |------|----------|----|-------------|
@@ -41,7 +41,7 @@ OSC escape sequences trigger application-level events and UI updates.
 
 ## 13.3 Multiplexer Layout Relations
 
-The PaneTree drives all layout — changing it affects rendering, browser panels, and dividers.
+The PaneTree drives all layout. Changing it affects rendering, browser panels, and dividers.
 
 | From | Relation | To | Description |
 |------|----------|----|-------------|
@@ -68,17 +68,15 @@ The full path from AI agent invocation to state mutation and response.
 | IPC Server | `uses` | Authentication | HMAC-SHA256 or child-process check |
 | IPC Server | `uses` | Router | Method string → Handler dispatch |
 | Router | `uses` | Workspace Handlers | `workspace.*` methods |
-| Router | `uses` | Surface Handlers | `surface.*` methods |
-| Router | `uses` | Input/Read Handlers | `surface.send_text`, `surface.read_text` |
-| Router | `uses` | Sidebar Handlers | `sidebar.*` methods |
-| Router | `uses` | Browser Handlers | `browser.*` methods |
-| Router | `uses` | Notification Handlers | `notification.*` methods |
+| Router | `uses` | Surface Handlers | `surface.*` + input/read methods (split, list, focus, close, send_text, send_key, read_text) |
+| Router | `uses` | Sidebar Handlers | `sidebar.*` + `notification.*` methods (metadata store owns notifications, so they route through sidebar.rs) |
+| Router | `uses` | Browser Handlers | `browser.*` methods (30+ automation methods) |
 | All Handlers | `uses` | AppState Actor | Commands sent via bounded channel |
 | AppState Actor | `exposes-to` | IPC Server | Results returned as JSON-RPC responses |
 
 ## 13.5 Browser Relations
 
-WebView2 runs in a separate process — coordination happens via COM interop and HWND management.
+WebView2 runs in a separate process. Coordination happens via COM interop and HWND management.
 
 | From | Relation | To | Description |
 |------|----------|----|-------------|
@@ -128,7 +126,7 @@ Config is read at startup and consumed by nearly every rendering component.
 
 ## 13.8 Session Persistence Relations
 
-Auto-save and restore cycle — writes every 8 seconds, reads on launch.
+Auto-save and restore cycle. Writes every 8 seconds, reads on launch.
 
 | From | Relation | To | Description |
 |------|----------|----|-------------|
@@ -137,6 +135,7 @@ Auto-save and restore cycle — writes every 8 seconds, reads on launch.
 | App Launch | `uses` | Session JSON | Read and deserialize saved state |
 | Session Restore | `uses` | Workspace Manager | Recreate workspaces with saved names/order |
 | Session Restore | `uses` | PaneTree | Rebuild split layout from saved tree |
+| Session Restore | `uses` | Surface Manager | Recreate surfaces (terminal or browser) per pane |
 | Session Restore | `uses` | PTY Manager | Spawn shells in saved CWDs |
 | Session Restore | `uses` | Browser Manager | Reopen browser panes with saved URLs |
 | Session Restore | `uses` | Scrollback | Restore saved scrollback lines (best-effort) |
@@ -169,7 +168,7 @@ Background check → staged download → user-initiated install on next launch.
 
 ## 13.11 Visual Effects Relations
 
-OS version detection gates visual effects — Win11 gets Mica/Acrylic, Win10 gets opaque fallback.
+OS version detection gates visual effects. Win11 gets Mica/Acrylic, Win10 gets opaque fallback.
 
 | From | Relation | To | Description |
 |------|----------|----|-------------|
@@ -193,6 +192,7 @@ Inter-crate Cargo dependencies (compile-time).
 | wmux-ui | `depends-on` | wmux-pty | PTY spawn and I/O |
 | wmux-ui | `depends-on` | wmux-browser | Browser panel management |
 | wmux-render | `depends-on` | wmux-core | Cell grid data for rendering |
+| wmux-render | `depends-on` | wmux-config | ThemeEngine palette consumed by GPU Context and QuadPipeline |
 | wmux-ipc | `depends-on` | wmux-core | Domain types, AppState actor |
 | wmux-ipc | `depends-on` | wmux-browser | Browser automation handlers |
 | wmux-cli | `depends-on` | wmux-ipc | JSON-RPC protocol types |

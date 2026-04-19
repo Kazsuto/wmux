@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Windows](https://img.shields.io/badge/windows-10%201809+-0078D6?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 
-GPU-accelerated terminal multiplexer for Windows — split panes, workspaces, integrated browser, and IPC for AI agents.
+GPU-accelerated terminal multiplexer for Windows, split panes, workspaces, integrated browser, and IPC for AI agents.
 
 [Quick Start](#quick-start) · [Features](#features) · [Architecture](#architecture) · [CLI](#cli) · [Docs](./docs/)
 
@@ -12,7 +12,7 @@ GPU-accelerated terminal multiplexer for Windows — split panes, workspaces, in
 
 ## About
 
-wmux brings the [cmux](https://github.com/nichochar/cmux) experience to Windows. It's a native terminal multiplexer built in Rust with Direct3D 12 rendering, designed for developers running AI agents (Claude Code, Codex, OpenCode, Gemini CLI) who need split panes, real-time workspace metadata, an integrated browser, and full programmatic control — all in one window.
+wmux brings the [cmux](https://github.com/nichochar/cmux) experience to Windows. It's a native terminal multiplexer built in Rust with Direct3D 12 rendering, designed for developers running AI agents (Claude Code, Codex, OpenCode, Gemini CLI) who need split panes, real-time workspace metadata, an integrated browser, and full programmatic control, all in one window.
 
 AI agents compatible with cmux work with wmux with minimal adaptation (Named Pipes instead of Unix sockets, same JSON-RPC v2 protocol).
 
@@ -25,17 +25,18 @@ AI agents compatible with cmux work with wmux with minimal adaptation (Named Pip
 | **GPU Terminal** | wgpu/Direct3D 12 rendering, VTE parsing, <16ms input-to-display latency, ligatures, emoji, Nerd Fonts |
 | **Split Panes** | Horizontal/vertical splits, draggable dividers, zoom toggle, directional focus navigation |
 | **Workspaces** | Vertical sidebar (expanded + collapsed icon-only mode) with git branch, port badges, agent status, inline rename |
-| **Surfaces** | Tabs within each pane — terminal or browser — with keyboard cycling and shell/browser toggle |
-| **Integrated Browser** | WebView2 (Chromium) panes alongside terminals, scriptable via IPC |
+| **Surfaces** | Tabs within each pane (terminal or browser) with keyboard cycling, shell/browser segmented toggle, right-click context menu |
+| **Custom Title Bar** | GPU-rendered title bar with Codicons chrome buttons (min/max/restore/close), drag/snap via WM_NCHITTEST, DWM shadow preserved |
+| **Integrated Browser** | WebView2 (Chromium) panes alongside terminals, address bar with auto-https + DuckDuckGo search fallback, scriptable via IPC (CLI wrapper partial, 7 of 30+ automation methods surfaced) |
 | **Command Palette** | Ctrl+Shift+P fuzzy-search over commands, workspaces, and surfaces with filter tabs |
 | **CLI & IPC** | 80+ JSON-RPC v2 commands over Named Pipes, HMAC-SHA256 auth, cmux-compatible protocol |
 | **Session Persistence** | Auto-save every 8s, restore layout + scrollback on relaunch |
 | **Terminal Search** | Ctrl+F in-pane search with regex support and match highlighting |
-| **Notifications** | Notification panel (Ctrl+Shift+I) with severity-colored items, sidebar badges, WinRT Toast, OSC detection |
-| **Theme Engine** | Ghostty-compatible config format, bundled themes (Digital Obsidian, Stitch Blue, etc.), full color pipeline |
+| **Notifications** | Notification panel (Ctrl+Shift+I) with severity-colored items, sidebar badges with unread count, WinRT Toast, OSC detection (CLI `notify` commands stub, pending L3_08) |
+| **Theme Engine** | Ghostty-compatible config format, bundled themes (Digital Obsidian, Stitch Blue, etc.), full color pipeline, focus glow halo on active pane |
 | **i18n** | English + French, system locale detection, manual override in config |
-| **Auto-Update** | GitHub Releases update checks |
-| **SSH Remote** | Remote workspace model + CLI commands (Go daemon integration pending) |
+| **Auto-Update** | GitHub Releases update checks with SHA-256 checksum verification, HTTPS allowlist, 200MB download cap |
+| **SSH Remote** | Remote workspace model + CLI commands (stub, pending Go daemon integration) |
 
 ---
 
@@ -98,7 +99,7 @@ wmux browser open --url "http://localhost:3000"
 wmux ssh connect user@host
 ```
 
-Output is human-readable by default. Add `--json` for machine-parseable output — ideal for AI agents.
+Output is human-readable by default. Add `--json` for machine-parseable output, ideal for AI agents.
 
 <details>
 <summary><strong>Full command reference</strong></summary>
@@ -108,10 +109,10 @@ Output is human-readable by default. Add `--json` for machine-parseable output �
 | `system` | `ping`, `capabilities`, `identify` |
 | `workspace` | `list`, `create`, `current`, `select`, `close`, `rename` |
 | `surface` | `split`, `list`, `focus`, `close`, `send-text`, `send-key`, `read-text` |
-| `browser` | `open`, `identify`, `navigate`, `reload`, `devtools` |
-| `sidebar` | `toggle`, `set-text`, `set-badge` |
-| `notify` | `send`, `clear` |
-| `ssh` | `connect`, `disconnect` |
+| `browser` | `open`, `navigate`, `back`, `forward`, `reload`, `url`, `eval` (IPC exposes 30+ automation methods not yet surfaced in the CLI) |
+| `sidebar` | `set-status`, `clear-status`, `list-status`, `set-progress`, `clear-progress`, `log`, `clear-log`, `list-log`, `state` |
+| `notify` | `create`, `list`, `clear` (stubs, pending L3_08 integration) |
+| `ssh` | `connect`, `disconnect` (stub, pending Go daemon) |
 
 </details>
 
@@ -137,7 +138,7 @@ graph TD
 | Crate | Responsibility |
 |-------|---------------|
 | `wmux-core` | Terminal state, VTE parsing, cell grid, scrollback, domain models, focus routing |
-| `wmux-pty` | ConPTY spawn/resize/I/O, shell detection (PowerShell, cmd, bash, WSL) |
+| `wmux-pty` | ConPTY spawn/resize/I/O, shell detection (pwsh, powershell, cmd) |
 | `wmux-render` | wgpu surface, glyphon text atlas, QuadPipeline, dirty-row rendering |
 | `wmux-ui` | winit event loop, split pane layout, sidebar, overlays, input dispatch |
 | `wmux-ipc` | Named Pipes server, JSON-RPC v2, HMAC auth, 80+ command handlers |
@@ -194,7 +195,7 @@ cargo fmt --all
 <details>
 <summary><strong>Project structure</strong></summary>
 
-```
+```text
 wmux/
 ├── wmux-app/        # Application entry point
 ├── wmux-core/       # Terminal engine & domain models
@@ -227,8 +228,17 @@ wmux/
 - [x] Notification panel with severity & OSC detection
 - [x] Command palette with filter tabs
 - [x] Ghostty-compat theme engine (8 bundled themes)
-- [x] Auto-update from GitHub Releases
+- [x] Auto-update from GitHub Releases (SHA-256 + HTTPS allowlist)
 - [x] i18n (English + French)
+- [x] Custom title bar with Codicons chrome buttons
+- [x] Sidebar collapsed (icon-only) mode
+- [x] Focus glow halo on active pane
+- [ ] Typography: bundle Inter font for UI chrome
+- [ ] Sidebar progress bar UI rendering (backend + CLI ready)
+- [ ] Config-driven custom keybindings (parser ready, wiring pending)
+- [ ] F12 DevTools handler wiring (shortcut + COM API ready)
+- [ ] CLI browser automation full coverage (25+ subcommands)
+- [ ] CLI notify commands (stubs today)
 - [ ] SSH remote (model ready, Go daemon integration pending)
 - [ ] Performance profiling & optimization
 
@@ -249,4 +259,4 @@ See [specs/README.md](./specs/README.md) for the full task breakdown and impleme
 
 [MIT](./LICENSE)
 
-<!-- GitHub "About" description: GPU-accelerated terminal multiplexer for Windows — split panes, workspaces, integrated browser, and IPC for AI agents. Built in Rust. -->
+<!-- GitHub "About" description: GPU-accelerated terminal multiplexer for Windows, split panes, workspaces, integrated browser, and IPC for AI agents. Built in Rust. -->
