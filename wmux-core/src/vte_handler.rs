@@ -858,11 +858,9 @@ impl vte::Perform for VteHandler<'_> {
             }
 
             // DA1 — Primary Device Attributes.
-            'c' => {
-                if Self::param(params, 0, 0) == 0 {
-                    // Identify as VT220 with ANSI color support
-                    self.emit_event(TerminalEvent::PtyWrite(b"\x1b[?62;22c".to_vec()));
-                }
+            'c' if Self::param(params, 0, 0) == 0 => {
+                // Identify as VT220 with ANSI color support
+                self.emit_event(TerminalEvent::PtyWrite(b"\x1b[?62;22c".to_vec()));
             }
 
             // Scroll region (DECSTBM).

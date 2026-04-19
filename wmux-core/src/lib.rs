@@ -27,8 +27,8 @@ pub mod workspace;
 pub mod workspace_manager;
 
 pub use app_state::{
-    AppCommand, AppEvent, AppStateHandle, BrowserCommand, FocusDirection, PaneRenderData,
-    PaneSurfaceInfo, WorkspaceSnapshot,
+    AppCommand, AppEvent, AppStateHandle, BrowserCommand, FocusDirection, FrameSnapshot,
+    PaneRenderData, PaneSurfaceInfo, WorkspaceSnapshot,
 };
 pub use cell::{Cell, CellFlags, Row};
 pub use color::Color;

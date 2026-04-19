@@ -342,7 +342,7 @@ impl NotificationStore {
             .filter(|n| filter.is_none_or(|f| n.state == f))
             .collect();
 
-        result.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        result.sort_by_key(|n| std::cmp::Reverse(n.timestamp));
         result.truncate(limit);
         result
     }

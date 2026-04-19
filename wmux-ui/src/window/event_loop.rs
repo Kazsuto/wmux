@@ -183,6 +183,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         };
 
         // Install custom title bar chrome (removes native title bar, enables drag/snap).
+        // SAFETY: main_hwnd is obtained from winit's Win32 window handle on the UI thread.
+        // On the error path at lines 173-181, main_hwnd is HWND::default() (null);
+        // install_custom_chrome handles that by returning false on the first Win32 call,
+        // before any subclass hook is registered.
         let custom_chrome = unsafe { crate::titlebar::install_custom_chrome(main_hwnd) };
         if custom_chrome {
             crate::titlebar::update_metrics(initial_scale_factor);
@@ -199,7 +203,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 None
             }
         });
-        let restored_sidebar_collapsed = session.as_ref().is_some_and(|s| s.sidebar_collapsed);
+        // First launch defaults to the rail (collapsed). Returning users keep
+        // whatever state they last toggled — the session value is authoritative
+        // once one exists.
+        let restored_sidebar_collapsed = session.as_ref().is_none_or(|s| s.sidebar_collapsed);
         let pane_id = if let Some(session) = session {
             restore_session(&session, cols, rows, &self.app_state, &self.rt_handle)
         } else {
@@ -365,6 +372,43 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             ..crate::command_palette::MAX_VISIBLE_RESULTS)
             .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics))
             .collect();
+        // Descriptions use the Caption metric — smaller, muted second line.
+        let palette_desc_metrics = glyphon::Metrics::new(
+            crate::typography::CAPTION_FONT_SIZE,
+            crate::typography::CAPTION_LINE_HEIGHT,
+        );
+        let palette_desc_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_desc_metrics))
+            .collect();
+        // Workspace number glyph — centred on the 22x22 colored square.
+        let palette_ws_icon_metrics = glyphon::Metrics::new(13.0, 16.0);
+        let palette_ws_icon_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_ws_icon_metrics))
+            .collect();
+        // Static footer text buffers. Content is written once here; colours
+        // come from theme tokens at render time.
+        let palette_footer_metrics = glyphon::Metrics::new(10.5, 14.0);
+        let palette_footer_attrs =
+            glyphon::Attrs::new().family(glyphon::Family::Name("JetBrains Mono"));
+        // Text is filled below after `locale` is created so we can use locale.t().
+        let palette_footer_hints_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), palette_footer_metrics);
+        let palette_brand_attrs = glyphon::Attrs::new()
+            .family(glyphon::Family::Name("Segoe UI"))
+            .weight(glyphon::Weight(600));
+        let mut palette_footer_brand_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), palette_footer_metrics);
+        palette_footer_brand_buffer.set_size(glyphon.font_system(), Some(80.0), Some(24.0));
+        palette_footer_brand_buffer.set_text(
+            glyphon.font_system(),
+            "wmux",
+            &palette_brand_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        palette_footer_brand_buffer.shape_until_scroll(glyphon.font_system(), false);
 
         // Pre-allocate notification panel text buffers.
         let notif_title_metrics = glyphon::Metrics::new(
@@ -386,6 +430,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
 
         // Locale for i18n string lookups.
         let locale = wmux_config::Locale::new(&config.language);
+
+        // Finish footer hints buffer now that locale is available.
+        let mut palette_footer_hints_buffer = palette_footer_hints_buffer;
+        palette_footer_hints_buffer.set_size(glyphon.font_system(), Some(500.0), Some(24.0));
+        palette_footer_hints_buffer.set_text(
+            glyphon.font_system(),
+            locale.t("palette.footer_hints"),
+            &palette_footer_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        palette_footer_hints_buffer.shape_until_scroll(glyphon.font_system(), false);
 
         // Initialize custom title bar — buffer width in logical pixels for Align::Center.
         let logical_width = gpu.width() as f32 / initial_scale_factor;
@@ -596,9 +652,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             palette_filter_buffers,
             palette_result_buffers,
             palette_shortcut_buffers,
+            palette_desc_buffers,
+            palette_ws_icon_buffers,
+            palette_footer_hints_buffer,
+            palette_footer_brand_buffer,
+            palette_row_icons: Vec::new(),
+            palette_row_sections: Vec::new(),
             palette_actions: Vec::new(),
-            palette_last_query: String::new(),
-            palette_last_filter: crate::command_palette::PaletteFilter::All,
+            palette_last_query: None,
+            palette_last_filter: None,
+            palette_last_scroll: None,
+            palette_last_selected: None,
+            palette_rows_cache: Vec::new(),
             search: crate::search::SearchState::new(),
             last_search_rows: Vec::new(),
             last_total_visible_rows: 0,
@@ -675,6 +740,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             terminal_font_size: config.font_size,
             locale,
             live_browser_sids: std::collections::HashSet::new(),
+            pane_render_data_scratch: std::collections::HashMap::new(),
+            live_pane_ids_scratch: std::collections::HashSet::new(),
         });
 
         // Override sidebar width and collapsed state from saved session.
@@ -1123,7 +1190,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         use windows::Win32::UI::WindowsAndMessaging::{
                             ShowWindow, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
                         };
-                        // SAFETY: ShowWindow/close are safe with a valid HWND from winit.
+                        // SAFETY: state.main_hwnd is a valid top-level window handle from winit, alive for the
+                        // duration of the event loop. ShowWindow and PostMessageW accept any valid HWND;
+                        // WM_CLOSE (0x0010) routes through winit's WndProc which triggers the CloseRequested event.
                         unsafe {
                             match btn {
                                 crate::titlebar::ChromeButton::Minimize => {
@@ -2487,6 +2556,59 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                // Command palette scroll — intercept when the palette is open
+                // and the cursor is over its rect. Wheel moves `scroll_offset`
+                // independently of `selected` so the user can browse the full
+                // list without losing their current selection; arrow keys
+                // still re-snap the viewport onto the selection next frame.
+                if state.command_palette.open {
+                    let sw = state.gpu.width() as f32;
+                    let sh = state.gpu.height() as f32;
+                    let px = state.cursor_pos.0 as f32;
+                    let py = state.cursor_pos.1 as f32;
+                    if state.command_palette.contains(px, py, sw, sh) {
+                        // 3 rows per wheel notch matches the terminal scroll feel.
+                        const PALETTE_ROWS_PER_NOTCH: i32 = 3;
+                        let lines = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => y,
+                            MouseScrollDelta::PixelDelta(pos) => {
+                                pos.y as f32 / crate::command_palette::RESULT_HEIGHT.max(1.0)
+                            }
+                        };
+                        let rows_delta = if lines > 0.0 {
+                            (-lines.ceil() as i32).saturating_mul(PALETTE_ROWS_PER_NOTCH)
+                        } else if lines < 0.0 {
+                            (-lines.floor() as i32).saturating_mul(PALETTE_ROWS_PER_NOTCH)
+                        } else {
+                            0
+                        };
+                        if rows_delta != 0 {
+                            let total = state.palette_rows_cache.len();
+                            let ly = crate::command_palette::PaletteLayout::compute(
+                                sw,
+                                sh,
+                                state
+                                    .command_palette
+                                    .result_count
+                                    .min(crate::command_palette::MAX_VISIBLE_RESULTS),
+                            );
+                            let visible = ly.visible_results;
+                            let max_offset = total.saturating_sub(visible);
+                            let current = state.command_palette.scroll_offset as i32;
+                            let max_offset_i32 = i32::try_from(max_offset).unwrap_or(i32::MAX);
+                            let next = current.saturating_add(rows_delta).clamp(0, max_offset_i32);
+                            state.command_palette.scroll_offset = next as usize;
+                            // Inhibit the selection-follows-scroll snap for this
+                            // next frame by pre-advancing `palette_last_selected`
+                            // to the current selection — the render loop only
+                            // snaps when the two differ.
+                            state.palette_last_selected = Some(state.command_palette.selected);
+                            state.window.request_redraw();
+                        }
+                        return;
+                    }
+                }
+
                 // Notification panel scroll — intercept when cursor is over the panel.
                 if state.notification_panel.open {
                     let sw = state.gpu.width() as f32;
@@ -2525,9 +2647,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     // Scroll viewport via actor (3 lines per scroll notch).
                     const SCROLL_LINES: i32 = 3;
                     let delta = if lines > 0.0 {
-                        (lines.ceil() as i32) * SCROLL_LINES
+                        (lines.ceil() as i32).saturating_mul(SCROLL_LINES)
                     } else {
-                        (lines.floor() as i32) * SCROLL_LINES
+                        (lines.floor() as i32).saturating_mul(SCROLL_LINES)
                     };
                     if delta != 0 {
                         self.app_state.scroll_viewport(state.focused_pane, delta);

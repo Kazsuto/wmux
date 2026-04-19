@@ -69,12 +69,22 @@ pub struct UiChrome {
     // ── Accent System ─────────────────────────────────────────────────
     /// Primary accent — ANSI blue (palette index 4) with S>=80%.
     pub accent: [f32; 4],
+    /// Lighter accent — accent blended 22% toward white (hover, keywords).
+    pub accent_hi: [f32; 4],
     /// Muted accent — accent at 30% alpha.
     pub accent_muted: [f32; 4],
     /// Glow outer — accent at 20% alpha (Focus Glow halo).
     pub accent_glow: [f32; 4],
     /// Glow inner — accent at 60% alpha (Focus Glow 1px ring).
     pub accent_glow_core: [f32; 4],
+
+    // ── Attention (Amber) — used in exactly three places: unsaved tab dot,
+    //    workspace-reconnecting indicator, status-bar warning state.
+    //    NEVER used as a fill or next to the accent blue (confusion risk).
+    /// Amber — attention color, fixed #c58a3a regardless of theme.
+    pub amber: [f32; 4],
+    /// Amber soft — amber at 22% alpha (dot glow, badge bg, reconnecting pill).
+    pub amber_soft: [f32; 4],
 
     // ── Text Hierarchy ────────────────────────────────────────────────
     /// Primary text — matches theme foreground (100% alpha).

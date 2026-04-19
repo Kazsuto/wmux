@@ -49,14 +49,22 @@ const RESIZE_HIT_ZONE: f32 = 5.0;
 pub const MIN_SIDEBAR_WIDTH: f32 = 180.0;
 /// Maximum sidebar width when resizing.
 pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
-/// Fixed width of the sidebar in collapsed (icon-only) mode.
+/// Fixed width of the sidebar in collapsed (rail) mode.
 pub const COLLAPSED_WIDTH: f32 = 48.0;
-/// Row height in collapsed mode (one icon per workspace).
-const COLLAPSED_ROW_HEIGHT: f32 = 48.0;
-/// Diameter of the workspace color circle in collapsed mode.
-const COLLAPSED_ICON_SIZE: f32 = 28.0;
-/// Top padding before first collapsed icon row.
-const COLLAPSED_TOP_PADDING: f32 = 8.0;
+/// Row height in collapsed rail mode (one workspace per row).
+const COLLAPSED_ROW_HEIGHT: f32 = 40.0;
+/// Size of the workspace square in collapsed rail mode.
+const COLLAPSED_ICON_SIZE: f32 = 32.0;
+/// Corner radius of the workspace square.
+const COLLAPSED_ICON_RADIUS: f32 = 6.0;
+/// Top padding before first collapsed icon row (after logo cell).
+const COLLAPSED_TOP_PADDING: f32 = 46.0;
+/// Size of the logo cell at the top of the rail.
+const COLLAPSED_LOGO_SIZE: f32 = 28.0;
+/// Diameter of the notification dot indicator (single notification).
+const COLLAPSED_DOT_SIZE: f32 = 7.0;
+/// Size of the notification count badge (2+ notifications).
+const COLLAPSED_BADGE_SIZE: f32 = 15.0;
 
 /// Sidebar interaction state.
 #[derive(Debug, Clone)]
@@ -98,6 +106,10 @@ pub struct SidebarState {
     info_buffers: Vec<Buffer>,
     /// One glyphon Buffer per workspace row for notification badge count.
     badge_buffers: Vec<Buffer>,
+    /// One glyphon Buffer per workspace row for the rail workspace number.
+    collapsed_number_buffers: Vec<Buffer>,
+    /// Glyphon Buffer for the 'w' mark in the rail logo cell.
+    collapsed_logo_buffer: Option<Buffer>,
     /// Port pill text buffers — outer Vec per workspace, inner Vec per visible port.
     port_buffers: Vec<Vec<Buffer>>,
     /// Glyphon Buffer for the inline editing text.
@@ -119,12 +131,17 @@ impl SidebarState {
         Self {
             visible: true,
             width: clamped,
-            collapsed: false,
+            // Default to the rail: the "Luminous Void" design language is centred
+            // on the 48px rail with numbered workspace squares. Rich expanded
+            // mode (cards with names, ports, paths) stays one keybind away.
+            collapsed: true,
             top_offset: 0.0,
             interaction: SidebarInteraction::Idle,
             name_buffers: Vec::new(),
             info_buffers: Vec::new(),
             badge_buffers: Vec::new(),
+            collapsed_number_buffers: Vec::new(),
+            collapsed_logo_buffer: None,
             port_buffers: Vec::new(),
             edit_buffer: None,
             edit_cursor_x_offset: 0.0,
@@ -397,10 +414,47 @@ impl SidebarState {
             }
         }
 
+        // Rail workspace number buffers — "1", "2", ... one per workspace.
+        let rail_metrics = Metrics::new(13.0, 16.0);
+        let rail_attrs = Attrs::new()
+            .family(Family::Name("Segoe UI"))
+            .weight(glyphon::Weight(600));
+        self.collapsed_number_buffers
+            .resize_with(workspaces.len(), || Buffer::new(font_system, rail_metrics));
+        for (i, buf) in self.collapsed_number_buffers.iter_mut().enumerate() {
+            buf.set_metrics(font_system, rail_metrics);
+            buf.set_size(
+                font_system,
+                Some(COLLAPSED_ICON_SIZE),
+                Some(COLLAPSED_ICON_SIZE),
+            );
+            let label = (i + 1).to_string();
+            buf.set_text(font_system, &label, &rail_attrs, Shaping::Advanced, None);
+            buf.shape_until_scroll(font_system, false);
+        }
+
+        // Rail logo glyph — the lowercase 'w' that sits in the top cell.
+        let logo_metrics = Metrics::new(14.0, 18.0);
+        let logo_attrs = Attrs::new()
+            .family(Family::Name("Segoe UI"))
+            .weight(glyphon::Weight(700));
+        let logo_buf = self
+            .collapsed_logo_buffer
+            .get_or_insert_with(|| Buffer::new(font_system, logo_metrics));
+        logo_buf.set_metrics(font_system, logo_metrics);
+        logo_buf.set_size(
+            font_system,
+            Some(COLLAPSED_LOGO_SIZE),
+            Some(COLLAPSED_LOGO_SIZE),
+        );
+        logo_buf.set_text(font_system, "w", &logo_attrs, Shaping::Advanced, None);
+        logo_buf.shape_until_scroll(font_system, false);
+
         // Truncate if workspace count decreased.
         self.name_buffers.truncate(workspaces.len());
         self.info_buffers.truncate(workspaces.len());
         self.badge_buffers.truncate(workspaces.len());
+        self.collapsed_number_buffers.truncate(workspaces.len());
         self.port_buffers.truncate(workspaces.len());
     }
 
@@ -445,61 +499,98 @@ impl SidebarState {
 
         let y0 = self.top_offset;
 
-        // ── Collapsed mode: icon-only rendering ─────────────────────────────
+        // ── Collapsed mode: the rail ─────────────────────────────────────
+        // Numbered workspace squares, notification dots/badges, active stripe.
+        // Port pills, names, cwd paths live in the expanded mode (keybind).
         if self.collapsed {
-            // Background + separator (starts at top_offset so title bar covers the gap).
+            // Rail background.
             quad_pipeline.push_quad(0.0, y0, w, surface_height - y0, ui_chrome.surface_1);
-            quad_pipeline.push_quad(
-                w - 1.0,
-                y0,
-                1.0,
-                surface_height - y0,
-                ui_chrome.border_subtle,
-            );
 
-            let icon_r = COLLAPSED_ICON_SIZE / 2.0;
+            // Right-edge luminous separator — single accent_glow quad, 1px wide,
+            // approximating the vertical gradient in the mockup.
+            quad_pipeline.push_quad(w - 1.0, y0, 1.0, surface_height - y0, ui_chrome.accent_glow);
+
             let center_x = w / 2.0;
+            let icon_r = COLLAPSED_ICON_SIZE / 2.0;
 
             for (i, ws) in workspaces.iter().enumerate() {
                 let row_y = y0 + COLLAPSED_TOP_PADDING + i as f32 * COLLAPSED_ROW_HEIGHT;
                 let center_y = row_y + COLLAPSED_ROW_HEIGHT / 2.0;
                 let icon_x = center_x - icon_r;
                 let icon_y = center_y - icon_r;
-                let ws_color = dot_palette[i % dot_palette.len()];
 
                 let is_hover = matches!(self.interaction, SidebarInteraction::Hover(h) if h == i);
 
                 if ws.active {
-                    // Active: filled circle with full opacity
+                    // Active signature: 2px left accent stripe (the "rail rule")
+                    // with a soft halo, then the surface-2 square fill. Number
+                    // text is drawn by text_areas on top.
+                    let stripe_h = COLLAPSED_ICON_SIZE;
+                    let stripe_y = center_y - stripe_h / 2.0;
+                    quad_pipeline.push_rounded_quad(
+                        0.0,
+                        stripe_y,
+                        2.0,
+                        stripe_h,
+                        ui_chrome.accent,
+                        1.0,
+                    );
+                    quad_pipeline.push_rounded_quad(
+                        0.0,
+                        stripe_y,
+                        8.0,
+                        stripe_h,
+                        ui_chrome.accent_glow,
+                        4.0,
+                    );
                     quad_pipeline.push_rounded_quad(
                         icon_x,
                         icon_y,
                         COLLAPSED_ICON_SIZE,
                         COLLAPSED_ICON_SIZE,
-                        ws_color,
-                        icon_r,
+                        ui_chrome.surface_2,
+                        COLLAPSED_ICON_RADIUS,
                     );
                 } else if is_hover {
-                    // Hover: translucent circle
-                    let hover_color = [ws_color[0], ws_color[1], ws_color[2], 0.5];
                     quad_pipeline.push_rounded_quad(
                         icon_x,
                         icon_y,
                         COLLAPSED_ICON_SIZE,
                         COLLAPSED_ICON_SIZE,
-                        hover_color,
-                        icon_r,
+                        ui_chrome.surface_2,
+                        COLLAPSED_ICON_RADIUS,
                     );
-                } else {
-                    // Inactive: dim circle
-                    let dim_color = [ws_color[0], ws_color[1], ws_color[2], 0.25];
+                }
+
+                // Notification indicator: 0 notifs = nothing, 1 = colored dot,
+                // 2+ = count badge. Colour follows severity — accent for info,
+                // amber for attention, error for error. Here we only track
+                // unread_count; severity distinction needs wiring when the
+                // notification domain carries it.
+                if ws.unread_count == 1 {
+                    let dot_x = icon_x + COLLAPSED_ICON_SIZE - COLLAPSED_DOT_SIZE - 2.0;
+                    let dot_y = icon_y + 2.0;
                     quad_pipeline.push_rounded_quad(
-                        icon_x,
-                        icon_y,
-                        COLLAPSED_ICON_SIZE,
-                        COLLAPSED_ICON_SIZE,
-                        dim_color,
-                        icon_r,
+                        dot_x,
+                        dot_y,
+                        COLLAPSED_DOT_SIZE,
+                        COLLAPSED_DOT_SIZE,
+                        ui_chrome.accent,
+                        COLLAPSED_DOT_SIZE / 2.0,
+                    );
+                } else if ws.unread_count >= 2 {
+                    // Count badge in top-right. White text drawn by text_areas.
+                    let badge_w = COLLAPSED_BADGE_SIZE;
+                    let badge_h = COLLAPSED_BADGE_SIZE;
+                    let badge_x = icon_x + COLLAPSED_ICON_SIZE - badge_w + 3.0;
+                    let badge_y = icon_y - 3.0;
+                    quad_pipeline.push_rounded_quad(
+                        badge_x,
+                        badge_y,
+                        badge_w,
+                        badge_h,
+                        ui_chrome.accent,
+                        badge_h / 2.0,
                     );
                 }
             }
@@ -711,19 +802,18 @@ impl SidebarState {
         surface_height: u32,
         ui_chrome: &UiChrome,
         scale_factor: f32,
-        workspaces: &[WorkspaceSnapshot],
-        workspace_status_icons: &[Vec<(String, String)>],
+        workspaces: &'a [WorkspaceSnapshot],
         icon_empty: &'a glyphon::Buffer,
         status_icon_cgs: &'a std::collections::HashMap<
             wmux_render::icons::Icon,
             [glyphon::CustomGlyph; 1],
         >,
     ) -> Vec<TextArea<'a>> {
-        if !self.visible || self.collapsed {
+        if !self.visible {
             return Vec::new();
         }
 
-        let w = self.width;
+        let w = self.effective_width();
         let y0 = self.top_offset;
         let bounds = TextBounds {
             left: 0,
@@ -735,6 +825,71 @@ impl SidebarState {
         let text_color = f32_to_glyphon_color(ui_chrome.text_primary);
         let text_dim = f32_to_glyphon_color(ui_chrome.text_secondary);
         let text_muted = f32_to_glyphon_color(ui_chrome.text_muted);
+
+        // ── Collapsed (rail) text: workspace numbers, logo, badge counts ──
+        if self.collapsed {
+            let mut areas: Vec<TextArea<'a>> = Vec::with_capacity(workspaces.len() + 1);
+            let center_x = w / 2.0;
+            let icon_r = COLLAPSED_ICON_SIZE / 2.0;
+            let text_accent = f32_to_glyphon_color(ui_chrome.text_primary);
+            let text_inverse = f32_to_glyphon_color(ui_chrome.text_inverse);
+
+            // Logo cell at the very top of the rail.
+            if let Some(ref logo_buf) = self.collapsed_logo_buffer {
+                let logo_y = y0 + 10.0;
+                areas.push(TextArea {
+                    buffer: logo_buf,
+                    left: center_x - COLLAPSED_LOGO_SIZE / 2.0 + 6.0,
+                    top: logo_y + 4.0,
+                    scale: scale_factor,
+                    bounds,
+                    default_color: text_accent,
+                    custom_glyphs: &[],
+                });
+            }
+
+            for (i, ws) in workspaces.iter().enumerate() {
+                let row_y = y0 + COLLAPSED_TOP_PADDING + i as f32 * COLLAPSED_ROW_HEIGHT;
+                let center_y = row_y + COLLAPSED_ROW_HEIGHT / 2.0;
+                let icon_x = center_x - icon_r;
+                let icon_y = center_y - icon_r;
+
+                // Number text. Accent color for active, muted for the rest.
+                if let Some(num_buf) = self.collapsed_number_buffers.get(i) {
+                    let color = if ws.active { text_accent } else { text_muted };
+                    areas.push(TextArea {
+                        buffer: num_buf,
+                        // Approximate horizontal centring for single/double digits.
+                        left: icon_x + COLLAPSED_ICON_SIZE / 2.0 - 4.0,
+                        top: icon_y + 7.0,
+                        scale: scale_factor,
+                        bounds,
+                        default_color: color,
+                        custom_glyphs: &[],
+                    });
+                }
+
+                // Count badge text (2+ notifications). Inverse text on accent bg.
+                if ws.unread_count >= 2 {
+                    if let Some(badge_buf) = self.badge_buffers.get(i) {
+                        let badge_x = icon_x + COLLAPSED_ICON_SIZE - COLLAPSED_BADGE_SIZE + 3.0;
+                        let badge_y = icon_y - 3.0;
+                        areas.push(TextArea {
+                            buffer: badge_buf,
+                            left: badge_x + 2.0,
+                            top: badge_y + 1.0,
+                            scale: scale_factor,
+                            bounds,
+                            default_color: text_inverse,
+                            custom_glyphs: &[],
+                        });
+                    }
+                }
+            }
+
+            let _ = (text_color, text_dim, icon_empty, status_icon_cgs);
+            return areas;
+        }
 
         let mut areas = Vec::with_capacity(self.name_buffers.len() * 4 + 1);
 
@@ -815,7 +970,7 @@ impl SidebarState {
             }
 
             // Status icon from IPC (right side of card, below name).
-            if let Some(icons) = workspace_status_icons.get(i) {
+            if let Some(icons) = workspaces.get(i).map(|ws| ws.status_icons.as_slice()) {
                 if let Some((_key, icon_name)) = icons.first() {
                     if let Some(icon) = wmux_render::icons::Icon::from_name(icon_name) {
                         if let Some(cg) = status_icon_cgs.get(&icon) {
@@ -1021,14 +1176,19 @@ mod tests {
 
     #[test]
     fn new_sidebar_is_visible() {
-        let s = SidebarState::new(220);
+        let mut s = SidebarState::new(220);
         assert!(s.visible);
+        // New sidebar starts in rail (collapsed) mode — the "Luminous Void"
+        // default. Expanded mode reachable via toggle_collapsed().
+        assert_eq!(s.effective_width(), COLLAPSED_WIDTH);
+        s.collapsed = false;
         assert_eq!(s.effective_width(), 220.0);
     }
 
     #[test]
     fn toggle_hides_and_shows() {
         let mut s = SidebarState::new(220);
+        s.collapsed = false;
         s.toggle();
         assert!(!s.visible);
         assert_eq!(s.effective_width(), 0.0);
@@ -1101,7 +1261,8 @@ mod tests {
 
     #[test]
     fn hit_test_row_returns_correct_index() {
-        let s = SidebarState::new(220);
+        let mut s = SidebarState::new(220);
+        s.collapsed = false;
         // With SECTION_HEADER_HEIGHT=42.0, ROW_HEIGHT=110.0
         // Row 0 is at y=42..152, Row 1 at y=152..262, Row 2 at y=262..372
         assert_eq!(s.hit_test_row(0.0, 3), None); // Above header
@@ -1121,7 +1282,8 @@ mod tests {
 
     #[test]
     fn drag_target_index_top_half() {
-        let s = SidebarState::new(220);
+        let mut s = SidebarState::new(220);
+        s.collapsed = false;
         // SECTION_HEADER_HEIGHT=42.0, ROW_HEIGHT=110.0
         // y=42+12=54 is in top quarter of row 0 → target = 0
         assert_eq!(s.drag_target_index(54.0, 3), 0);
@@ -1129,14 +1291,16 @@ mod tests {
 
     #[test]
     fn drag_target_index_bottom_half() {
-        let s = SidebarState::new(220);
+        let mut s = SidebarState::new(220);
+        s.collapsed = false;
         // y=42+65=107 is past 50% of row 0 (110*0.5=55 + 42=97) → target = 1
         assert_eq!(s.drag_target_index(107.0, 3), 1);
     }
 
     #[test]
     fn drag_target_clamps_to_last() {
-        let s = SidebarState::new(220);
+        let mut s = SidebarState::new(220);
+        s.collapsed = false;
         // With large y value, should clamp to last workspace (index 2)
         assert_eq!(s.drag_target_index(500.0, 3), 2);
     }

@@ -232,7 +232,7 @@ impl CommandRegistry {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results.sort_by_key(|r| std::cmp::Reverse(r.score));
         results
     }
 

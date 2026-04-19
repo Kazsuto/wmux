@@ -52,6 +52,22 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
     let accent_muted = [r, g, b, 0.30];
     let accent_glow = [r, g, b, 0.30];
     let accent_glow_core = [r, g, b, 0.80];
+    // Lighter accent for hover / emphasis: blend 22% toward white (dark themes)
+    // or 22% toward black (light themes). Produces ~#4a94f0 from #2b7de6.
+    let blend_toward = if l < 0.5 { 1.0 } else { 0.0 };
+    let blend = 0.22;
+    let accent_hi = [
+        r + (blend_toward - r) * blend,
+        g + (blend_toward - g) * blend,
+        b + (blend_toward - b) * blend,
+        1.0,
+    ];
+
+    // Amber — attention color, fixed palette-independent #c58a3a.
+    // Intentional counter-color to blue accent so the two can never be
+    // confused at a glance (never placed adjacent per the design rules).
+    let amber = [197.0 / 255.0, 138.0 / 255.0, 58.0 / 255.0, 1.0];
+    let amber_soft = [amber[0], amber[1], amber[2], 0.22];
 
     // Text hierarchy — UI foreground boosted toward white (dark) or black (light)
     // for WCAG AAA contrast on chrome surfaces. Terminal foreground stays unchanged.
@@ -123,9 +139,12 @@ pub fn derive_ui_chrome(palette: &ColorPalette) -> UiChrome {
         surface_3,
         surface_overlay,
         accent,
+        accent_hi,
         accent_muted,
         accent_glow,
         accent_glow_core,
+        amber,
+        amber_soft,
         text_primary,
         text_secondary,
         text_muted,

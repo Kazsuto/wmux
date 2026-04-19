@@ -585,16 +585,42 @@ pub(super) fn handle_palette_key(
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
             state.command_palette.close();
+            // Reset sentinels so the next open is always dirty (C1).
+            state.palette_last_query = None;
+            state.palette_last_filter = None;
+            state.palette_last_scroll = None;
+            state.palette_last_selected = None;
         }
         Key::Named(NamedKey::Backspace) => {
             state.command_palette.query.pop();
             state.command_palette.selected = 0;
         }
         Key::Named(NamedKey::ArrowDown) => {
-            state.command_palette.select_next();
+            // Skip over section-header rows so the user lands on selectable items.
+            let count = state.command_palette.result_count;
+            for _ in 0..count.max(1) {
+                state.command_palette.select_next();
+                let idx = state.command_palette.selected_index();
+                let is_section = idx
+                    .and_then(|i| state.palette_row_sections.get(i))
+                    .is_some_and(|s| s.is_some());
+                if !is_section {
+                    break;
+                }
+            }
         }
         Key::Named(NamedKey::ArrowUp) => {
-            state.command_palette.select_prev();
+            let count = state.command_palette.result_count;
+            for _ in 0..count.max(1) {
+                state.command_palette.select_prev();
+                let idx = state.command_palette.selected_index();
+                let is_section = idx
+                    .and_then(|i| state.palette_row_sections.get(i))
+                    .is_some_and(|s| s.is_some());
+                if !is_section {
+                    break;
+                }
+            }
         }
         Key::Named(NamedKey::Tab) => {
             if state.modifiers.shift_key() {
@@ -608,6 +634,11 @@ pub(super) fn handle_palette_key(
             if let Some(idx) = state.command_palette.selected_index() {
                 if let Some(action) = state.palette_actions.get(idx).cloned() {
                     state.command_palette.close();
+                    // Reset sentinels so the next open is always dirty (C1).
+                    state.palette_last_query = None;
+                    state.palette_last_filter = None;
+                    state.palette_last_scroll = None;
+                    state.palette_last_selected = None;
                     match action {
                         crate::command_palette::PaletteAction::Command(ref id) => {
                             if let Some(sa) = crate::command_palette::command_id_to_action(id) {
@@ -633,9 +664,17 @@ pub(super) fn handle_palette_key(
                     }
                 } else {
                     state.command_palette.close();
+                    state.palette_last_query = None;
+                    state.palette_last_filter = None;
+                    state.palette_last_scroll = None;
+                    state.palette_last_selected = None;
                 }
             } else {
                 state.command_palette.close();
+                state.palette_last_query = None;
+                state.palette_last_filter = None;
+                state.palette_last_scroll = None;
+                state.palette_last_selected = None;
             }
         }
         Key::Named(NamedKey::Space) => {
@@ -978,6 +1017,11 @@ pub(super) fn handle_shortcut(
         ShortcutAction::CommandPalette => {
             if state.command_palette.open {
                 state.command_palette.close();
+                // Reset sentinels so the next open is always dirty (C1).
+                state.palette_last_query = None;
+                state.palette_last_filter = None;
+                state.palette_last_scroll = None;
+                state.palette_last_selected = None;
             } else {
                 // Close other overlays — only one at a time.
                 if state.search.active {

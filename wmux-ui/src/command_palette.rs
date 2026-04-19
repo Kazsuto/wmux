@@ -6,9 +6,15 @@ use wmux_render::quad::QuadPipeline;
 pub(crate) const MAX_VISIBLE_RESULTS: usize = 20;
 
 /// Palette overlay dimensions.
-pub(crate) const PALETTE_WIDTH: f32 = 600.0;
+pub(crate) const PALETTE_WIDTH: f32 = 620.0;
 pub(crate) const INPUT_HEIGHT: f32 = 44.0;
-pub(crate) const RESULT_HEIGHT: f32 = 36.0;
+pub(crate) const RESULT_HEIGHT: f32 = 44.0;
+/// Bottom footer row with keyboard hints (↑↓ navigate, ↵ select, …) and the
+/// wmux brand mark. Same height regardless of result count.
+pub(crate) const FOOTER_HEIGHT: f32 = 36.0;
+/// Left column reserved for the 14x14 result icon (Codicons glyph or
+/// workspace colored square). Applied to every non-section row.
+pub(crate) const RESULT_ICON_COL: f32 = 32.0;
 pub(crate) const PADDING: f32 = 12.0;
 pub(crate) const PALETTE_RADIUS: f32 = 12.0;
 pub(crate) const TAB_RADIUS: f32 = 6.0;
@@ -65,11 +71,11 @@ impl PaletteLayout {
         const BOTTOM_MARGIN: f32 = 20.0;
         let header_height = INPUT_HEIGHT + FILTER_ROW_HEIGHT + 2.0 * PADDING;
         let available_for_rows =
-            (surface_height - palette_y - header_height - BOTTOM_MARGIN).max(0.0);
+            (surface_height - palette_y - header_height - FOOTER_HEIGHT - BOTTOM_MARGIN).max(0.0);
         let max_rows = (available_for_rows / RESULT_HEIGHT) as usize;
         let visible_results = requested_results.min(max_rows);
 
-        let total_height = header_height + visible_results as f32 * RESULT_HEIGHT;
+        let total_height = header_height + visible_results as f32 * RESULT_HEIGHT + FOOTER_HEIGHT;
         let input_x = palette_x + PADDING;
         let input_y = palette_y + PADDING;
         let input_w = effective_width - 2.0 * PADDING;
@@ -88,6 +94,21 @@ impl PaletteLayout {
             results_y,
         }
     }
+}
+
+/// Cached palette row data — the raw strings and action for every row in
+/// the current result list. Lives across frames so the renderer can repaint
+/// the visible window without rerunning the search when only `scroll_offset`
+/// changed (e.g. the user pressed ↓ past the viewport).
+#[derive(Debug, Clone)]
+pub(crate) struct PaletteRowCache {
+    pub(crate) name: String,
+    pub(crate) desc: String,
+    pub(crate) shortcut: String,
+    pub(crate) action: PaletteAction,
+    /// `Some(label)` for section header rows (non-selectable, styled as
+    /// muted caption), `None` for regular selectable rows.
+    pub(crate) section: Option<String>,
 }
 
 /// An action stored per palette result row, used by the Enter handler.
@@ -158,6 +179,13 @@ pub struct CommandPalette {
     pub result_count: usize,
     /// Active filter tab.
     pub filter: PaletteFilter,
+    /// First row index rendered in the viewport. Together with
+    /// `PaletteLayout.visible_results` this defines the visible slice of the
+    /// full result list. Needed because the total row count (commands +
+    /// sub-category headers + workspaces + surfaces) now exceeds the
+    /// viewport cap, so the palette must scroll to surface workspaces in the
+    /// "All" filter.
+    pub scroll_offset: usize,
     /// Measured pill widths for each filter tab (text_width + 2*padding).
     /// Set once during init from actual glyphon layout measurements.
     pub(crate) filter_pill_widths: [f32; 4],
@@ -181,6 +209,7 @@ impl CommandPalette {
             selected: 0,
             result_count: 0,
             filter: PaletteFilter::All,
+            scroll_offset: 0,
             filter_pill_widths: default_widths,
         }
     }
@@ -202,6 +231,7 @@ impl CommandPalette {
         self.selected = 0;
         self.result_count = 0;
         self.filter = PaletteFilter::All;
+        self.scroll_offset = 0;
         tracing::debug!("command palette opened");
     }
 
@@ -212,6 +242,7 @@ impl CommandPalette {
         self.selected = 0;
         self.result_count = 0;
         self.filter = PaletteFilter::All;
+        self.scroll_offset = 0;
         tracing::debug!("command palette closed");
     }
 
@@ -222,6 +253,7 @@ impl CommandPalette {
         self.filter = variants[(current + 1) % variants.len()];
         self.selected = 0;
         self.result_count = 0;
+        self.scroll_offset = 0;
         tracing::debug!(filter = ?self.filter, "palette filter changed");
     }
 
@@ -236,7 +268,29 @@ impl CommandPalette {
         };
         self.selected = 0;
         self.result_count = 0;
+        self.scroll_offset = 0;
         tracing::debug!(filter = ?self.filter, "palette filter changed");
+    }
+
+    /// Shift `scroll_offset` so that `selected` stays inside the viewport.
+    /// `visible` is the current `PaletteLayout.visible_results` (how many
+    /// rows fit on screen). Called every render frame — cheap (a couple of
+    /// comparisons) and keeps the scroll glued to the selection.
+    pub fn scroll_to_selected(&mut self, visible: usize, total_rows: usize) {
+        if visible == 0 || total_rows == 0 {
+            self.scroll_offset = 0;
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        // Clamp so we never scroll past the end of the list.
+        let max_offset = total_rows.saturating_sub(visible);
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
     }
 
     /// Move selection up.
@@ -386,41 +440,35 @@ impl CommandPalette {
             let pill_y = ly.filter_y + FILTER_TAB_PAD_Y;
 
             if variant == self.filter {
-                // Active tab: accent background
+                // Active tab: surface-2 fill + 2px accent underline. Matches the
+                // "one accent-marking rule" used by the pane tab bar — no solid
+                // blue pill competes with the selected-result stripe below.
                 quads.push_rounded_quad(
                     tab_x,
                     pill_y,
                     pill_w,
                     pill_h,
-                    ui_chrome.accent,
+                    ui_chrome.surface_2,
                     TAB_RADIUS,
                 );
+                quads.push_quad(tab_x, pill_y + pill_h - 2.0, pill_w, 2.0, ui_chrome.accent);
             } else {
-                // Inactive tab: subtle border pill
-                quads.push_rounded_quad(
-                    tab_x,
-                    pill_y,
-                    pill_w,
-                    pill_h,
-                    ui_chrome.surface_0,
-                    TAB_RADIUS,
-                );
-                // 1px border around inactive pill
-                quads.push_rounded_quad(
-                    tab_x,
-                    pill_y,
-                    pill_w,
-                    BORDER_WIDTH,
-                    ui_chrome.border_subtle,
-                    TAB_RADIUS,
-                );
+                // Inactive tab: flat, no pill fill. The filter row keeps the
+                // palette chrome quiet so search results stay the focal point.
             }
             tab_x += pill_w + FILTER_TAB_GAP;
         }
 
-        // Selected result highlight (rounded) — use surface_2 with TAB_RADIUS
-        if ly.visible_results > 0 {
-            let selected_visible = self.selected.min(ly.visible_results - 1);
+        // Selected result highlight (rounded) — surface_2 fill plus a 2px
+        // accent-hi left stripe. Same rule as the rail's active workspace
+        // stripe, repeated at row scale so selection reads consistently.
+        // `selected` is a global row index; the visible slot is its position
+        // relative to `scroll_offset`.
+        if ly.visible_results > 0
+            && self.selected >= self.scroll_offset
+            && self.selected < self.scroll_offset + ly.visible_results
+        {
+            let selected_visible = self.selected - self.scroll_offset;
             let result_y = ly.results_y + selected_visible as f32 * RESULT_HEIGHT;
             quads.push_rounded_quad(
                 ly.input_x,
@@ -429,6 +477,17 @@ impl CommandPalette {
                 RESULT_HEIGHT,
                 ui_chrome.surface_2,
                 TAB_RADIUS,
+            );
+            // Left accent stripe — accent_hi gives a slightly brighter pop
+            // than the base accent, matching the "selected" state in the mock.
+            let stripe_inset_y = 8.0;
+            quads.push_rounded_quad(
+                ly.input_x,
+                result_y + stripe_inset_y,
+                2.0,
+                RESULT_HEIGHT - 2.0 * stripe_inset_y,
+                ui_chrome.accent_hi,
+                1.0,
             );
         }
     }
@@ -633,8 +692,84 @@ mod tests {
 
     #[test]
     fn layout_full_results_on_large_window() {
-        // Large window: all 20 rows should fit.
+        // Large window: requesting 20 rows should fit as many as the window
+        // allows. With RESULT_HEIGHT=44 at 1080px window, ~16 rows fit after
+        // chrome (palette_y + header + margin). The exact number depends on
+        // RESULT_HEIGHT — just require "clamped to what fits".
         let ly = PaletteLayout::compute(1920.0, 1080.0, 20);
-        assert_eq!(ly.visible_results, 20);
+        assert!(ly.visible_results >= 12, "expected at least 12 rows to fit");
+        assert!(ly.visible_results <= 20, "cannot exceed requested count");
+    }
+
+    // --- scroll_to_selected ---
+
+    fn palette_with_offset(selected: usize, scroll_offset: usize) -> CommandPalette {
+        let mut p = CommandPalette::new();
+        p.selected = selected;
+        p.scroll_offset = scroll_offset;
+        p
+    }
+
+    #[test]
+    fn scroll_to_selected_resets_when_visible_zero() {
+        // visible=0 resets scroll_offset to 0 regardless of prior state.
+        let mut p = palette_with_offset(5, 3);
+        p.scroll_to_selected(0, 10);
+        assert_eq!(p.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_selected_resets_when_total_zero() {
+        // total_rows=0 resets scroll_offset to 0 regardless of prior state.
+        let mut p = palette_with_offset(0, 4);
+        p.scroll_to_selected(5, 0);
+        assert_eq!(p.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_selected_scrolls_down_when_below_viewport() {
+        // selected=15 is below the viewport [0, 5).
+        // Expected: scroll_offset = selected + 1 - visible = 15 + 1 - 5 = 11.
+        let mut p = palette_with_offset(15, 0);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 11);
+    }
+
+    #[test]
+    fn scroll_to_selected_scrolls_up_when_above_viewport() {
+        // scroll_offset=10, selected=3 is above the viewport [10, 15).
+        // Expected: scroll_offset = selected = 3.
+        let mut p = palette_with_offset(3, 10);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 3);
+    }
+
+    #[test]
+    fn scroll_to_selected_stays_in_viewport() {
+        // scroll_offset=5, selected=7 is inside the viewport [5, 10).
+        // No adjustment should happen.
+        let mut p = palette_with_offset(7, 5);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 5);
+    }
+
+    #[test]
+    fn scroll_to_selected_clamps_at_total_minus_visible() {
+        // selected=19 (total-1), visible=5, total=20.
+        // scroll_offset = 19 + 1 - 5 = 15, which equals total - visible = 15.
+        let mut p = palette_with_offset(19, 0);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 15);
+    }
+
+    #[test]
+    fn scroll_to_selected_clamps_when_selected_beyond_total() {
+        // selected=100, total=10, visible=5.
+        // Step 1: selected >= scroll_offset + visible → scroll_offset = 100 + 1 - 5 = 96.
+        // Step 2: clamp to max_offset = 10.saturating_sub(5) = 5.
+        // Result: scroll_offset = 5.
+        let mut p = palette_with_offset(100, 0);
+        p.scroll_to_selected(5, 10);
+        assert_eq!(p.scroll_offset, 5);
     }
 }

@@ -232,6 +232,10 @@ impl PaneRenderer {
     ///
     /// When the pane is in toggle mode (1 terminal + 1 browser), a centred
     /// segmented toggle control is rendered instead of individual pills.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tab bar needs quad pipe + viewport + 4 theme colors + cursor"
+    )]
     pub fn render_tab_bar(
         &self,
         quads: &mut QuadPipeline,
@@ -239,6 +243,7 @@ impl PaneRenderer {
         tab_bg: [f32; 4],
         active_tab_bg: [f32; 4],
         accent_color: [f32; 4],
+        amber_color: [f32; 4],
         cursor_pos: (f32, f32),
     ) -> Result<(), crate::RenderError> {
         if viewport.tab_count == 0 {
@@ -267,10 +272,39 @@ impl PaneRenderer {
 
             if i == viewport.active_tab {
                 quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, active_tab_bg, radius);
-                // Active indicator bar — full-width accent at top of pill
-                quads.push_rounded_quad(tab_x, pill_y, tab_width, 2.0 * s, accent_color, 1.0 * s);
+                // Active indicator bar — 2px accent underline at bottom of pill,
+                // inset horizontally so it reads as a mark rather than a full border.
+                let inset = 10.0 * s;
+                let bar_h = 2.0 * s;
+                let bar_y = pill_y + pill_h - bar_h;
+                quads.push_rounded_quad(
+                    tab_x + inset,
+                    bar_y,
+                    (tab_width - 2.0 * inset).max(bar_h),
+                    bar_h,
+                    accent_color,
+                    1.0 * s,
+                );
             } else {
                 quads.push_rounded_quad(tab_x, pill_y, tab_width, pill_h, tab_bg, radius);
+            }
+
+            // Unsaved indicator — 6px amber dot before the close button.
+            // Intentional: amber is the "attention" token, distinct from the
+            // accent blue used for focus/selection.
+            if viewport.unsaved.get(i).copied().unwrap_or(false) {
+                let dot_size = 6.0 * s;
+                let dot_gap = 6.0 * s;
+                let dot_x = tab_x + tab_width - CLOSE_BUTTON_SIZE * s - dot_gap - dot_size;
+                let dot_y = pill_y + (pill_h - dot_size) / 2.0;
+                quads.push_rounded_quad(
+                    dot_x,
+                    dot_y,
+                    dot_size,
+                    dot_size,
+                    amber_color,
+                    dot_size / 2.0,
+                );
             }
         }
 

@@ -1,6 +1,4 @@
-use std::collections::{HashMap, HashSet};
-
-use wmux_core::{PaneId, PaneRenderData};
+use wmux_core::PaneId;
 use wmux_render::TerminalRenderer;
 
 use crate::{
@@ -21,6 +19,57 @@ const TAB_TEXT_PADDING: f32 = 10.0;
 const TAB_TEXT_TOP_OFFSET: f32 = 10.0;
 /// Gap between tab bar start and the first tab (px).
 const TAB_GAP: f32 = 4.0;
+
+/// Group commands under stable sub-section headers in the palette.
+/// Returns the section label for a given command id, or `"OTHER"` for
+/// unclassified entries. Labels are uppercase, short, and rendered in the
+/// same muted caption style as the top-level "COMMANDS" header.
+fn command_category(id: &str) -> &'static str {
+    match id {
+        "split_right" | "split_left" | "split_down" | "split_up" => "SPLIT",
+        "close_pane" | "zoom_toggle" => "PANE",
+        "focus_up" | "focus_down" | "focus_left" | "focus_right" => "FOCUS",
+        "new_workspace" | "close_workspace" => "WORKSPACE",
+        "new_surface"
+        | "new_browser_surface"
+        | "cycle_surface_forward"
+        | "cycle_surface_backward" => "TABS",
+        "copy" | "paste" => "EDIT",
+        "toggle_sidebar" | "toggle_notification_panel" => "VIEW",
+        "find" | "jump_last_unread" => "SEARCH",
+        _ => "OTHER",
+    }
+}
+
+/// Map a command registry ID to the Codicons glyph that represents it in the
+/// palette result list. Returns a `CustomGlyph` sized for the 14x14 icon
+/// column; unknown IDs fall back to the Terminal icon.
+fn command_id_to_icon(id: &str) -> glyphon::CustomGlyph {
+    use wmux_render::icons::Icon;
+    let icon = match id {
+        "split_right" | "split_left" | "split_down" | "split_up" => Icon::Split,
+        "close_pane" | "close_workspace" => Icon::Close,
+        "focus_up" => Icon::ArrowUp,
+        "focus_down" => Icon::ArrowDown,
+        "focus_left" => Icon::ArrowLeft,
+        "focus_right" => Icon::ArrowRight,
+        "new_workspace" | "new_surface" => Icon::Add,
+        "new_browser_surface" => Icon::Globe,
+        "find" => Icon::Search,
+        "toggle_sidebar" | "toggle_notification_panel" => Icon::Workspace,
+        _ => Icon::Terminal,
+    };
+    glyphon::CustomGlyph {
+        id: icon.svg_id(),
+        left: 0.0,
+        top: 0.0,
+        width: 14.0,
+        height: 14.0,
+        color: None,
+        snap_to_physical_pixel: true,
+        metadata: 0,
+    }
+}
 
 /// Search bar overlay height (px).
 const SEARCH_BAR_HEIGHT: f32 = 38.0;
@@ -71,8 +120,20 @@ impl UiState<'_> {
             height: (surface_height as f32 - titlebar_height - status_bar_height).max(1.0),
         };
 
-        // Refresh workspace list once per frame.
-        self.workspace_cache = rt.block_on(app_state.list_workspaces());
+        // Single batched actor round-trip: fetch all state the render loop needs.
+        // Replaces four separate block_on calls (list_workspaces, get_layout,
+        // get_render_data×N, list_notifications) with one, reducing actor mailbox
+        // contention and staying well within the 16ms frame budget.
+        let frame_snapshot = rt.block_on(app_state.get_frame_snapshot(surface_viewport));
+        self.workspace_cache = frame_snapshot.workspaces;
+        let layout = frame_snapshot.layout;
+        let layout_dividers = frame_snapshot.layout_dividers;
+        // Hold notifications here; they are moved into notification_cache later
+        // in the notification panel section (only when the panel is open).
+        let frame_notifications = frame_snapshot.notifications;
+        self.pane_render_data_scratch.clear();
+        self.pane_render_data_scratch
+            .extend(frame_snapshot.pane_data);
 
         // Update sidebar text buffers (only reshapes when data changes).
         self.sidebar
@@ -121,9 +182,7 @@ impl UiState<'_> {
             );
         }
 
-        // Get pane layout from the actor (blocks briefly — acceptable once per frame).
-        let (layout, layout_dividers) = rt.block_on(app_state.get_layout(surface_viewport));
-        // Cache for non-blocking hit-testing on mouse clicks.
+        // Cache layout for non-blocking hit-testing on mouse clicks.
         self.last_layout.clone_from(&layout);
         // Convert tree-based dividers to UI dividers.
         self.dividers = layout_dividers
@@ -145,32 +204,29 @@ impl UiState<'_> {
             }
         }
 
-        // Collect render data for all panes first (surface info needed for viewports).
-        let mut render_data_map: HashMap<PaneId, PaneRenderData> =
-            HashMap::with_capacity(layout.len());
-        for (pane_id, _) in &layout {
-            if let Some(data) = rt.block_on(app_state.get_render_data(*pane_id)) {
-                render_data_map.insert(*pane_id, data);
-            }
-        }
+        // pane_render_data_scratch was populated by frame_snapshot above.
+        // Snapshot Copy fields so the closure below can mutate the scratch map
+        // without triggering a double borrow of self.
+        let focused_pane = self.focused_pane;
+        let scale_factor = self.scale_factor;
 
         // Build PaneViewport descriptors with real surface data.
         let viewports: Vec<wmux_render::PaneViewport> = layout
             .iter()
             .map(|(id, rect)| {
-                let (tab_count, tab_titles, surface_ids, surface_kinds, active_tab) =
-                    render_data_map
-                        .get_mut(id)
-                        .map(|d| {
-                            (
-                                d.surface_count,
-                                std::mem::take(&mut d.surface_titles),
-                                std::mem::take(&mut d.surface_ids),
-                                std::mem::take(&mut d.surface_kinds),
-                                d.active_surface,
-                            )
-                        })
-                        .unwrap_or((1, vec![], vec![], vec![], 0));
+                let (tab_count, tab_titles, surface_ids, surface_kinds, active_tab) = self
+                    .pane_render_data_scratch
+                    .get_mut(id)
+                    .map(|d| {
+                        (
+                            d.surface_count,
+                            std::mem::take(&mut d.surface_titles),
+                            std::mem::take(&mut d.surface_ids),
+                            std::mem::take(&mut d.surface_kinds),
+                            d.active_surface,
+                        )
+                    })
+                    .unwrap_or((1, vec![], vec![], vec![], 0));
                 let surface_types = surface_kinds
                     .iter()
                     .map(|k| match k {
@@ -189,7 +245,7 @@ impl UiState<'_> {
                 wmux_render::PaneViewport {
                     pane_id: *id,
                     rect: *rect,
-                    focused: *id == self.focused_pane,
+                    focused: *id == focused_pane,
                     tab_count,
                     tab_titles,
                     surface_ids,
@@ -197,7 +253,7 @@ impl UiState<'_> {
                     zoomed: false,
                     surface_types,
                     unsaved: vec![false; tab_count],
-                    scale: self.scale_factor,
+                    scale: scale_factor,
                 }
             })
             .collect();
@@ -212,6 +268,7 @@ impl UiState<'_> {
                 self.ui_chrome.surface_1,
                 self.ui_chrome.surface_2,
                 self.ui_chrome.accent,
+                self.ui_chrome.amber,
                 (self.cursor_pos.0 as f32, self.cursor_pos.1 as f32),
             );
             // Analytical shadow under tab bar (shadow-sm)
@@ -312,7 +369,11 @@ impl UiState<'_> {
         }
 
         // Collect live pane IDs once — used to prune stale tab title buffers and renderers.
-        let live_ids: HashSet<PaneId> = layout.iter().map(|(id, _)| *id).collect();
+        // Take the scratch set out of self so other self borrows can proceed freely (C5).
+        self.live_pane_ids_scratch.clear();
+        self.live_pane_ids_scratch
+            .extend(layout.iter().map(|(id, _)| *id));
+        let live_ids = std::mem::take(&mut self.live_pane_ids_scratch);
 
         // Update tab title text buffers for panes with multiple surfaces.
         {
@@ -401,6 +462,12 @@ impl UiState<'_> {
         }
 
         // Cache viewports for mouse hit-testing.
+        // C6 tradeoff: a slim PaneHitTest struct (pane_id + rect only) would avoid
+        // cloning the Vec<String>/Vec<SurfaceId>/Vec<bool> fields, but last_viewports
+        // has 10+ callsites in event_loop.rs that need the full PaneViewport data
+        // (tab bar hit-testing, browser panel positioning, drag-and-drop, etc.).
+        // Migrating all callsites is high-risk; clone_from at least reuses the
+        // Vec allocation across frames instead of allocating a fresh Vec every frame.
         self.last_viewports.clone_from(&viewports);
 
         // Validate tab_edit against current viewports (surface may have been closed via IPC).
@@ -477,6 +544,8 @@ impl UiState<'_> {
 
         // Remove renderers for panes that no longer exist in the layout.
         self.renderers.retain(|id, _| live_ids.contains(id));
+        // Return the scratch set to self to preserve its allocation for the next frame (C5).
+        self.live_pane_ids_scratch = live_ids;
 
         // Render address bars and position/show/hide browser panels.
         if let Some(ref mut mgr) = self.browser_manager {
@@ -648,7 +717,7 @@ impl UiState<'_> {
                 // Still consume render data to update focused pane metadata,
                 // but don't render any wgpu content (no background, no text,
                 // no cursor) — the WebView2 child HWND occupies this area.
-                if let Some(data) = render_data_map.remove(pane_id) {
+                if let Some(data) = self.pane_render_data_scratch.remove(pane_id) {
                     if *pane_id == self.focused_pane {
                         self.process_exited = data.process_exited;
                         self.terminal_modes = data.modes;
@@ -716,7 +785,7 @@ impl UiState<'_> {
             }
 
             // Use pre-collected render data for this pane.
-            if let Some(data) = render_data_map.remove(pane_id) {
+            if let Some(data) = self.pane_render_data_scratch.remove(pane_id) {
                 if *pane_id == self.focused_pane {
                     self.process_exited = data.process_exited;
                     self.terminal_modes = data.modes;
@@ -872,10 +941,10 @@ impl UiState<'_> {
 
                 // Update search text buffers for glyphon rendering (must happen
                 // before cursor position query and before text area collection).
-                let query_display: String = if self.search.query.is_empty() {
-                    "Search\u{2026}".to_owned()
+                let query_display: &str = if self.search.query.is_empty() {
+                    "Search\u{2026}"
                 } else {
-                    self.search.query.clone()
+                    &self.search.query
                 };
                 let count_display = self.search.match_count_display();
 
@@ -889,7 +958,7 @@ impl UiState<'_> {
                 );
                 self.search_query_buffer.set_text(
                     self.glyphon.font_system(),
-                    &query_display,
+                    query_display,
                     &ui_attrs,
                     glyphon::Shaping::Advanced,
                     None,
@@ -1220,16 +1289,20 @@ impl UiState<'_> {
 
         // Notification panel overlay (right-side slide-out).
         //
-        // Step 1: Fetch notifications from actor (only when panel is open).
+        // Step 1: Notifications were already fetched in the frame_snapshot above.
         // Step 2: Shape text buffers for visible items.
         // Step 3: Render background/item quads.
         // Text areas are collected later in the text phase.
+        //
+        // notif_refs is declared at this scope so the text-area phase (C7: ~2900 lines
+        // below) can reuse the same borrow instead of collecting a second Vec.
         if self.notification_panel.open {
-            self.notification_cache = rt.block_on(app_state.list_notifications(50));
-
-            let notif_refs: Vec<&wmux_core::Notification> =
-                self.notification_cache.iter().collect();
-
+            self.notification_cache = frame_notifications;
+        } else {
+            self.notification_cache.clear();
+        }
+        let notif_refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();
+        if self.notification_panel.open {
             // Always reshape text buffers — timestamps are time-dependent ("just now" → "1 min ago").
             {
                 let text_max_w = crate::notification_panel::PANEL_WIDTH
@@ -1337,9 +1410,6 @@ impl UiState<'_> {
                 surface_height as f32,
                 &self.ui_chrome,
             );
-        } else if !self.notification_cache.is_empty() {
-            // Panel closed — clear cache.
-            self.notification_cache.clear();
         }
 
         // Command palette overlay (fullscreen dim + palette chrome + text buffers).
@@ -1350,103 +1420,273 @@ impl UiState<'_> {
         // Step 3: Update text buffers + push text cursor quad.
         {
             use crate::command_palette::{
-                PaletteAction, PaletteFilter, INPUT_HEIGHT, INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS,
-                RESULT_HEIGHT, SHORTCUT_COL_WIDTH,
+                PaletteAction, PaletteFilter, PaletteRowCache as PaletteRow, INPUT_HEIGHT,
+                INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS, RESULT_HEIGHT, SHORTCUT_COL_WIDTH,
             };
+
+            /// Hard cap on the total number of rows stored in the palette cache.
+            /// Prevents unbounded growth when there are hundreds of workspaces
+            /// or surfaces — keeps `palette_actions`, `palette_row_sections`, and
+            /// `palette_row_icons` in sync at the same capped length.
+            const PALETTE_MAX_ROWS: usize = 500;
 
             if self.command_palette.open {
                 let sw = surface_width as f32;
                 let sh = surface_height as f32;
 
                 // Dirty check: skip expensive search + buffer updates when unchanged.
-                let palette_dirty = self.palette_last_query != self.command_palette.query
-                    || self.palette_last_filter != self.command_palette.filter;
+                // Uses Option sentinels so the very first open is always dirty (C1).
+                let palette_dirty = self.palette_last_query.as_deref()
+                    != Some(self.command_palette.query.as_str())
+                    || self.palette_last_filter != Some(self.command_palette.filter);
+
+                // `input_w` is needed by both the search rebuild (inside the
+                // dirty branch) and the viewport repaint (outside it, when
+                // only `scroll_offset` changed), so it lives at this scope.
+                let ly_tmp = crate::command_palette::PaletteLayout::compute(sw, sh, 0);
+                let input_w = ly_tmp.input_w;
 
                 if palette_dirty {
-                    self.palette_last_query
-                        .clone_from(&self.command_palette.query);
-                    self.palette_last_filter = self.command_palette.filter;
-
-                    let ly_tmp = crate::command_palette::PaletteLayout::compute(sw, sh, 0);
-                    let input_w = ly_tmp.input_w;
+                    self.palette_last_query = Some(self.command_palette.query.clone());
+                    self.palette_last_filter = Some(self.command_palette.filter);
 
                     let query = &self.command_palette.query;
                     let filter = self.command_palette.filter;
                     let query_lower = self.command_palette.query.to_lowercase();
 
                     // --- Step 1: Build result rows + actions based on filter ---
-                    // Each row: (name, shortcut_hint, action)
-                    let mut rows: Vec<(String, String, PaletteAction)> =
-                        Vec::with_capacity(MAX_VISIBLE_RESULTS);
+                    let mut rows: Vec<PaletteRow> =
+                        Vec::with_capacity(PALETTE_MAX_ROWS.min(MAX_VISIBLE_RESULTS * 4));
 
-                    let push_commands = |rows: &mut Vec<(String, String, PaletteAction)>| {
-                        for r in self.command_registry.search(query) {
-                            rows.push((
-                                r.entry.name.clone(),
-                                r.entry.shortcut.clone().unwrap_or_default(),
-                                PaletteAction::Command(r.entry.id.clone()),
-                            ));
+                    let push_commands = |rows: &mut Vec<PaletteRow>, with_section: bool| {
+                        let results = self.command_registry.search(query);
+                        if results.is_empty() {
+                            return;
                         }
-                    };
-                    let push_workspaces = |rows: &mut Vec<(String, String, PaletteAction)>| {
-                        for (i, ws) in self.workspace_cache.iter().enumerate() {
-                            if query.is_empty() || ws.name.to_lowercase().contains(&query_lower) {
-                                let hint = if i < 9 {
-                                    format!("Ctrl+{}", i + 1)
-                                } else {
-                                    String::new()
-                                };
-                                rows.push((
-                                    ws.name.clone(),
-                                    hint,
-                                    PaletteAction::SwitchWorkspace((i + 1) as u8),
-                                ));
+                        // When there is an active query, the mockup shows a single
+                        // "COMMANDS — MATCHING «query»" header over the matched
+                        // results. When the query is empty (browse mode), results
+                        // are grouped by thematic category (SPLIT, FOCUS, PANE,
+                        // WORKSPACE, TABS, EDIT, VIEW, SEARCH, OTHER).
+                        let use_categories = query.is_empty();
+                        if with_section && !use_categories {
+                            let label = format!(
+                                "{} \u{2014} \u{201C}{query}\u{201D}",
+                                self.locale.t("palette.section_commands")
+                            );
+                            rows.push(PaletteRow {
+                                name: String::new(),
+                                desc: String::new(),
+                                shortcut: String::new(),
+                                action: PaletteAction::Command(String::new()),
+                                section: Some(label),
+                            });
+                        }
+                        let mut last_category: Option<&'static str> = None;
+                        for r in results {
+                            if use_categories {
+                                let cat = command_category(&r.entry.id);
+                                if last_category != Some(cat) {
+                                    rows.push(PaletteRow {
+                                        name: String::new(),
+                                        desc: String::new(),
+                                        shortcut: String::new(),
+                                        action: PaletteAction::Command(String::new()),
+                                        section: Some(cat.to_string()),
+                                    });
+                                    last_category = Some(cat);
+                                }
                             }
+                            rows.push(PaletteRow {
+                                name: r.entry.name.clone(),
+                                desc: r.entry.description.clone(),
+                                shortcut: r.entry.shortcut.clone().unwrap_or_default(),
+                                action: PaletteAction::Command(r.entry.id.clone()),
+                                section: None,
+                            });
                         }
                     };
-                    let push_surfaces = |rows: &mut Vec<(String, String, PaletteAction)>| {
+                    let push_workspaces = |rows: &mut Vec<PaletteRow>, with_section: bool| {
+                        let matches: Vec<(usize, _)> = self
+                            .workspace_cache
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ws)| {
+                                query.is_empty() || ws.name.to_lowercase().contains(&query_lower)
+                            })
+                            .collect();
+                        if matches.is_empty() {
+                            return;
+                        }
+                        if with_section {
+                            rows.push(PaletteRow {
+                                name: String::new(),
+                                desc: String::new(),
+                                shortcut: String::new(),
+                                action: PaletteAction::Command(String::new()),
+                                section: Some(
+                                    self.locale.t("palette.section_workspaces").to_string(),
+                                ),
+                            });
+                        }
+                        for (i, ws) in matches {
+                            let hint = if i < 9 {
+                                format!("Ctrl+{}", i + 1)
+                            } else {
+                                String::new()
+                            };
+                            // Meta line, close to the mockup: branch · N panes · cwd.
+                            let mut meta_parts: Vec<String> = Vec::new();
+                            if let Some(ref branch) = ws.git_branch {
+                                meta_parts.push(branch.clone());
+                            }
+                            meta_parts.push(
+                                self.locale
+                                    .t("palette.panes_suffix")
+                                    .replace("{n}", &ws.pane_count.to_string()),
+                            );
+                            if let Some(ref cwd) = ws.cwd {
+                                meta_parts.push(cwd.clone());
+                            }
+                            let meta = meta_parts.join(" \u{00b7} ");
+                            rows.push(PaletteRow {
+                                name: ws.name.clone(),
+                                desc: meta,
+                                shortcut: hint,
+                                action: PaletteAction::SwitchWorkspace((i + 1) as u8),
+                                section: None,
+                            });
+                        }
+                    };
+                    let push_surfaces = |rows: &mut Vec<PaletteRow>, with_section: bool| {
+                        let mut matched: Vec<(wmux_core::PaneId, usize, String)> = Vec::new();
                         for vp in &viewports {
                             for (tab_idx, title) in vp.tab_titles.iter().enumerate() {
                                 let display = if title.is_empty() {
-                                    format!("Surface {}", tab_idx + 1)
+                                    self.locale
+                                        .t("palette.surface_fallback")
+                                        .replace("{n}", &(tab_idx + 1).to_string())
                                 } else {
                                     title.clone()
                                 };
                                 if query.is_empty() || display.to_lowercase().contains(&query_lower)
                                 {
-                                    rows.push((
-                                        display,
-                                        String::new(),
-                                        PaletteAction::FocusSurface(vp.pane_id, tab_idx),
-                                    ));
+                                    matched.push((vp.pane_id, tab_idx, display));
                                 }
                             }
+                        }
+                        if matched.is_empty() {
+                            return;
+                        }
+                        if with_section {
+                            rows.push(PaletteRow {
+                                name: String::new(),
+                                desc: String::new(),
+                                shortcut: String::new(),
+                                action: PaletteAction::Command(String::new()),
+                                section: Some(
+                                    self.locale.t("palette.section_surfaces").to_string(),
+                                ),
+                            });
+                        }
+                        for (pane_id, tab_idx, display) in matched {
+                            rows.push(PaletteRow {
+                                name: display,
+                                desc: String::new(),
+                                shortcut: String::new(),
+                                action: PaletteAction::FocusSurface(pane_id, tab_idx),
+                                section: None,
+                            });
                         }
                     };
 
                     match filter {
-                        PaletteFilter::Commands => push_commands(&mut rows),
-                        PaletteFilter::Workspaces => push_workspaces(&mut rows),
-                        PaletteFilter::Surfaces => push_surfaces(&mut rows),
+                        PaletteFilter::Commands => push_commands(&mut rows, false),
+                        PaletteFilter::Workspaces => push_workspaces(&mut rows, false),
+                        PaletteFilter::Surfaces => push_surfaces(&mut rows, false),
                         PaletteFilter::All => {
-                            push_commands(&mut rows);
-                            push_workspaces(&mut rows);
-                            push_surfaces(&mut rows);
+                            push_commands(&mut rows, true);
+                            push_workspaces(&mut rows, true);
+                            push_surfaces(&mut rows, true);
                         }
                     }
 
-                    let visible = rows.len().min(MAX_VISIBLE_RESULTS);
-                    self.command_palette.set_result_count(visible);
+                    // Cap total rows to prevent unbounded growth (B2).
+                    // Truncate before populating parallel vecs so their lengths stay in sync.
+                    rows.truncate(PALETTE_MAX_ROWS);
 
-                    // Store actions for the Enter handler.
+                    // Store the full row set — navigation uses `result_count`
+                    // to wrap, `scroll_offset` defines which rows render in the
+                    // viewport. This replaces the old "truncate to viewport"
+                    // behaviour that used to discard workspaces past index 20.
+                    let total_rows = rows.len();
+                    self.command_palette.set_result_count(total_rows);
+                    self.command_palette.scroll_offset = 0;
+
                     self.palette_actions.clear();
                     self.palette_actions
-                        .extend(rows.iter().take(visible).map(|(_, _, a)| a.clone()));
+                        .extend(rows.iter().map(|r| r.action.clone()));
+                    self.palette_row_sections.clear();
+                    self.palette_row_sections
+                        .extend(rows.iter().map(|r| r.section.clone()));
+
+                    // Per-row icon mapping over the *full* list.
+                    self.palette_row_icons.clear();
+                    for r in &rows {
+                        let cg = match &r.action {
+                            PaletteAction::Command(id) => command_id_to_icon(id),
+                            PaletteAction::FocusSurface(_, _) => glyphon::CustomGlyph {
+                                id: wmux_render::icons::Icon::Terminal.svg_id(),
+                                left: 0.0,
+                                top: 0.0,
+                                width: 14.0,
+                                height: 14.0,
+                                color: None,
+                                snap_to_physical_pixel: true,
+                                metadata: 0,
+                            },
+                            PaletteAction::SwitchWorkspace(_) => {
+                                // Workspace rows render a colored square quad +
+                                // number text; the CG slot is a harmless sentinel
+                                // (never drawn because text_areas skips it).
+                                glyphon::CustomGlyph {
+                                    id: 0,
+                                    left: 0.0,
+                                    top: 0.0,
+                                    width: 0.0,
+                                    height: 0.0,
+                                    color: None,
+                                    snap_to_physical_pixel: true,
+                                    metadata: 0,
+                                }
+                            }
+                        };
+                        self.palette_row_icons.push([cg]);
+                    }
+
+                    // Cache the raw row strings so later frames can re-fill the
+                    // viewport window buffers on scroll without re-running the
+                    // search.
+                    self.palette_rows_cache = rows;
+
+                    // After a fresh search, the default `selected = 0` can land
+                    // on a section header (when filter=All). Advance until we
+                    // hit a selectable item — or give up if the list is all
+                    // sections.
+                    let mut safety = total_rows;
+                    while safety > 0
+                        && self
+                            .palette_row_sections
+                            .get(self.command_palette.selected)
+                            .is_some_and(|s| s.is_some())
+                    {
+                        self.command_palette.select_next();
+                        safety -= 1;
+                    }
 
                     // Update text buffers (only when dirty).
-                    // TODO(i18n): palette.search_placeholder
-                    let query_display = if self.command_palette.query.is_empty() {
-                        "Type a command\u{2026}"
+                    let query_display: &str = if self.command_palette.query.is_empty() {
+                        self.locale.t("palette.search_placeholder")
                     } else {
                         &self.command_palette.query
                     };
@@ -1465,50 +1705,166 @@ impl UiState<'_> {
                     );
                     self.palette_query_buffer
                         .shape_until_scroll(self.glyphon.font_system(), false);
+                } // end dirty check
 
-                    for (i, (name, shortcut, _)) in rows.iter().enumerate().take(visible) {
-                        self.palette_result_buffers[i].set_size(
+                // --- Scroll + viewport buffer population ---
+                // Adjust scroll_offset every frame so the selected row stays
+                // visible, then re-fill the viewport buffer slots whenever the
+                // offset changed since the last frame (or the search rebuilt
+                // the cache, in which case palette_last_scroll was left stale
+                // and the window still gets populated on this path).
+                let ly_scroll = crate::command_palette::PaletteLayout::compute(
+                    sw,
+                    sh,
+                    self.command_palette.result_count.min(MAX_VISIBLE_RESULTS),
+                );
+                let total_rows = self.palette_rows_cache.len();
+                // Only follow the selection with scroll when it actually
+                // moved — otherwise the mouse-wheel-set offset would be
+                // snapped back every frame.
+                if Some(self.command_palette.selected) != self.palette_last_selected {
+                    self.command_palette
+                        .scroll_to_selected(ly_scroll.visible_results, total_rows);
+                    self.palette_last_selected = Some(self.command_palette.selected);
+                }
+                // Always clamp (e.g. after a resize the max_offset can shrink).
+                let max_offset = total_rows.saturating_sub(ly_scroll.visible_results);
+                if self.command_palette.scroll_offset > max_offset {
+                    self.command_palette.scroll_offset = max_offset;
+                }
+                let offset = self.command_palette.scroll_offset;
+                let window_dirty = palette_dirty || self.palette_last_scroll != Some(offset);
+                if window_dirty {
+                    self.palette_last_scroll = Some(offset);
+                    let slot_count = ly_scroll
+                        .visible_results
+                        .min(total_rows.saturating_sub(offset));
+                    for slot in 0..slot_count {
+                        let row = &self.palette_rows_cache[offset + slot];
+                        let label = row.section.as_deref().unwrap_or(&row.name);
+                        self.palette_result_buffers[slot].set_size(
                             self.glyphon.font_system(),
                             Some((input_w - SHORTCUT_COL_WIDTH).max(1.0)),
                             Some(RESULT_HEIGHT),
                         );
-                        self.palette_result_buffers[i].set_text(
+                        self.palette_result_buffers[slot].set_text(
                             self.glyphon.font_system(),
-                            name,
+                            label,
                             &ui_attrs,
                             glyphon::Shaping::Advanced,
                             None,
                         );
-                        self.palette_result_buffers[i]
+                        self.palette_result_buffers[slot]
                             .shape_until_scroll(self.glyphon.font_system(), false);
 
-                        self.palette_shortcut_buffers[i].set_size(
+                        self.palette_shortcut_buffers[slot].set_size(
                             self.glyphon.font_system(),
                             Some(SHORTCUT_COL_WIDTH),
                             Some(RESULT_HEIGHT),
                         );
-                        self.palette_shortcut_buffers[i].set_text(
+                        self.palette_shortcut_buffers[slot].set_text(
                             self.glyphon.font_system(),
-                            shortcut,
+                            &row.shortcut,
                             &ui_attrs_light,
                             glyphon::Shaping::Advanced,
                             None,
                         );
-                        self.palette_shortcut_buffers[i]
+                        self.palette_shortcut_buffers[slot]
+                            .shape_until_scroll(self.glyphon.font_system(), false);
+
+                        self.palette_desc_buffers[slot].set_size(
+                            self.glyphon.font_system(),
+                            Some((input_w - SHORTCUT_COL_WIDTH).max(1.0)),
+                            Some(20.0),
+                        );
+                        self.palette_desc_buffers[slot].set_text(
+                            self.glyphon.font_system(),
+                            &row.desc,
+                            &ui_attrs_light,
+                            glyphon::Shaping::Advanced,
+                            None,
+                        );
+                        self.palette_desc_buffers[slot]
+                            .shape_until_scroll(self.glyphon.font_system(), false);
+
+                        let ws_label = match &row.action {
+                            PaletteAction::SwitchWorkspace(n) => n.to_string(),
+                            _ => String::new(),
+                        };
+                        self.palette_ws_icon_buffers[slot].set_size(
+                            self.glyphon.font_system(),
+                            Some(22.0),
+                            Some(22.0),
+                        );
+                        self.palette_ws_icon_buffers[slot].set_text(
+                            self.glyphon.font_system(),
+                            &ws_label,
+                            &ui_attrs,
+                            glyphon::Shaping::Advanced,
+                            None,
+                        );
+                        self.palette_ws_icon_buffers[slot]
                             .shape_until_scroll(self.glyphon.font_system(), false);
                     }
-                } // end dirty check
+                }
 
                 // Render quads every frame (uses cached result_count).
                 self.command_palette
                     .render_quads(&mut self.quads, sw, sh, &self.ui_chrome);
 
-                // Text cursor in the input field (every frame).
+                // Workspace colored-square icons + footer chrome.
                 let ly = crate::command_palette::PaletteLayout::compute(
                     sw,
                     sh,
                     self.command_palette.result_count.min(MAX_VISIBLE_RESULTS),
                 );
+                // Cycle 4 colors so adjacent workspaces stay distinguishable,
+                // matching the mockup's 1-blue / 2-green / 3-amber / 4-violet.
+                let ws_palette = [
+                    self.ui_chrome.accent,
+                    self.ui_chrome.success,
+                    self.ui_chrome.amber,
+                    self.ui_chrome.accent_hi,
+                ];
+                let scroll_offset = self.command_palette.scroll_offset;
+                for slot in 0..ly.visible_results {
+                    let row_idx = scroll_offset + slot;
+                    if let Some(PaletteAction::SwitchWorkspace(n)) =
+                        self.palette_actions.get(row_idx)
+                    {
+                        let row_y = ly.results_y + slot as f32 * RESULT_HEIGHT;
+                        let icon_y = row_y + (RESULT_HEIGHT - 22.0) / 2.0;
+                        let icon_x = ly.input_x + INPUT_TEXT_PAD;
+                        let color = ws_palette[(*n as usize).saturating_sub(1) % 4];
+                        self.quads
+                            .push_rounded_quad(icon_x, icon_y, 22.0, 22.0, color, 4.0);
+                    }
+                }
+
+                // Footer chrome — top border + tiny accent-gradient mark beside
+                // the brand text. Colors only, text lives in text_areas.
+                let footer_y =
+                    ly.palette_y + ly.total_height - crate::command_palette::FOOTER_HEIGHT;
+                self.quads.push_quad(
+                    ly.input_x,
+                    footer_y,
+                    ly.input_w,
+                    1.0,
+                    self.ui_chrome.border_subtle,
+                );
+                let brand_mark_x =
+                    ly.palette_x + ly.effective_width - crate::command_palette::PADDING - 50.0;
+                let brand_mark_y = footer_y + (crate::command_palette::FOOTER_HEIGHT - 10.0) / 2.0;
+                self.quads.push_rounded_quad(
+                    brand_mark_x,
+                    brand_mark_y,
+                    10.0,
+                    10.0,
+                    self.ui_chrome.accent,
+                    2.0,
+                );
+
+                // Text cursor in the input field (every frame).
                 {
                     let text_w = if self.command_palette.query.is_empty() {
                         0.0
@@ -1574,24 +1930,29 @@ impl UiState<'_> {
         // Collect text areas from ALL pane renderers + sidebar + tabs, then prepare glyphon once.
         let surface_w = self.gpu.width();
         let surface_h = self.gpu.height();
-        let mut all_text_areas: Vec<_> = layout
-            .iter()
-            .filter_map(|(pane_id, pane_rect)| {
-                let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
-                let terminal_rect = vp
-                    .map(wmux_render::PaneRenderer::terminal_viewport)
-                    .unwrap_or(*pane_rect);
-                self.renderers.get(pane_id).map(|r| {
-                    r.text_areas(
-                        (terminal_rect.x, terminal_rect.y),
-                        terminal_rect,
-                        surface_w,
-                        surface_h,
-                    )
+        // Pre-allocate with a rough estimate: ~30 rows per pane + 128 for UI chrome
+        // (sidebar, tab bars, overlays). Avoids repeated reallocations as we extend (S4).
+        let estimated_areas = layout.len().saturating_mul(30).saturating_add(128);
+        let mut all_text_areas: Vec<glyphon::TextArea<'_>> = Vec::with_capacity(estimated_areas);
+        all_text_areas.extend(
+            layout
+                .iter()
+                .filter_map(|(pane_id, pane_rect)| {
+                    let vp = viewports.iter().find(|v| v.pane_id == *pane_id);
+                    let terminal_rect = vp
+                        .map(wmux_render::PaneRenderer::terminal_viewport)
+                        .unwrap_or(*pane_rect);
+                    self.renderers.get(pane_id).map(|r| {
+                        r.text_areas(
+                            (terminal_rect.x, terminal_rect.y),
+                            terminal_rect,
+                            surface_w,
+                            surface_h,
+                        )
+                    })
                 })
-            })
-            .flatten()
-            .collect();
+                .flatten(),
+        );
 
         // Append tab title text areas + close button × glyphs.
         // Also update the tab edit buffer if editing.
@@ -1977,18 +2338,12 @@ impl UiState<'_> {
 
         // Append sidebar text areas (workspace names + subtitles + icons).
         if self.sidebar.visible {
-            let ws_status_icons: Vec<Vec<(String, String)>> = self
-                .workspace_cache
-                .iter()
-                .map(|ws| ws.status_icons.clone())
-                .collect();
             all_text_areas.extend(self.sidebar.text_areas(
                 surface_w,
                 surface_h,
                 &self.ui_chrome,
                 self.scale_factor,
                 &self.workspace_cache,
-                &ws_status_icons,
                 &self.icon_empty_buffer,
                 &self.status_icon_cgs,
             ));
@@ -2286,8 +2641,8 @@ impl UiState<'_> {
         if self.command_palette.open {
             use crate::command_palette::{
                 PaletteFilter, PaletteLayout, FILTER_ROW_HEIGHT, FILTER_TAB_GAP, FILTER_TAB_PAD_X,
-                FILTER_TAB_PAD_Y, INPUT_HEIGHT, INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS, RESULT_HEIGHT,
-                SHORTCUT_COL_PAD, SHORTCUT_COL_WIDTH,
+                FILTER_TAB_PAD_Y, FOOTER_HEIGHT, INPUT_HEIGHT, INPUT_TEXT_PAD, MAX_VISIBLE_RESULTS,
+                PADDING, RESULT_HEIGHT, RESULT_ICON_COL, SHORTCUT_COL_PAD, SHORTCUT_COL_WIDTH,
             };
 
             let sw = surface_w as f32;
@@ -2335,8 +2690,9 @@ impl UiState<'_> {
                 let text_y = pill_y + (pill_h - caption_lh) / 2.0;
 
                 let tab_color = if *variant == self.command_palette.filter {
-                    // Active tab: inverse text on accent background.
-                    rgba_to_glyphon(self.ui_chrome.text_inverse)
+                    // Active tab now sits on surface_2 with an accent underline,
+                    // so the label reads as primary chrome text, not inverse.
+                    rgba_to_glyphon(self.ui_chrome.text_primary)
                 } else {
                     rgba_to_glyphon(self.ui_chrome.text_secondary)
                 };
@@ -2359,23 +2715,95 @@ impl UiState<'_> {
                 tab_x += pill_w + FILTER_TAB_GAP;
             }
 
-            // Result names + shortcut badges.
+            // Result names + descriptions + shortcut badges.
             let visible = ly.visible_results;
+            let scroll_offset = self.command_palette.scroll_offset;
+            let total_rows = self.palette_rows_cache.len();
+            let slot_count = visible.min(total_rows.saturating_sub(scroll_offset));
             let name_color = rgba_to_glyphon(self.ui_chrome.text_primary);
+            let desc_color = rgba_to_glyphon(self.ui_chrome.text_muted);
             let shortcut_color = rgba_to_glyphon(self.ui_chrome.text_muted);
-            for i in 0..visible {
-                let row_y = ly.results_y + i as f32 * RESULT_HEIGHT;
-                let text_y = row_y + (RESULT_HEIGHT - caption_lh) / 2.0;
-
-                // Command name (left-aligned).
+            let section_color = rgba_to_glyphon(self.ui_chrome.text_faint);
+            for slot in 0..slot_count {
+                let row_idx = scroll_offset + slot;
+                let row_y = ly.results_y + slot as f32 * RESULT_HEIGHT;
                 let shortcut_start = ly.input_x + ly.input_w - SHORTCUT_COL_WIDTH;
+                let is_section = self
+                    .palette_row_sections
+                    .get(row_idx)
+                    .is_some_and(|s| s.is_some());
+
+                if is_section {
+                    // Section header label: uppercase caption, left-aligned,
+                    // muted. No shortcut, no description beneath.
+                    all_text_areas.push(glyphon::TextArea {
+                        buffer: &self.palette_result_buffers[slot],
+                        left: ly.input_x + INPUT_TEXT_PAD,
+                        top: row_y + (RESULT_HEIGHT - caption_lh) / 2.0,
+                        scale: self.scale_factor,
+                        bounds: glyphon::TextBounds {
+                            left: ly.input_x as i32,
+                            top: row_y as i32,
+                            right: (ly.input_x + ly.input_w) as i32,
+                            bottom: (row_y + RESULT_HEIGHT) as i32,
+                        },
+                        default_color: section_color,
+                        custom_glyphs: &[],
+                    });
+                    continue;
+                }
+
+                // Row icon — Codicons glyph for commands/surfaces, nothing
+                // for workspaces (a colored quad was already pushed).
+                let is_workspace = matches!(
+                    self.palette_actions.get(row_idx),
+                    Some(crate::command_palette::PaletteAction::SwitchWorkspace(_))
+                );
+                let icon_slot_x = ly.input_x + INPUT_TEXT_PAD;
+                let icon_slot_y = row_y + (RESULT_HEIGHT - 14.0) / 2.0;
+                if is_workspace {
+                    // Workspace number centred on the colored square.
+                    all_text_areas.push(glyphon::TextArea {
+                        buffer: &self.palette_ws_icon_buffers[slot],
+                        left: icon_slot_x + 7.0,
+                        top: row_y + (RESULT_HEIGHT - 16.0) / 2.0,
+                        scale: self.scale_factor,
+                        bounds: glyphon::TextBounds {
+                            left: icon_slot_x as i32,
+                            top: row_y as i32,
+                            right: (icon_slot_x + 22.0) as i32,
+                            bottom: (row_y + RESULT_HEIGHT) as i32,
+                        },
+                        default_color: rgba_to_glyphon(self.ui_chrome.text_inverse),
+                        custom_glyphs: &[],
+                    });
+                } else if let Some(cg) = self.palette_row_icons.get(row_idx) {
+                    all_text_areas.push(glyphon::TextArea {
+                        buffer: &self.icon_empty_buffer,
+                        left: icon_slot_x,
+                        top: icon_slot_y,
+                        scale: self.scale_factor,
+                        bounds: glyphon::TextBounds {
+                            left: icon_slot_x as i32,
+                            top: row_y as i32,
+                            right: (icon_slot_x + 14.0) as i32,
+                            bottom: (row_y + RESULT_HEIGHT) as i32,
+                        },
+                        default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                        custom_glyphs: cg,
+                    });
+                }
+
+                let text_start = ly.input_x + INPUT_TEXT_PAD + RESULT_ICON_COL;
+
+                // Name: top half of the row, left-aligned after the icon column.
                 all_text_areas.push(glyphon::TextArea {
-                    buffer: &self.palette_result_buffers[i],
-                    left: ly.input_x + INPUT_TEXT_PAD,
-                    top: text_y,
+                    buffer: &self.palette_result_buffers[slot],
+                    left: text_start,
+                    top: row_y + 6.0,
                     scale: self.scale_factor,
                     bounds: glyphon::TextBounds {
-                        left: ly.input_x as i32,
+                        left: text_start as i32,
                         top: row_y as i32,
                         right: shortcut_start as i32,
                         bottom: (row_y + RESULT_HEIGHT) as i32,
@@ -2384,11 +2812,27 @@ impl UiState<'_> {
                     custom_glyphs: &[],
                 });
 
-                // Shortcut badge (right-aligned).
+                // Description / meta: bottom half, muted.
                 all_text_areas.push(glyphon::TextArea {
-                    buffer: &self.palette_shortcut_buffers[i],
+                    buffer: &self.palette_desc_buffers[slot],
+                    left: text_start,
+                    top: row_y + 24.0,
+                    scale: self.scale_factor,
+                    bounds: glyphon::TextBounds {
+                        left: text_start as i32,
+                        top: (row_y + 22.0) as i32,
+                        right: shortcut_start as i32,
+                        bottom: (row_y + RESULT_HEIGHT) as i32,
+                    },
+                    default_color: desc_color,
+                    custom_glyphs: &[],
+                });
+
+                // Shortcut badge: right-aligned, vertically centered on the row.
+                all_text_areas.push(glyphon::TextArea {
+                    buffer: &self.palette_shortcut_buffers[slot],
                     left: shortcut_start + SHORTCUT_COL_PAD,
-                    top: text_y,
+                    top: row_y + (RESULT_HEIGHT - caption_lh) / 2.0,
                     scale: self.scale_factor,
                     bounds: glyphon::TextBounds {
                         left: shortcut_start as i32,
@@ -2400,6 +2844,39 @@ impl UiState<'_> {
                     custom_glyphs: &[],
                 });
             }
+
+            // Footer: nav hints at left, brand mark + "wmux" at right.
+            let footer_y = ly.palette_y + ly.total_height - FOOTER_HEIGHT;
+            let hints_y = footer_y + (FOOTER_HEIGHT - 14.0) / 2.0;
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.palette_footer_hints_buffer,
+                left: ly.input_x + INPUT_TEXT_PAD,
+                top: hints_y,
+                scale: self.scale_factor,
+                bounds: glyphon::TextBounds {
+                    left: ly.input_x as i32,
+                    top: footer_y as i32,
+                    right: (ly.palette_x + ly.effective_width - 70.0) as i32,
+                    bottom: (footer_y + FOOTER_HEIGHT) as i32,
+                },
+                default_color: rgba_to_glyphon(self.ui_chrome.text_muted),
+                custom_glyphs: &[],
+            });
+            let brand_text_x = ly.palette_x + ly.effective_width - PADDING - 34.0;
+            all_text_areas.push(glyphon::TextArea {
+                buffer: &self.palette_footer_brand_buffer,
+                left: brand_text_x,
+                top: hints_y,
+                scale: self.scale_factor,
+                bounds: glyphon::TextBounds {
+                    left: (brand_text_x - 4.0) as i32,
+                    top: footer_y as i32,
+                    right: (ly.palette_x + ly.effective_width) as i32,
+                    bottom: (footer_y + FOOTER_HEIGHT) as i32,
+                },
+                default_color: rgba_to_glyphon(self.ui_chrome.text_secondary),
+                custom_glyphs: &[],
+            });
         }
 
         // Append notification panel text areas.
@@ -2414,9 +2891,9 @@ impl UiState<'_> {
             timestamps: &self.notif_time_buffers,
         };
         if self.notification_panel.open {
-            let refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();
+            // Reuse notif_refs collected at the start of the notification block (C7).
             all_text_areas.extend(self.notification_panel.text_areas(
-                &refs,
+                &notif_refs,
                 surface_w as f32,
                 surface_h as f32,
                 self.scale_factor,
