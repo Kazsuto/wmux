@@ -802,8 +802,7 @@ impl SidebarState {
         surface_height: u32,
         ui_chrome: &UiChrome,
         scale_factor: f32,
-        workspaces: &[WorkspaceSnapshot],
-        workspace_status_icons: &[Vec<(String, String)>],
+        workspaces: &'a [WorkspaceSnapshot],
         icon_empty: &'a glyphon::Buffer,
         status_icon_cgs: &'a std::collections::HashMap<
             wmux_render::icons::Icon,
@@ -888,13 +887,7 @@ impl SidebarState {
                 }
             }
 
-            let _ = (
-                text_color,
-                text_dim,
-                workspace_status_icons,
-                icon_empty,
-                status_icon_cgs,
-            );
+            let _ = (text_color, text_dim, icon_empty, status_icon_cgs);
             return areas;
         }
 
@@ -977,7 +970,7 @@ impl SidebarState {
             }
 
             // Status icon from IPC (right side of card, below name).
-            if let Some(icons) = workspace_status_icons.get(i) {
+            if let Some(icons) = workspaces.get(i).map(|ws| ws.status_icons.as_slice()) {
                 if let Some((_key, icon_name)) = icons.first() {
                     if let Some(icon) = wmux_render::icons::Icon::from_name(icon_name) {
                         if let Some(cg) = status_icon_cgs.get(&icon) {

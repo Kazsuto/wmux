@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+REFACTOR: Zero-copy sidebar status icons — remove per-frame `Vec<Vec<(String, String)>>` allocation in `render.rs`; `Sidebar::text_areas()` now accepts `workspaces: &[WorkspaceSnapshot]` directly and reads `ws.status_icons.as_slice()` inline, eliminating two String clones per icon per frame.
 FEATURE: Add `accent_hi`, `amber`, `amber_soft` tokens to `UiChrome`/`derive_ui_chrome` — `accent_hi` is accent blended 22% toward white (produces ~#4a94f0 on digital-obsidian) for hover/emphasis; `amber` is a fixed palette-independent attention color (#c58a3a) distinct from the blue accent so the two can never be confused at a glance; `amber_soft` is amber at 22% alpha. Wires into: tab-bar unsaved dot (amber), status-bar reconnecting dot with soft amber halo (amber/amber_soft), command-palette selected-result left stripe (accent_hi).
 FEATURE: Tab bar active-tab accent indicator moves from 2px top bar to 2px bottom underline with 10px horizontal inset — matches design spec for "one accent-marking rule" across the app; adds amber unsaved-state dot rendering (infrastructure exists on `PaneViewport.unsaved`, previously unread).
 FEATURE: Command palette polish — width 600→620px, active filter tab changes from solid accent pill to surface-2 fill + 2px accent underline (same rule as pane tab bar), selected result row gains a 2px accent_hi left stripe on top of surface-2 highlight (same rule as rail active workspace), inactive filter tabs drop their border outline so the chrome stays quiet.

@@ -700,4 +700,76 @@ mod tests {
         assert!(ly.visible_results >= 12, "expected at least 12 rows to fit");
         assert!(ly.visible_results <= 20, "cannot exceed requested count");
     }
+
+    // --- scroll_to_selected ---
+
+    fn palette_with_offset(selected: usize, scroll_offset: usize) -> CommandPalette {
+        let mut p = CommandPalette::new();
+        p.selected = selected;
+        p.scroll_offset = scroll_offset;
+        p
+    }
+
+    #[test]
+    fn scroll_to_selected_resets_when_visible_zero() {
+        // visible=0 resets scroll_offset to 0 regardless of prior state.
+        let mut p = palette_with_offset(5, 3);
+        p.scroll_to_selected(0, 10);
+        assert_eq!(p.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_selected_resets_when_total_zero() {
+        // total_rows=0 resets scroll_offset to 0 regardless of prior state.
+        let mut p = palette_with_offset(0, 4);
+        p.scroll_to_selected(5, 0);
+        assert_eq!(p.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_selected_scrolls_down_when_below_viewport() {
+        // selected=15 is below the viewport [0, 5).
+        // Expected: scroll_offset = selected + 1 - visible = 15 + 1 - 5 = 11.
+        let mut p = palette_with_offset(15, 0);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 11);
+    }
+
+    #[test]
+    fn scroll_to_selected_scrolls_up_when_above_viewport() {
+        // scroll_offset=10, selected=3 is above the viewport [10, 15).
+        // Expected: scroll_offset = selected = 3.
+        let mut p = palette_with_offset(3, 10);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 3);
+    }
+
+    #[test]
+    fn scroll_to_selected_stays_in_viewport() {
+        // scroll_offset=5, selected=7 is inside the viewport [5, 10).
+        // No adjustment should happen.
+        let mut p = palette_with_offset(7, 5);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 5);
+    }
+
+    #[test]
+    fn scroll_to_selected_clamps_at_total_minus_visible() {
+        // selected=19 (total-1), visible=5, total=20.
+        // scroll_offset = 19 + 1 - 5 = 15, which equals total - visible = 15.
+        let mut p = palette_with_offset(19, 0);
+        p.scroll_to_selected(5, 20);
+        assert_eq!(p.scroll_offset, 15);
+    }
+
+    #[test]
+    fn scroll_to_selected_clamps_when_selected_beyond_total() {
+        // selected=100, total=10, visible=5.
+        // Step 1: selected >= scroll_offset + visible → scroll_offset = 100 + 1 - 5 = 96.
+        // Step 2: clamp to max_offset = 10.saturating_sub(5) = 5.
+        // Result: scroll_offset = 5.
+        let mut p = palette_with_offset(100, 0);
+        p.scroll_to_selected(5, 10);
+        assert_eq!(p.scroll_offset, 5);
+    }
 }

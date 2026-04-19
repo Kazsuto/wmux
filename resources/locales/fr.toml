@@ -12,6 +12,13 @@ no_results = "Aucun résultat"
 open = "Ouvrir"
 recent = "Récent"
 commands = "Commandes"
+# Command palette (added 2026-04-19)
+section_commands = "COMMANDES — CORRESPONDANT À"
+section_workspaces = "ESPACES DE TRAVAIL"
+section_surfaces = "SURFACES"
+footer_hints = "↑↓ naviguer / ↵ sélectionner / Tab filtrer / ESC fermer"
+surface_fallback = "Surface {n}"
+panes_suffix = "{n} volets"
 
 [notification]
 clear_all = "Tout effacer"

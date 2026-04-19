@@ -183,6 +183,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
         };
 
         // Install custom title bar chrome (removes native title bar, enables drag/snap).
+        // SAFETY: main_hwnd is obtained from winit's Win32 window handle on the UI thread.
+        // On the error path at lines 173-181, main_hwnd is HWND::default() (null);
+        // install_custom_chrome handles that by returning false on the first Win32 call,
+        // before any subclass hook is registered.
         let custom_chrome = unsafe { crate::titlebar::install_custom_chrome(main_hwnd) };
         if custom_chrome {
             crate::titlebar::update_metrics(initial_scale_factor);
@@ -1180,7 +1184,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                         use windows::Win32::UI::WindowsAndMessaging::{
                             ShowWindow, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
                         };
-                        // SAFETY: ShowWindow/close are safe with a valid HWND from winit.
+                        // SAFETY: state.main_hwnd is a valid top-level window handle from winit, alive for the
+                        // duration of the event loop. ShowWindow and PostMessageW accept any valid HWND;
+                        // WM_CLOSE (0x0010) routes through winit's WndProc which triggers the CloseRequested event.
                         unsafe {
                             match btn {
                                 crate::titlebar::ChromeButton::Minimize => {
@@ -2564,9 +2570,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             }
                         };
                         let rows_delta = if lines > 0.0 {
-                            -lines.ceil() as i32 * PALETTE_ROWS_PER_NOTCH
+                            (-lines.ceil() as i32).saturating_mul(PALETTE_ROWS_PER_NOTCH)
                         } else if lines < 0.0 {
-                            -lines.floor() as i32 * PALETTE_ROWS_PER_NOTCH
+                            (-lines.floor() as i32).saturating_mul(PALETTE_ROWS_PER_NOTCH)
                         } else {
                             0
                         };
@@ -2583,7 +2589,8 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                             let visible = ly.visible_results;
                             let max_offset = total.saturating_sub(visible);
                             let current = state.command_palette.scroll_offset as i32;
-                            let next = (current + rows_delta).clamp(0, max_offset as i32);
+                            let max_offset_i32 = i32::try_from(max_offset).unwrap_or(i32::MAX);
+                            let next = current.saturating_add(rows_delta).clamp(0, max_offset_i32);
                             state.command_palette.scroll_offset = next as usize;
                             // Inhibit the selection-follows-scroll snap for this
                             // next frame by pre-advancing `palette_last_selected`
@@ -2634,9 +2641,9 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                     // Scroll viewport via actor (3 lines per scroll notch).
                     const SCROLL_LINES: i32 = 3;
                     let delta = if lines > 0.0 {
-                        (lines.ceil() as i32) * SCROLL_LINES
+                        (lines.ceil() as i32).saturating_mul(SCROLL_LINES)
                     } else {
-                        (lines.floor() as i32) * SCROLL_LINES
+                        (lines.floor() as i32).saturating_mul(SCROLL_LINES)
                     };
                     if delta != 0 {
                         self.app_state.scroll_viewport(state.focused_pane, delta);

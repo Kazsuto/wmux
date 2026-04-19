@@ -2292,18 +2292,12 @@ impl UiState<'_> {
 
         // Append sidebar text areas (workspace names + subtitles + icons).
         if self.sidebar.visible {
-            let ws_status_icons: Vec<Vec<(String, String)>> = self
-                .workspace_cache
-                .iter()
-                .map(|ws| ws.status_icons.clone())
-                .collect();
             all_text_areas.extend(self.sidebar.text_areas(
                 surface_w,
                 surface_h,
                 &self.ui_chrome,
                 self.scale_factor,
                 &self.workspace_cache,
-                &ws_status_icons,
                 &self.icon_empty_buffer,
                 &self.status_icon_cgs,
             ));
