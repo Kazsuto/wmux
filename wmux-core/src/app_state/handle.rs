@@ -8,7 +8,8 @@ use crate::surface::SplitDirection;
 use crate::types::{PaneId, SurfaceId, WorkspaceId};
 
 use super::{
-    AppCommand, AppEvent, FocusDirection, PaneRenderData, PaneSurfaceInfo, WorkspaceSnapshot,
+    AppCommand, AppEvent, FocusDirection, FrameSnapshot, PaneRenderData, PaneSurfaceInfo,
+    WorkspaceSnapshot,
 };
 use crate::notification::Notification;
 use crate::pane_registry::PaneState;
@@ -638,6 +639,25 @@ impl AppStateHandle {
     /// Clear all non-cleared notifications. Fire-and-forget.
     pub async fn clear_all_notifications(&self) {
         let _ = self.cmd_tx.send(AppCommand::ClearAllNotifications).await;
+    }
+
+    /// Collect all state the render loop needs for one frame in a single
+    /// actor round-trip.
+    ///
+    /// Replaces the four per-frame `block_on` calls for `list_workspaces`,
+    /// `get_layout`, `get_render_data`×N, and `list_notifications`.
+    pub async fn get_frame_snapshot(&self, viewport: Rect) -> FrameSnapshot {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(AppCommand::GetFrameSnapshot { viewport, resp: tx })
+            .await
+            .is_err()
+        {
+            tracing::warn!("command channel closed, returning default FrameSnapshot");
+            return FrameSnapshot::default();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// Shut down the actor. Fire-and-forget.

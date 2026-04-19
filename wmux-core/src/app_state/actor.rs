@@ -619,6 +619,61 @@ impl AppStateActor {
                     let _events = self.notification_store.clear_all();
                 }
 
+                AppCommand::GetFrameSnapshot { viewport, resp } => {
+                    // Build the layout (reuses the same logic as GetLayout).
+                    let (layout, layout_dividers) = if let Some(zoomed_id) = self.zoomed_pane {
+                        if self.registry.get(zoomed_id).is_some() {
+                            (vec![(zoomed_id, viewport)], Vec::new())
+                        } else {
+                            self.zoomed_pane = None;
+                            if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
+                                tree.layout_with_dividers(viewport)
+                            } else {
+                                (Vec::new(), Vec::new())
+                            }
+                        }
+                    } else if let Some(tree) = self.workspace_manager.active().pane_tree.as_ref() {
+                        tree.layout_with_dividers(viewport)
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+
+                    // Build workspace snapshots (reuses the same logic as ListWorkspaces).
+                    let active_id = self.workspace_manager.active_id();
+                    let workspaces: Vec<WorkspaceSnapshot> = self
+                        .workspace_manager
+                        .iter()
+                        .map(|ws| self.build_workspace_snapshot(ws, active_id))
+                        .collect();
+
+                    // Build pane render data for every pane in the layout.
+                    let mut pane_data =
+                        std::collections::HashMap::with_capacity(layout.len());
+                    for (pane_id, _) in &layout {
+                        if let Some(data) = self.build_render_data(*pane_id) {
+                            pane_data.insert(*pane_id, data);
+                        }
+                    }
+
+                    // Collect notifications (reuses the same logic as ListNotifications).
+                    let notifications: Vec<_> = self
+                        .notification_store
+                        .list(None, 50)
+                        .into_iter()
+                        .filter(|n| n.state != crate::NotificationState::Cleared)
+                        .cloned()
+                        .collect();
+
+                    let snapshot = super::FrameSnapshot {
+                        workspaces,
+                        layout,
+                        layout_dividers,
+                        pane_data,
+                        notifications,
+                    };
+                    let _ = resp.send(snapshot);
+                }
+
                         AppCommand::Shutdown => {
                             tracing::info!("AppState actor shutting down");
                             self.background_tasks.abort_all();
@@ -1463,6 +1518,45 @@ mod tests {
         // After shutdown, commands should fail silently.
         let data = handle.get_render_data(PaneId::new()).await;
         assert!(data.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_frame_snapshot_returns_current_state() {
+        let (event_tx, _event_rx) = mpsc::channel(64);
+        let (handle, _actor_handle) = AppStateHandle::spawn(event_tx);
+
+        let pane_id = PaneId::new();
+        handle.register_pane(pane_id, make_pane_state(80, 24));
+        tokio::task::yield_now().await;
+
+        let viewport = crate::rect::Rect::new(0.0, 0.0, 800.0, 600.0);
+
+        // Fetch via individual handlers.
+        let workspaces = handle.list_workspaces().await;
+        let (layout, _dividers) = handle.get_layout(viewport).await;
+        let render_data = handle.get_render_data(pane_id).await;
+
+        // Fetch via batched snapshot.
+        let snapshot = handle.get_frame_snapshot(viewport).await;
+
+        // Workspace count must match.
+        assert_eq!(snapshot.workspaces.len(), workspaces.len());
+
+        // Layout must contain the registered pane.
+        assert_eq!(snapshot.layout.len(), layout.len());
+        assert!(snapshot.layout.iter().any(|(id, _)| *id == pane_id));
+
+        // Render data for the pane must be present.
+        assert!(snapshot.pane_data.contains_key(&pane_id));
+        let snap_data = snapshot.pane_data.get(&pane_id).unwrap();
+        let expected = render_data.unwrap();
+        assert_eq!(snap_data.grid.cols(), expected.grid.cols());
+        assert_eq!(snap_data.grid.rows(), expected.grid.rows());
+
+        // Notifications are collected (empty by default).
+        assert!(snapshot.notifications.is_empty());
+
+        handle.shutdown();
     }
 
     #[tokio::test]

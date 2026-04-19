@@ -324,6 +324,18 @@ pub enum AppCommand {
     /// Clear all non-cleared notifications.
     ClearAllNotifications,
 
+    /// Batched render-pull: collect all state the UI needs for one frame in a
+    /// single actor round-trip.
+    ///
+    /// Prefer this over calling `GetLayout` + `GetRenderData`×N +
+    /// `ListWorkspaces` + `ListNotifications` separately from the render loop.
+    GetFrameSnapshot {
+        /// Viewport rect used to compute the pane layout.
+        viewport: Rect,
+        /// Reply channel for the assembled snapshot.
+        resp: tokio::sync::oneshot::Sender<FrameSnapshot>,
+    },
+
     /// Shut down the actor.
     Shutdown,
 }
@@ -596,6 +608,10 @@ impl fmt::Debug for AppCommand {
                 .field("limit", limit)
                 .finish_non_exhaustive(),
             Self::ClearAllNotifications => write!(f, "ClearAllNotifications"),
+            Self::GetFrameSnapshot { viewport, .. } => f
+                .debug_struct("GetFrameSnapshot")
+                .field("viewport", viewport)
+                .finish_non_exhaustive(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -716,6 +732,28 @@ pub struct PaneSurfaceInfo {
     pub title: String,
     pub kind: PanelKind,
     pub active: bool,
+}
+
+// ─── Frame Snapshot ──────────────────────────────────────────────────────────
+
+/// All actor-owned state the UI render loop needs for one frame.
+///
+/// Collected in a single actor round-trip to avoid per-frame async contention.
+/// The render loop calls `get_frame_snapshot` once per frame instead of
+/// issuing separate `list_workspaces`, `get_layout`, `get_render_data`×N,
+/// and `list_notifications` requests.
+#[derive(Debug, Default)]
+pub struct FrameSnapshot {
+    /// Workspace list (for sidebar, status bar, etc.).
+    pub workspaces: Vec<WorkspaceSnapshot>,
+    /// Pane layout: (PaneId, Rect) pairs for the current workspace.
+    pub layout: Vec<(PaneId, Rect)>,
+    /// Divider metadata for the current layout (used by the resize UI).
+    pub layout_dividers: Vec<crate::pane_tree::LayoutDivider>,
+    /// Render data keyed by pane ID.
+    pub pane_data: std::collections::HashMap<PaneId, PaneRenderData>,
+    /// Notifications (newest first, up to the requested limit).
+    pub notifications: Vec<Notification>,
 }
 
 // ─── Browser Command Channel ────────────────────────────────────────────

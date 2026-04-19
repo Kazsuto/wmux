@@ -120,8 +120,20 @@ impl UiState<'_> {
             height: (surface_height as f32 - titlebar_height - status_bar_height).max(1.0),
         };
 
-        // Refresh workspace list once per frame.
-        self.workspace_cache = rt.block_on(app_state.list_workspaces());
+        // Single batched actor round-trip: fetch all state the render loop needs.
+        // Replaces four separate block_on calls (list_workspaces, get_layout,
+        // get_render_data×N, list_notifications) with one, reducing actor mailbox
+        // contention and staying well within the 16ms frame budget.
+        let frame_snapshot = rt.block_on(app_state.get_frame_snapshot(surface_viewport));
+        self.workspace_cache = frame_snapshot.workspaces;
+        let layout = frame_snapshot.layout;
+        let layout_dividers = frame_snapshot.layout_dividers;
+        // Hold notifications here; they are moved into notification_cache later
+        // in the notification panel section (only when the panel is open).
+        let frame_notifications = frame_snapshot.notifications;
+        self.pane_render_data_scratch.clear();
+        self.pane_render_data_scratch
+            .extend(frame_snapshot.pane_data);
 
         // Update sidebar text buffers (only reshapes when data changes).
         self.sidebar
@@ -170,9 +182,7 @@ impl UiState<'_> {
             );
         }
 
-        // Get pane layout from the actor (blocks briefly — acceptable once per frame).
-        let (layout, layout_dividers) = rt.block_on(app_state.get_layout(surface_viewport));
-        // Cache for non-blocking hit-testing on mouse clicks.
+        // Cache layout for non-blocking hit-testing on mouse clicks.
         self.last_layout.clone_from(&layout);
         // Convert tree-based dividers to UI dividers.
         self.dividers = layout_dividers
@@ -194,18 +204,11 @@ impl UiState<'_> {
             }
         }
 
-        // Collect render data for all panes first (surface info needed for viewports).
+        // pane_render_data_scratch was populated by frame_snapshot above.
         // Snapshot Copy fields so the closure below can mutate the scratch map
         // without triggering a double borrow of self.
         let focused_pane = self.focused_pane;
         let scale_factor = self.scale_factor;
-
-        self.pane_render_data_scratch.clear();
-        for (pane_id, _) in &layout {
-            if let Some(data) = rt.block_on(app_state.get_render_data(*pane_id)) {
-                self.pane_render_data_scratch.insert(*pane_id, data);
-            }
-        }
 
         // Build PaneViewport descriptors with real surface data.
         let viewports: Vec<wmux_render::PaneViewport> = layout
@@ -1286,7 +1289,7 @@ impl UiState<'_> {
 
         // Notification panel overlay (right-side slide-out).
         //
-        // Step 1: Fetch notifications from actor (only when panel is open).
+        // Step 1: Notifications were already fetched in the frame_snapshot above.
         // Step 2: Shape text buffers for visible items.
         // Step 3: Render background/item quads.
         // Text areas are collected later in the text phase.
@@ -1294,8 +1297,8 @@ impl UiState<'_> {
         // notif_refs is declared at this scope so the text-area phase (C7: ~2900 lines
         // below) can reuse the same borrow instead of collecting a second Vec.
         if self.notification_panel.open {
-            self.notification_cache = rt.block_on(app_state.list_notifications(50));
-        } else if !self.notification_cache.is_empty() {
+            self.notification_cache = frame_notifications;
+        } else {
             self.notification_cache.clear();
         }
         let notif_refs: Vec<&wmux_core::Notification> = self.notification_cache.iter().collect();

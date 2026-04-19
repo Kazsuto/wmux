@@ -2,6 +2,10 @@
 
 ## 2026-04-19
 
+REFACTOR: Collapse 4 per-frame `rt.block_on` calls in `render.rs` into a single batched actor round-trip — adds `FrameSnapshot` struct and `AppCommand::GetFrameSnapshot` variant; actor builds the snapshot (layout, workspace list, pane render data ×N, notifications) in one message; `AppStateHandle::get_frame_snapshot` replaces `list_workspaces` + `get_layout` + `get_render_data`×N + `list_notifications` at the render-loop call site. Individual handlers kept for IPC and tests. New `get_frame_snapshot_returns_current_state` actor test added.
+
+## 2026-04-19
+
 REFACTOR: Zero-copy sidebar status icons — remove per-frame `Vec<Vec<(String, String)>>` allocation in `render.rs`; `Sidebar::text_areas()` now accepts `workspaces: &[WorkspaceSnapshot]` directly and reads `ws.status_icons.as_slice()` inline, eliminating two String clones per icon per frame.
 FEATURE: Add `accent_hi`, `amber`, `amber_soft` tokens to `UiChrome`/`derive_ui_chrome` — `accent_hi` is accent blended 22% toward white (produces ~#4a94f0 on digital-obsidian) for hover/emphasis; `amber` is a fixed palette-independent attention color (#c58a3a) distinct from the blue accent so the two can never be confused at a glance; `amber_soft` is amber at 22% alpha. Wires into: tab-bar unsaved dot (amber), status-bar reconnecting dot with soft amber halo (amber/amber_soft), command-palette selected-result left stripe (accent_hi).
 FEATURE: Tab bar active-tab accent indicator moves from 2px top bar to 2px bottom underline with 10px horizontal inset — matches design spec for "one accent-marking rule" across the app; adds amber unsaved-state dot rendering (infrastructure exists on `PaneViewport.unsaved`, previously unread).
