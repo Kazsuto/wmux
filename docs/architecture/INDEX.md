@@ -15,11 +15,11 @@ Native Windows terminal multiplexer in Rust. GPU-accelerated, split panes, works
 | Terminal Parsing | vte (Alacritty's parser) | 0.13 |
 | PTY | portable-pty (ConPTY) | 0.9 |
 | Async Runtime | tokio | 1.x |
-| IPC | Named Pipes + JSON-RPC v2 | — |
+| IPC | Named Pipes + JSON-RPC v2 | n/a |
 | Browser | WebView2 via webview2-com | 0.39 |
 | Win32 APIs | windows crate | 0.62 |
 | CLI | clap (derive) | 4 |
-| SSH Daemon | Go (cmuxd-remote, reused from cmux) | — |
+| SSH Daemon | Go (cmuxd-remote, reused from cmux) | n/a |
 
 ## Crates
 

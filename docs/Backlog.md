@@ -4,7 +4,7 @@ Référence visuelle : `docs/stitch/` (6 maquettes Google Stitch).
 Règle : chaque tâche est **complète** ou **pas commencée**.
 Dernière mise à jour : 2026-04-19 (audit post v3.3 de l'architecture).
 
-Progression : **48 / 50 specs livrées (96 %)**. Il reste **2 specs** (`L2_16`, `L4_07`) et **11 items de dette / finition** identifiés en comparant `docs/architecture/feature-files.md` au code réel.
+Progression : **48 / 50 specs livrées (96 %)**. Il reste **2 specs** (`L2_16`, `L4_07`) et **12 items de dette / finition** identifiés en comparant `docs/architecture/feature-files.md` au code réel.
 
 ## Déjà implémenté
 
