@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+  # paste unmaintained, via metal (Apple backend, not linked on Windows)
+  "RUSTSEC-2024-0436",
+]

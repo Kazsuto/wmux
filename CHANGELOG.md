@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-19
+
+CHORE: Bump rand from 0.8 to 0.9 — fixes RUSTSEC-2026-0097 (unsound with custom logger), renames `thread_rng()` to `rng()` in wmux-ipc auth module
+CHORE: Bump toml from 0.8 to 1.1 — major version jump, API remains backward compatible for wmux-config usage
+CHORE: Bump compact_str from 0.8 to 0.9
+CHORE: Bump patch versions across workspace via global `cargo update`
+CHORE: Patch rustls-webpki transitively via Phase 1 update — fixes RUSTSEC-2026-0098/0099 (name constraints for URI names / wildcards)
+CHORE: Whitelist RUSTSEC-2024-0436 (paste unmaintained) via `.cargo/audit.toml` — paste is pulled via metal (Apple backend), never linked on Windows
+CHORE: Track Cargo.lock for reproducible builds — wmux is a binary application, not a library
+
 ## 2026-03-28
 
 REFACTOR: Clean up window module — deduplicate imports, extract reusable text attributes and metrics in render loop

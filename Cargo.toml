@@ -43,13 +43,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Domain model
 uuid = { version = "1", features = ["v4", "serde"] }
 bitflags = "2"
-compact_str = { version = "0.8", features = ["serde"] }
+compact_str = { version = "0.9", features = ["serde"] }
 unicode-width = "0.2"
 
 # Config & Utilities
 thiserror = "2"
 dirs = "6"
-toml = "0.8"
+toml = "1"
 arboard = "3"
 anyhow = "1"
 
@@ -80,7 +80,7 @@ windows = { version = "0.62", features = [
 ] }
 
 # Cryptography
-rand = "0.8"
+rand = "0.9"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"

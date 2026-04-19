@@ -92,7 +92,7 @@ pub async fn generate_auth_secret() -> Result<String, IpcError> {
 
     // Generate 256-bit random secret.
     let mut secret_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut secret_bytes);
+    rand::rng().fill_bytes(&mut secret_bytes);
     let secret_hex = hex::encode(secret_bytes);
 
     // Write with create_new to avoid TOCTOU races — if file exists, bail out
@@ -308,7 +308,7 @@ unsafe fn set_owner_only_dacl(path_wide: windows::core::PCWSTR) -> Result<(), St
 /// Generate a fresh 32-byte cryptographic nonce.
 pub fn generate_nonce() -> [u8; 32] {
     let mut nonce = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     nonce
 }
 
@@ -344,7 +344,7 @@ pub fn verify_hmac(secret: &str, nonce: &[u8], response: &str) -> bool {
 /// CRITICAL: Never log the returned value.
 pub fn generate_session_token() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
