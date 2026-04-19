@@ -162,7 +162,7 @@ impl PaneRenderer {
             return;
         }
 
-        const GLOW_RADIUS: f32 = 18.0;
+        const GLOW_RADIUS: f32 = 10.0;
 
         // Vivid outer glow — use accent RGB at high alpha for visibility on dark gaps.
         let glow_color = [
@@ -191,8 +191,8 @@ impl PaneRenderer {
             glow_color,
         );
 
-        // 3px accent border for crisp edge definition (matches Stitch maquette).
-        let bw = 3.0;
+        // 2px accent border for a thinner, more discrete focus edge.
+        let bw = 2.0;
         // Top
         quads.push_quad(rect.x, rect.y, rect.width, bw, border_color);
         // Bottom

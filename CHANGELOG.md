@@ -2,6 +2,12 @@
 
 ## 2026-04-19
 
+FIX: Overlay filter now tests per-row vertical extent (`ta.top` + `self.metrics.cell_height`) instead of pane-wide `ta.bounds` — fixes entire terminal panes going blank when the command palette (or any overlay) opened over them, because terminal panes emit one TextArea per row but share pane-sized bounds; uses real cell height (was conservatively 40px) so only rows actually straddling the overlay get dropped
+FIX: Drop terminal glyphs that overlap the open command palette in the glyphon text pass — background quad was already opaque, but terminal text areas rendered after the quads and bled through. Palette rect now joins split/workspace/tab menus in the overlay filter at `window/render.rs`
+FIX: Force opaque background on command palette — terminal content was bleeding through 95% alpha surface_overlay, making the palette illegible over active shells
+REFACTOR: Add `reason = "..."` to `#[allow(dead_code)]` attributes on `CommandPalette::layout_rect` and `CommandPalette::contains` per Rust 1.81+ lint-reasons guideline
+FIX: Cap command palette height to fit within the window — `PaletteLayout::compute` now clamps visible result rows so the palette never overflows the bottom edge on small windows
+REFACTOR: Shrink focus glow radius from 18px to 10px and pane focus border from 3px to 2px in `PaneRenderer::render_focus_glow` — blue halo is now more discrete and the focus edge visibly thinner on the active pane
 FEATURE: Inherit the calling process's current directory for initial PTY spawns in `wmux-pty` — `SpawnConfig { working_directory: None }` now resolves to `std::env::current_dir()` when it is a user path, falling back to `$HOME` then `"."`. Windows system roots (`C:\Windows\System32`, `SysWOW64`, `C:\Windows`, `C:\`) are filtered so Start Menu/taskbar launches still land in HOME. Unblocks `cargo run -p wmux-cli -- system ping` from a pane of a wmux-app started in a project directory
 REFACTOR: Bump vte from 0.13 to 0.15 and pass full byte slice to `Parser::advance` in `Terminal::process` — eliminates per-byte loop and handler reconstruction, picks up SGR perf fix (0.13.1) and grapheme boundary crash fix (0.14.1)
 CHORE: Bump rand from 0.8 to 0.9 — fixes RUSTSEC-2026-0097 (unsound with custom logger), renames `thread_rng()` to `rng()` in wmux-ipc auth module

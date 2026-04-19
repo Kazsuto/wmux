@@ -2360,7 +2360,7 @@ impl UiState<'_> {
             }
 
             // Result names + shortcut badges.
-            let visible = self.command_palette.result_count.min(MAX_VISIBLE_RESULTS);
+            let visible = ly.visible_results;
             let name_color = rgba_to_glyphon(self.ui_chrome.text_primary);
             let shortcut_color = rgba_to_glyphon(self.ui_chrome.text_muted);
             for i in 0..visible {
@@ -2431,7 +2431,7 @@ impl UiState<'_> {
         // renders AFTER all quads, bleeding through menu backgrounds.
         // Fix: remove base text areas whose bounds intersect any open menu rect.
         {
-            let mut overlay_rects = [(0.0f32, 0.0f32, 0.0f32, 0.0f32); 3];
+            let mut overlay_rects = [(0.0f32, 0.0f32, 0.0f32, 0.0f32); 4];
             let mut overlay_count = 0usize;
             if let super::SplitMenuState::Open { menu_x, menu_y, .. } = self.split_menu {
                 let mh = 4.0 * 32.0 + 8.0;
@@ -2448,9 +2448,29 @@ impl UiState<'_> {
                 overlay_rects[overlay_count] = (menu_x, menu_y, 200.0, mh);
                 overlay_count += 1;
             }
+            if self.command_palette.open {
+                use crate::command_palette::{PaletteLayout, MAX_VISIBLE_RESULTS};
+                let ly = PaletteLayout::compute(
+                    surface_w as f32,
+                    surface_h as f32,
+                    self.command_palette.result_count.min(MAX_VISIBLE_RESULTS),
+                );
+                overlay_rects[overlay_count] = (
+                    ly.palette_x,
+                    ly.palette_y,
+                    ly.effective_width,
+                    ly.total_height,
+                );
+                overlay_count += 1;
+            }
 
             if overlay_count > 0 {
                 let active_rects = &overlay_rects[..overlay_count];
+                // Terminal panes emit one TextArea per row sharing pane-wide bounds,
+                // so `ta.bounds` covers the whole pane. Use `ta.top` + the real cell
+                // height for the vertical test so only rows actually under an overlay
+                // get dropped (not the whole pane, and not extra rows nearby).
+                let row_h = self.metrics.cell_height;
                 let mut idx = 0;
                 all_text_areas.retain(|ta| {
                     let is_overlay = idx >= overlay_start;
@@ -2459,9 +2479,9 @@ impl UiState<'_> {
                         return true; // Keep overlay text (menu labels).
                     }
                     let tl = ta.bounds.left as f32;
-                    let tt = ta.bounds.top as f32;
                     let tr = ta.bounds.right as f32;
-                    let tb = ta.bounds.bottom as f32;
+                    let tt = ta.top;
+                    let tb = ta.top + row_h;
                     !active_rects
                         .iter()
                         .any(|&(mx, my, mw, mh)| tl < mx + mw && tr > mx && tt < my + mh && tb > my)

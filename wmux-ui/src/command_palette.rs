@@ -39,6 +39,9 @@ pub(crate) struct PaletteLayout {
     pub palette_y: f32,
     pub effective_width: f32,
     pub total_height: f32,
+    /// Actual number of result rows that fit within the window — may be less
+    /// than the requested count when the window is short.
+    pub visible_results: usize,
     pub input_x: f32,
     pub input_y: f32,
     pub input_w: f32,
@@ -47,16 +50,26 @@ pub(crate) struct PaletteLayout {
 }
 
 impl PaletteLayout {
-    /// Compute layout from surface dimensions and visible result count.
+    /// Compute layout from surface dimensions and a requested result count.
+    ///
+    /// `requested_results` is clamped so the palette never overflows the bottom
+    /// of the window.  Always use `layout.visible_results` downstream instead
+    /// of re-applying `MIN(result_count, MAX_VISIBLE_RESULTS)`.
     #[must_use]
-    pub fn compute(surface_width: f32, surface_height: f32, visible_results: usize) -> Self {
-        let total_height = INPUT_HEIGHT
-            + FILTER_ROW_HEIGHT
-            + visible_results as f32 * RESULT_HEIGHT
-            + 2.0 * PADDING;
+    pub fn compute(surface_width: f32, surface_height: f32, requested_results: usize) -> Self {
         let effective_width = PALETTE_WIDTH.min(surface_width);
         let palette_x = ((surface_width - effective_width) / 2.0).max(0.0);
         let palette_y = (surface_height * 0.2).max(50.0);
+
+        // Cap visible rows so the palette fits within the window.
+        const BOTTOM_MARGIN: f32 = 20.0;
+        let header_height = INPUT_HEIGHT + FILTER_ROW_HEIGHT + 2.0 * PADDING;
+        let available_for_rows =
+            (surface_height - palette_y - header_height - BOTTOM_MARGIN).max(0.0);
+        let max_rows = (available_for_rows / RESULT_HEIGHT) as usize;
+        let visible_results = requested_results.min(max_rows);
+
+        let total_height = header_height + visible_results as f32 * RESULT_HEIGHT;
         let input_x = palette_x + PADDING;
         let input_y = palette_y + PADDING;
         let input_w = effective_width - 2.0 * PADDING;
@@ -67,6 +80,7 @@ impl PaletteLayout {
             palette_y,
             effective_width,
             total_height,
+            visible_results,
             input_x,
             input_y,
             input_w,
@@ -311,14 +325,15 @@ impl CommandPalette {
             PALETTE_RADIUS + 2.0,
         );
 
-        // Main background — surface_overlay already has 95% alpha baked in.
+        // Force opaque background — surface_overlay has 95% alpha which lets terminal bleed through.
         let bg = ui_chrome.surface_overlay;
+        let palette_bg = [bg[0], bg[1], bg[2], 1.0];
         quads.push_rounded_quad(
             ly.palette_x,
             ly.palette_y,
             ly.effective_width,
             ly.total_height,
-            bg,
+            palette_bg,
             PALETTE_RADIUS,
         );
 
@@ -404,9 +419,8 @@ impl CommandPalette {
         }
 
         // Selected result highlight (rounded) — use surface_2 with TAB_RADIUS
-        let visible_results = self.result_count.min(MAX_VISIBLE_RESULTS);
-        if visible_results > 0 {
-            let selected_visible = self.selected.min(visible_results - 1);
+        if ly.visible_results > 0 {
+            let selected_visible = self.selected.min(ly.visible_results - 1);
             let result_y = ly.results_y + selected_visible as f32 * RESULT_HEIGHT;
             quads.push_rounded_quad(
                 ly.input_x,
@@ -421,7 +435,10 @@ impl CommandPalette {
 
     /// Get the layout rect for the palette (for hit testing).
     #[must_use]
-    #[allow(dead_code)] // Used in tests, not yet in production hit-testing.
+    #[allow(
+        dead_code,
+        reason = "used in tests, not yet wired into production hit-testing"
+    )]
     pub(crate) fn layout_rect(
         &self,
         surface_width: f32,
@@ -442,7 +459,10 @@ impl CommandPalette {
 
     /// Check if a screen position is inside the palette.
     #[must_use]
-    #[allow(dead_code)] // Used in tests, not yet in production hit-testing.
+    #[allow(
+        dead_code,
+        reason = "used in tests, not yet wired into production hit-testing"
+    )]
     pub(crate) fn contains(&self, x: f32, y: f32, surface_width: f32, surface_height: f32) -> bool {
         if !self.open {
             return false;
@@ -594,5 +614,27 @@ mod tests {
     fn contains_when_closed() {
         let p = CommandPalette::new();
         assert!(!p.contains(500.0, 200.0, 1920.0, 1080.0));
+    }
+
+    #[test]
+    fn layout_caps_rows_to_fit_window() {
+        // Small window: requesting 20 rows must be capped so palette stays inside.
+        let ly = PaletteLayout::compute(800.0, 400.0, 20);
+        assert!(
+            ly.visible_results < 20,
+            "rows must be capped for short window"
+        );
+        assert!(
+            ly.palette_y + ly.total_height <= 400.0,
+            "palette bottom ({}) must not exceed window height (400)",
+            ly.palette_y + ly.total_height
+        );
+    }
+
+    #[test]
+    fn layout_full_results_on_large_window() {
+        // Large window: all 20 rows should fit.
+        let ly = PaletteLayout::compute(1920.0, 1080.0, 20);
+        assert_eq!(ly.visible_results, 20);
     }
 }
