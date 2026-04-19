@@ -56,7 +56,7 @@
 | GPU Rendering | wgpu | 28 | WebGPU to Direct3D 12 on Windows, cross-platform potential, used by WezTerm |
 | Text Rendering | glyphon | 0.10 | Standard wgpu text renderer, built on cosmic-text/swash, used by COSMIC Terminal |
 | Windowing | winit | 0.30 | Mature cross-platform abstraction over Win32, stable ApplicationHandler API |
-| Terminal Parsing | vte | 0.13 | Alacritty's VT escape sequence parser, battle-tested |
+| Terminal Parsing | vte | 0.15 | Alacritty's VT escape sequence parser, battle-tested |
 | PTY | wmux-pty (direct ConPTY wrapper) | n/a | Safe ConPTY lifecycle + I/O wrapper, handles Win10 1809+ |
 | Async Runtime | tokio | 1.x | De facto Rust async runtime, full-featured (IO, timers, sync) |
 | IPC | Named Pipes + JSON-RPC v2 | n/a | Windows equivalent of Unix sockets, cmux protocol compat |
@@ -90,7 +90,7 @@ C4 context, container, and component diagrams showing system boundaries, externa
 
 ### wmux-core, Terminal State & Domain Model
 - **Responsibility**: VTE parsing, cell grid, scrollback buffer, cursor/mode state, workspace/pane domain models, notification store, focus routing logic, command registry, sidebar metadata store (statuses/progress/logs), git branch detection, port scanner, session persistence helpers, remote workspace model, surface lifecycle
-- **Technology**: vte 0.13, serde 1, thiserror 2, tracing 0.1
+- **Technology**: vte 0.15, serde 1, thiserror 2, tracing 0.1
 - **Interfaces**: Pure Rust library. Key public types: `AppState` actor (`app_state/{mod,actor,handle}.rs`), `PaneTree`, `PaneRegistry`, `SurfaceManager`, `WorkspaceManager`, `NotificationStore`, `MetadataStore`, `CommandRegistry`, `GitDetector`, `PortScanner`, `Session`. Consumed by wmux-render (grid data), wmux-ui (layout/focus), wmux-ipc (command handlers), wmux-app (wiring)
 - **Why vte**: Alacritty's battle-tested VT parser. Zero-copy, state-machine based, handles malformed sequences gracefully
 - **Design patterns**: State machine (terminal modes), Observer (dirty row flags for renderer), Actor pattern (AppState owns workspace tree, pane registry, focus state; mutations go through bounded channel commands)

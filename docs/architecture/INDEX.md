@@ -12,7 +12,7 @@ Native Windows terminal multiplexer in Rust. GPU-accelerated, split panes, works
 | GPU Rendering | wgpu to Direct3D 12 | 28 |
 | Text Rendering | glyphon (cosmic-text + swash) | 0.10 |
 | Windowing | winit | 0.30 |
-| Terminal Parsing | vte (Alacritty's parser) | 0.13 |
+| Terminal Parsing | vte (Alacritty's parser) | 0.15 |
 | PTY | wmux-pty ConPTY wrapper (direct ConPTY via `windows`) | n/a |
 | Async Runtime | tokio | 1.x |
 | IPC | Named Pipes + JSON-RPC v2 | n/a |

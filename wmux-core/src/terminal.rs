@@ -151,10 +151,8 @@ impl Terminal {
     /// processing. The parser dispatches structured operations to
     /// [`VteHandler`] which mutates the grid, cursor, and modes.
     pub fn process(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            let mut handler = VteHandler::new(&mut self.state);
-            self.parser.advance(&mut handler, byte);
-        }
+        let mut handler = VteHandler::new(&mut self.state);
+        self.parser.advance(&mut handler, bytes);
     }
 
     /// Immutable reference to the cell grid.
