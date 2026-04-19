@@ -4,6 +4,9 @@
 > **Date**: 2026-03-19
 > **Confidence**: High
 > **Deciders**: wmux team
+>
+> **Implementation note**: this ADR is preserved for historical context, but the current codebase uses the `wmux-pty` direct ConPTY wrapper instead of `portable-pty`. The design intent still applies; the implementation details have evolved.
+
 
 ## Context
 

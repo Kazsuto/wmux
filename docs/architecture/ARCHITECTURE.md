@@ -57,7 +57,7 @@
 | Text Rendering | glyphon | 0.10 | Standard wgpu text renderer, built on cosmic-text/swash, used by COSMIC Terminal |
 | Windowing | winit | 0.30 | Mature cross-platform abstraction over Win32, stable ApplicationHandler API |
 | Terminal Parsing | vte | 0.13 | Alacritty's VT escape sequence parser, battle-tested |
-| PTY | portable-pty | 0.9 | ConPTY abstraction from WezTerm project, handles Win10 1809+ |
+| PTY | wmux-pty (direct ConPTY wrapper) | n/a | Safe ConPTY lifecycle + I/O wrapper, handles Win10 1809+ |
 | Async Runtime | tokio | 1.x | De facto Rust async runtime, full-featured (IO, timers, sync) |
 | IPC | Named Pipes + JSON-RPC v2 | n/a | Windows equivalent of Unix sockets, cmux protocol compat |
 | Browser | WebView2 via webview2-com | 0.39 | Chromium (Edge) pre-installed on Win10/11, full web compat |
@@ -98,10 +98,10 @@ C4 context, container, and component diagrams showing system boundaries, externa
 
 ### wmux-pty, ConPTY Abstraction
 - **Responsibility**: Spawn shell processes via ConPTY, manage I/O pipes, resize, shell detection, environment variable injection
-- **Technology**: portable-pty 0.9, tokio (spawn_blocking for PTY reads)
+- **Technology**: wmux-pty direct ConPTY wrapper, tokio (spawn_blocking for PTY reads)
 - **Modules**: `manager.rs` (PtyManager spawn/resize), `actor.rs` (async I/O bridge), `conpty.rs` (ConPTY-specific helpers), `spawn.rs` (process spawn wrapper), `shell.rs` (pwsh, powershell, cmd detection)
-- **Why portable-pty 0.9**: WezTerm's production-grade ConPTY wrapper. Handles Win10 1809+ quirks. v0.9 has latest fixes
-- **Trade-off**: Depends on WezTerm's maintenance pace. Alternative `xpty` adds native async but is too immature (watching for v1.0)
+- **Why direct ConPTY wrapper**: Gives explicit control over `PSEUDOCONSOLE_RESIZE_QUIRK`, shutdown ordering, and Win11 24H2+ `ReleasePseudoConsole` behavior while keeping the Win32 API surface encapsulated.
+- **Trade-off**: More maintenance than a third-party wrapper, but avoids depending on a crate whose API no longer matches the current implementation.
 
 ### wmux-render, GPU Rendering Pipeline
 - **Responsibility**: wgpu surface management, glyphon text atlas, terminal grid rendering (dirty rows to GPU upload), cursor rendering, UI chrome rendering (sidebar, overlays, titlebar), SVG icon rendering (Codicons), shadow pipeline, pane renderer with focus glow
@@ -210,7 +210,7 @@ ADRs are stored as separate files in `decisions/`. Each follows the MADR templat
 | [ADR-0001](decisions/0001-language-rust.md) | Language: Rust | Accepted | High |
 | [ADR-0002](decisions/0002-gpu-rendering-custom-wgpu.md) | GPU Rendering: Custom wgpu pipeline (not iced/egui) | Accepted | High |
 | [ADR-0003](decisions/0003-text-rendering-glyphon.md) | Text Rendering: glyphon 0.10 | Accepted | Medium |
-| [ADR-0004](decisions/0004-pty-backend-portable-pty.md) | PTY Backend: portable-pty (ConPTY) | Accepted | High |
+| [ADR-0004](decisions/0004-pty-backend-portable-pty.md) | PTY Backend: direct ConPTY wrapper (wmux-pty) | Accepted | High |
 | [ADR-0005](decisions/0005-ipc-named-pipes-jsonrpc.md) | IPC: Named Pipes + JSON-RPC v2 | Accepted | High |
 | [ADR-0006](decisions/0006-browser-webview2.md) | Browser: WebView2 via webview2-com | Accepted | High |
 | [ADR-0007](decisions/0007-windowing-winit.md) | Windowing: winit 0.30 | Accepted | Medium |
@@ -460,7 +460,7 @@ Finish CLI coverage across workspace/surface/sidebar/browser/notify domains. Cur
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|-----------|------------|
 | GPU text rendering complexity (glyph atlas, ligatures, emoji) | High | Medium | Study WezTerm (MIT) and Rio (MIT) renderers. glyphon handles atlas management. Start with ASCII-only, add Unicode incrementally |
-| ConPTY edge cases (resize races, escape sequence differences vs Unix PTY) | Medium | Medium | portable-pty 0.9 handles known quirks. Extensive VTE conformance testing against vttest |
+| ConPTY edge cases (resize races, escape sequence differences vs Unix PTY) | Medium | Medium | wmux-pty wrapper encapsulates the Win32 quirks. Extensive VTE conformance testing against vttest |
 | WebView2 + wgpu HWND coordination (z-order, focus, resize sync) | Medium | Medium | Separate child HWND architecture avoids compositing conflicts. Tauri validates this approach |
 | winit IME support on Windows (CJK input) | Medium | Medium | winit 0.30.x has partial IME via TSF. Defer full CJK to v2. Basic Latin input works |
 | wgpu/glyphon version coupling | Low | High | Pin both versions together. Upgrade only when glyphon publishes matching release |
