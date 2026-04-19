@@ -156,23 +156,23 @@ graph TD
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+D` | Split pane right |
-| `Alt+D` | Split pane down |
+| `Ctrl+D` then `→` / `←` / `↑` / `↓` | Split pane right / left / up / down (chord) |
+| `Alt+Arrows` | Focus navigation between panes |
 | `Ctrl+W` | Close pane |
-| `Ctrl+Shift+W` | Close workspace |
-| `Ctrl+Shift+Enter` | Toggle zoom |
-| `Alt+Arrows` | Focus navigation |
+| `Ctrl+Shift+Enter` | Toggle zoom on focused pane |
 | `Ctrl+N` | New workspace |
-| `Ctrl+1-9` | Switch workspace |
-| `Ctrl+T` | New surface (tab) |
+| `Ctrl+Shift+W` | Close workspace |
+| `Ctrl+1-9` | Switch workspace by index |
+| `Ctrl+T` | New terminal surface (tab) |
 | `Ctrl+Shift+L` | New browser surface |
-| `Ctrl+Tab` | Cycle surfaces |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle surfaces forward / backward |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Shift+P` | Command palette |
 | `Ctrl+F` | Search in terminal |
 | `Ctrl+Shift+I` | Notification panel |
-| `Ctrl+Shift+U` | Jump to last unread |
-| `Ctrl+Shift+C/V` | Copy / Paste |
+| `Ctrl+Shift+U` | Jump to last unread notification |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / Paste |
+| `F12` | Toggle DevTools (browser surface) |
 
 ---
 
