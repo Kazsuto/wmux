@@ -49,7 +49,7 @@ unicode-width = "0.2"
 # Config & Utilities
 thiserror = "2"
 dirs = "6"
-toml = "0.8"
+toml = "1"
 arboard = "3"
 anyhow = "1"
 
