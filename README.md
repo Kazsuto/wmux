@@ -20,23 +20,23 @@ AI agents compatible with cmux work with wmux with minimal adaptation (Named Pip
 
 ## Features
 
-| Feature                 | Description                                                                                                                                 |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **GPU Terminal**        | wgpu/Direct3D 12 rendering, VTE parsing, <16ms input-to-display latency, ligatures, emoji, Nerd Fonts                                       |
-| **Split Panes**         | Horizontal/vertical splits, draggable dividers, zoom toggle, directional focus navigation                                                   |
-| **Workspaces**          | Vertical sidebar (expanded + collapsed icon-only mode) with git branch, port badges, agent status, inline rename                            |
-| **Surfaces**            | Tabs within each pane (terminal or browser) with keyboard cycling, shell/browser segmented toggle, right-click context menu                 |
-| **Custom Title Bar**    | GPU-rendered title bar with Codicons chrome buttons (min/max/restore/close), drag/snap via WM_NCHITTEST, DWM shadow preserved               |
-| **Integrated Browser**  | WebView2 (Chromium) panes alongside terminals, address bar with auto-https + DuckDuckGo search fallback, scriptable via IPC                 |
-| **Command Palette**     | Ctrl+Shift+P fuzzy-search over commands, workspaces, and surfaces with filter tabs                                                          |
-| **CLI & IPC**           | 80+ JSON-RPC v2 commands over Named Pipes, HMAC-SHA256 auth, cmux-compatible protocol                                                       |
-| **Session Persistence** | Auto-save every 8s, restore layout + scrollback on relaunch                                                                                 |
-| **Terminal Search**     | Ctrl+F in-pane search with regex support and match highlighting                                                                             |
-| **Notifications**       | Notification panel (Ctrl+Shift+I) with severity-colored items, sidebar badges with unread count, WinRT Toast, OSC detection                 |
-| **Theme Engine**        | Ghostty-compatible config format, bundled themes (Digital Obsidian, Stitch Blue, etc.), full color pipeline, focus glow halo on active pane |
-| **i18n**                | English + French, system locale detection, manual override in config                                                                        |
-| **Auto-Update**         | GitHub Releases update checks with SHA-256 checksum verification, HTTPS allowlist, 200MB download cap                                       |
-| **SSH Remote**          | Remote workspace model + CLI commands (Go daemon integration pending)                                                                       |
+| Feature | Description |
+|---------|-------------|
+| **GPU Terminal** | wgpu/Direct3D 12 rendering, VTE parsing, <16ms input-to-display latency, ligatures, emoji, Nerd Fonts |
+| **Split Panes** | Horizontal/vertical splits, draggable dividers, zoom toggle, directional focus navigation |
+| **Workspaces** | Vertical sidebar (expanded + collapsed icon-only mode) with git branch, port badges, agent status, inline rename |
+| **Surfaces** | Tabs within each pane (terminal or browser) with keyboard cycling, shell/browser segmented toggle, right-click context menu |
+| **Custom Title Bar** | GPU-rendered title bar with Codicons chrome buttons (min/max/restore/close), drag/snap via WM_NCHITTEST, DWM shadow preserved |
+| **Integrated Browser** | WebView2 (Chromium) panes alongside terminals, address bar with auto-https + DuckDuckGo search fallback, scriptable via IPC (CLI wrapper partial, 7 of 30+ automation methods surfaced) |
+| **Command Palette** | Ctrl+Shift+P fuzzy-search over commands, workspaces, and surfaces with filter tabs |
+| **CLI & IPC** | 80+ JSON-RPC v2 commands over Named Pipes, HMAC-SHA256 auth, cmux-compatible protocol |
+| **Session Persistence** | Auto-save every 8s, restore layout + scrollback on relaunch |
+| **Terminal Search** | Ctrl+F in-pane search with regex support and match highlighting |
+| **Notifications** | Notification panel (Ctrl+Shift+I) with severity-colored items, sidebar badges with unread count, WinRT Toast, OSC detection (CLI `notify` commands stub, pending L3_08) |
+| **Theme Engine** | Ghostty-compatible config format, bundled themes (Digital Obsidian, Stitch Blue, etc.), full color pipeline, focus glow halo on active pane |
+| **i18n** | English + French, system locale detection, manual override in config |
+| **Auto-Update** | GitHub Releases update checks with SHA-256 checksum verification, HTTPS allowlist, 200MB download cap |
+| **SSH Remote** | Remote workspace model + CLI commands (stub, pending Go daemon integration) |
 
 ---
 

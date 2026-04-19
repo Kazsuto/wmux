@@ -1,4 +1,4 @@
-# wmux, Windows Terminal Multiplexer
+# wmux — Windows Terminal Multiplexer
 
 Native Windows terminal multiplexer in Rust, GPU-accelerated, split panes, workspaces, integrated browser (WebView2), CLI/IPC for AI agents.
 
@@ -41,22 +41,22 @@ Native Windows terminal multiplexer in Rust, GPU-accelerated, split panes, works
 Detailed rules in `.claude/rules/` (16 files, loaded automatically). Below are the highest-priority constraints that apply everywhere.
 
 ### Platform
-- **NEVER** use TCP for IPC, Named Pipes only (`\\.\pipe\wmux-*`)
-- **NEVER** skip Win10 1809+ fallback, Mica/Acrylic are Win11-only, ALWAYS fallback to opaque
-- **NEVER** use MessageBox or balloon tips, WinRT Toast Notification API only
+- **NEVER** use TCP for IPC: Named Pipes only (`\\.\pipe\wmux-*`)
+- **NEVER** skip Win10 1809+ fallback: Mica/Acrylic are Win11-only, ALWAYS fallback to opaque
+- **NEVER** use MessageBox or balloon tips: WinRT Toast Notification API only
 
 ### Rendering
-- **NEVER** use iced/egui for terminal grid, custom wgpu renderer only
-- **NEVER** place WebView2 inside the wgpu surface, separate child HWND always
-- **NEVER** ship a visual feature that requires multiple render layers (quads + text + icons) without implementing ALL layers, a background quad without its text label is a visual artifact, not a feature. Implement complete or don't implement at all.
-- wgpu 28 + glyphon 0.10 have breaking API changes from prior versions, **read `.claude/rules/rendering.md` before touching render code**
+- **NEVER** use iced/egui for terminal grid: custom wgpu renderer only
+- **NEVER** place WebView2 inside the wgpu surface: separate child HWND always
+- **NEVER** ship a visual feature that requires multiple render layers (quads + text + icons) without implementing ALL layers. A background quad without its text label is a visual artifact, not a feature. Implement complete or don't implement at all.
+- wgpu 28 + glyphon 0.10 have breaking API changes from prior versions: **read `.claude/rules/rendering.md` before touching render code**
 
 ### Architecture
-- **NEVER** expose `anyhow::Error` in library crate public APIs, use `thiserror` v2
-- **NEVER** block tokio with `std::thread::sleep` or `std::fs::*`, use async equivalents
-- **NEVER** use unbounded channels, always bounded `mpsc::channel(N)`
-- **NEVER** hardcode user-visible strings, all UI text goes through i18n system
-- **NEVER** use `println!`/`eprintln!` in library crates, `tracing` crate only
+- **NEVER** expose `anyhow::Error` in library crate public APIs: use `thiserror` v2
+- **NEVER** block tokio with `std::thread::sleep` or `std::fs::*`: use async equivalents
+- **NEVER** use unbounded channels: always bounded `mpsc::channel(N)`
+- **NEVER** hardcode user-visible strings: all UI text goes through i18n system
+- **NEVER** use `println!`/`eprintln!` in library crates: `tracing` crate only
 
 ### IPC & Security
 - Method names MUST match cmux: `workspace.list`, `surface.send_text`, etc.
@@ -64,9 +64,9 @@ Detailed rules in `.claude/rules/` (16 files, loaded automatically). Below are t
 - **NEVER** log auth secrets or HMAC tokens, even in debug mode
 
 ### Terminal
-- **NEVER** write a custom VTE parser, use the `vte` crate
-- **NEVER** panic on malformed escape sequences, silently discard
-- Grid cells stored contiguously (`Vec<Cell>`), NEVER `Vec<Vec<Cell>>`
+- **NEVER** write a custom VTE parser: use the `vte` crate
+- **NEVER** panic on malformed escape sequences: silently discard
+- Grid cells stored contiguously (`Vec<Cell>`). NEVER `Vec<Vec<Cell>>`
 
 ## Conventions
 
