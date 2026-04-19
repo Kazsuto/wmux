@@ -199,7 +199,10 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
                 None
             }
         });
-        let restored_sidebar_collapsed = session.as_ref().is_some_and(|s| s.sidebar_collapsed);
+        // First launch defaults to the rail (collapsed). Returning users keep
+        // whatever state they last toggled — the session value is authoritative
+        // once one exists.
+        let restored_sidebar_collapsed = session.as_ref().is_none_or(|s| s.sidebar_collapsed);
         let pane_id = if let Some(session) = session {
             restore_session(&session, cols, rows, &self.app_state, &self.rt_handle)
         } else {
@@ -365,6 +368,51 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             ..crate::command_palette::MAX_VISIBLE_RESULTS)
             .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_text_metrics))
             .collect();
+        // Descriptions use the Caption metric — smaller, muted second line.
+        let palette_desc_metrics = glyphon::Metrics::new(
+            crate::typography::CAPTION_FONT_SIZE,
+            crate::typography::CAPTION_LINE_HEIGHT,
+        );
+        let palette_desc_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_desc_metrics))
+            .collect();
+        // Workspace number glyph — centred on the 22x22 colored square.
+        let palette_ws_icon_metrics = glyphon::Metrics::new(13.0, 16.0);
+        let palette_ws_icon_buffers: Vec<glyphon::Buffer> = (0
+            ..crate::command_palette::MAX_VISIBLE_RESULTS)
+            .map(|_| glyphon::Buffer::new(glyphon.font_system(), palette_ws_icon_metrics))
+            .collect();
+        // Static footer text buffers. Content is written once here; colours
+        // come from theme tokens at render time.
+        let palette_footer_metrics = glyphon::Metrics::new(10.5, 14.0);
+        let palette_footer_attrs =
+            glyphon::Attrs::new().family(glyphon::Family::Name("JetBrains Mono"));
+        let mut palette_footer_hints_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), palette_footer_metrics);
+        palette_footer_hints_buffer.set_size(glyphon.font_system(), Some(500.0), Some(24.0));
+        palette_footer_hints_buffer.set_text(
+            glyphon.font_system(),
+            "\u{2191}\u{2193} navigate    \u{21b5} select    Tab filter    ESC close",
+            &palette_footer_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        palette_footer_hints_buffer.shape_until_scroll(glyphon.font_system(), false);
+        let palette_brand_attrs = glyphon::Attrs::new()
+            .family(glyphon::Family::Name("Segoe UI"))
+            .weight(glyphon::Weight(600));
+        let mut palette_footer_brand_buffer =
+            glyphon::Buffer::new(glyphon.font_system(), palette_footer_metrics);
+        palette_footer_brand_buffer.set_size(glyphon.font_system(), Some(80.0), Some(24.0));
+        palette_footer_brand_buffer.set_text(
+            glyphon.font_system(),
+            "wmux",
+            &palette_brand_attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        palette_footer_brand_buffer.shape_until_scroll(glyphon.font_system(), false);
 
         // Pre-allocate notification panel text buffers.
         let notif_title_metrics = glyphon::Metrics::new(
@@ -596,9 +644,18 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             palette_filter_buffers,
             palette_result_buffers,
             palette_shortcut_buffers,
+            palette_desc_buffers,
+            palette_ws_icon_buffers,
+            palette_footer_hints_buffer,
+            palette_footer_brand_buffer,
+            palette_row_icons: Vec::new(),
+            palette_row_sections: Vec::new(),
             palette_actions: Vec::new(),
             palette_last_query: String::new(),
             palette_last_filter: crate::command_palette::PaletteFilter::All,
+            palette_last_scroll: 0,
+            palette_last_selected: 0,
+            palette_rows_cache: Vec::new(),
             search: crate::search::SearchState::new(),
             last_search_rows: Vec::new(),
             last_total_visible_rows: 0,
@@ -2487,6 +2544,58 @@ impl<'window> ApplicationHandler<WmuxEvent> for App<'window> {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                // Command palette scroll — intercept when the palette is open
+                // and the cursor is over its rect. Wheel moves `scroll_offset`
+                // independently of `selected` so the user can browse the full
+                // list without losing their current selection; arrow keys
+                // still re-snap the viewport onto the selection next frame.
+                if state.command_palette.open {
+                    let sw = state.gpu.width() as f32;
+                    let sh = state.gpu.height() as f32;
+                    let px = state.cursor_pos.0 as f32;
+                    let py = state.cursor_pos.1 as f32;
+                    if state.command_palette.contains(px, py, sw, sh) {
+                        // 3 rows per wheel notch matches the terminal scroll feel.
+                        const PALETTE_ROWS_PER_NOTCH: i32 = 3;
+                        let lines = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => y,
+                            MouseScrollDelta::PixelDelta(pos) => {
+                                pos.y as f32 / crate::command_palette::RESULT_HEIGHT.max(1.0)
+                            }
+                        };
+                        let rows_delta = if lines > 0.0 {
+                            -lines.ceil() as i32 * PALETTE_ROWS_PER_NOTCH
+                        } else if lines < 0.0 {
+                            -lines.floor() as i32 * PALETTE_ROWS_PER_NOTCH
+                        } else {
+                            0
+                        };
+                        if rows_delta != 0 {
+                            let total = state.palette_rows_cache.len();
+                            let ly = crate::command_palette::PaletteLayout::compute(
+                                sw,
+                                sh,
+                                state
+                                    .command_palette
+                                    .result_count
+                                    .min(crate::command_palette::MAX_VISIBLE_RESULTS),
+                            );
+                            let visible = ly.visible_results;
+                            let max_offset = total.saturating_sub(visible);
+                            let current = state.command_palette.scroll_offset as i32;
+                            let next = (current + rows_delta).clamp(0, max_offset as i32);
+                            state.command_palette.scroll_offset = next as usize;
+                            // Inhibit the selection-follows-scroll snap for this
+                            // next frame by pre-advancing `palette_last_selected`
+                            // to the current selection — the render loop only
+                            // snaps when the two differ.
+                            state.palette_last_selected = state.command_palette.selected;
+                            state.window.request_redraw();
+                        }
+                        return;
+                    }
+                }
+
                 // Notification panel scroll — intercept when cursor is over the panel.
                 if state.notification_panel.open {
                     let sw = state.gpu.width() as f32;

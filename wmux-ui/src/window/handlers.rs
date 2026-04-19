@@ -591,10 +591,31 @@ pub(super) fn handle_palette_key(
             state.command_palette.selected = 0;
         }
         Key::Named(NamedKey::ArrowDown) => {
-            state.command_palette.select_next();
+            // Skip over section-header rows so the user lands on selectable items.
+            let count = state.command_palette.result_count;
+            for _ in 0..count.max(1) {
+                state.command_palette.select_next();
+                let idx = state.command_palette.selected_index();
+                let is_section = idx
+                    .and_then(|i| state.palette_row_sections.get(i))
+                    .is_some_and(|s| s.is_some());
+                if !is_section {
+                    break;
+                }
+            }
         }
         Key::Named(NamedKey::ArrowUp) => {
-            state.command_palette.select_prev();
+            let count = state.command_palette.result_count;
+            for _ in 0..count.max(1) {
+                state.command_palette.select_prev();
+                let idx = state.command_palette.selected_index();
+                let is_section = idx
+                    .and_then(|i| state.palette_row_sections.get(i))
+                    .is_some_and(|s| s.is_some());
+                if !is_section {
+                    break;
+                }
+            }
         }
         Key::Named(NamedKey::Tab) => {
             if state.modifiers.shift_key() {

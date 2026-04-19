@@ -137,14 +137,22 @@ impl StatusBar {
         let dot_color = match data.connection {
             ConnectionStatus::Connected => ui_chrome.success,
             ConnectionStatus::Reconnecting => {
-                // Pulse animation
+                // Pulse amber — the "attention, not focus" token. Never accent blue,
+                // which is reserved for selection/focus signalling.
                 let alpha = 0.5
                     + 0.5 * (time_secs * std::f32::consts::PI / MOTION_PULSE.as_secs_f32()).sin();
-                let c = ui_chrome.warning;
+                let c = ui_chrome.amber;
                 [c[0], c[1], c[2], alpha]
             }
             ConnectionStatus::Disconnected => ui_chrome.error,
         };
+        // Soft amber halo behind the dot when reconnecting — matches the mockup.
+        if matches!(data.connection, ConnectionStatus::Reconnecting) {
+            let halo = dot_size * 2.0;
+            let hx = dot_x - (halo - dot_size) / 2.0;
+            let hy = dot_y - (halo - dot_size) / 2.0;
+            quads.push_rounded_quad(hx, hy, halo, halo, ui_chrome.amber_soft, halo / 2.0);
+        }
         quads.push_rounded_quad(dot_x, dot_y, dot_size, dot_size, dot_color, dot_size / 2.0);
     }
 

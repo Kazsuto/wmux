@@ -82,12 +82,45 @@ pub(crate) struct UiState<'window> {
     pub(crate) palette_result_buffers: Vec<glyphon::Buffer>,
     /// Pool of glyphon text buffers for result shortcut badges (up to 20).
     pub(crate) palette_shortcut_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon text buffers for per-result descriptions / metadata
+    /// (muted line under each name — commands carry a description, workspaces
+    /// carry `branch · N panes · path`, surfaces leave it empty).
+    pub(crate) palette_desc_buffers: Vec<glyphon::Buffer>,
+    /// Pool of glyphon text buffers for the workspace number rendered on the
+    /// colored square icon of each workspace result row (14px bold).
+    pub(crate) palette_ws_icon_buffers: Vec<glyphon::Buffer>,
+    /// Static footer hint text ("↑↓ navigate   ↵ select   Tab filter   ESC close").
+    pub(crate) palette_footer_hints_buffer: glyphon::Buffer,
+    /// Static footer brand text ("wmux").
+    pub(crate) palette_footer_brand_buffer: glyphon::Buffer,
+    /// Pre-built 14x14 CustomGlyph arrays for each command row icon, filled
+    /// on the dirty-check frame so `text_areas()` can hand out the right
+    /// reference per row without fighting lifetimes.
+    pub(crate) palette_row_icons: Vec<[glyphon::CustomGlyph; 1]>,
+    /// Per-row kind: `None` for regular result rows, `Some(label)` for section
+    /// headers rendered inline between groups ("COMMANDS", "WORKSPACES", etc.).
+    /// Parallel to `palette_actions` — section rows have `PaletteAction::Command("")`
+    /// as a sentinel and are skipped by navigation/Enter.
+    pub(crate) palette_row_sections: Vec<Option<String>>,
     /// Actions for the currently visible palette results (set during render, read by Enter handler).
     pub(crate) palette_actions: Vec<crate::command_palette::PaletteAction>,
     /// Last query used for palette search — dirty tracking to skip re-search when unchanged.
     pub(crate) palette_last_query: String,
     /// Last filter used for palette search — dirty tracking.
     pub(crate) palette_last_filter: crate::command_palette::PaletteFilter,
+    /// Last `scroll_offset` used when populating the visible buffer window.
+    /// When the user scrolls, the slot→row mapping changes and we must
+    /// re-fill `palette_result_buffers[0..visible]` from the new slice.
+    pub(crate) palette_last_scroll: usize,
+    /// Last `selected` observed by the render loop. Used to decide whether
+    /// to snap `scroll_offset` back onto the selection this frame: on a
+    /// selection change we follow; on a pure wheel scroll we leave the
+    /// viewport where the user put it.
+    pub(crate) palette_last_selected: usize,
+    /// Full row list backing the visible window. Stored separately from
+    /// `palette_actions` so the renderer can rebuild slot buffers on scroll
+    /// changes without re-running the search.
+    pub(crate) palette_rows_cache: Vec<crate::command_palette::PaletteRowCache>,
 
     // Notification panel
     pub(crate) notification_panel: crate::notification_panel::NotificationPanel,
