@@ -1,13 +1,18 @@
-/// Centralized icon codepoint registry for UI chrome rendering.
+/// Legacy icon font codepoint registry (Win10 fallback only).
 ///
-/// All UI icons are rendered as text glyphs from Segoe Fluent Icons (Win11 built-in).
-/// Each variant maps to a single Unicode codepoint in the Segoe Fluent Icons font.
-/// Use [`GlyphonRenderer::has_icon_font()`](crate::text::GlyphonRenderer::has_icon_font)
-/// to check availability at runtime before rendering.
+/// **Primary rendering path**: Codicons SVGs via [`svg_icons`](crate::svg_icons)
+/// and `CustomGlyph` (see `.claude/rules/icons.md`). This enum is only used
+/// when the Segoe Fluent Icons font is available AND the SVG rasterization
+/// pipeline is unavailable, typically legacy Win10 scenarios.
 ///
-/// # Usage
+/// Each variant maps to a Unicode codepoint in the Private Use Area
+/// (U+E000..U+F8FF) of Segoe Fluent Icons. Use
+/// [`GlyphonRenderer::has_icon_font()`](crate::text::GlyphonRenderer::has_icon_font)
+/// to detect availability at runtime before rendering.
 ///
-/// ```ignore
+/// # Usage (font fallback path)
+///
+/// ```text
 /// let attrs = Attrs::new().family(Family::Name(ICON_FONT_FAMILY));
 /// buffer.set_text(font_system, Icon::Close.codepoint(), &attrs, Shaping::Advanced, None);
 /// ```

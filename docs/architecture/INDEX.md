@@ -13,7 +13,7 @@ Native Windows terminal multiplexer in Rust. GPU-accelerated, split panes, works
 | Text Rendering | glyphon (cosmic-text + swash) | 0.10 |
 | Windowing | winit | 0.30 |
 | Terminal Parsing | vte (Alacritty's parser) | 0.13 |
-| PTY | portable-pty (ConPTY) | 0.9 |
+| PTY | wmux-pty ConPTY wrapper (direct ConPTY via `windows`) | n/a |
 | Async Runtime | tokio | 1.x |
 | IPC | Named Pipes + JSON-RPC v2 | n/a |
 | Browser | WebView2 via webview2-com | 0.39 |
@@ -26,7 +26,7 @@ Native Windows terminal multiplexer in Rust. GPU-accelerated, split panes, works
 | Crate | Responsibility |
 |-------|---------------|
 | wmux-core | Terminal state, VTE parsing, cell grid, scrollback, domain models, focus routing |
-| wmux-pty | ConPTY spawn/resize/I/O via portable-pty, shell detection |
+| wmux-pty | ConPTY spawn/resize/I/O via the `wmux-pty` wrapper, shell detection |
 | wmux-render | wgpu surface, glyphon text atlas, QuadPipeline, dirty-row rendering |
 | wmux-ui | winit event loop, split pane layout, sidebar, overlays, input dispatch |
 | wmux-ipc | Named Pipes server, JSON-RPC v2 protocol, auth, 80+ command handlers |

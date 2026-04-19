@@ -14,7 +14,7 @@ The hot path from keystroke to rendered frame. Every millisecond matters here.
 |------|----------|----|-------------|
 | winit Event Loop | `triggers` | Keyboard Input | Win32 key events dispatched to input handler |
 | Keyboard Input | `uses` | PTY Manager | Translated key bytes written to ConPTY stdin |
-| PTY Manager | `uses` | ConPTY (Win32) | portable-pty spawn, resize, I/O via Win32 API |
+| PTY Manager | `uses` | `wmux-pty` ConPTY wrapper | safe RAII ConPTY spawn, resize, and I/O via `create_conpty` / `ConPtyHandle` |
 | PTY Async I/O | `triggers` | VTE Parser | Raw bytes from ConPTY stdout fed to vte::Perform |
 | VTE Parser | `uses` | Cell Grid | Escape sequences update cells, cursor, modes |
 | Cell Grid | `triggers` | Dirty Row Tracking | Modified rows flagged for GPU upload |

@@ -82,7 +82,7 @@ wmux
 ├── wmux-pty [CORE], ConPTY Abstraction
 │   ├── PTY Manager [CORE]
 │   │   ├── Shell Detection (pwsh, powershell, cmd) [SUB]
-│   │   ├── ConPTY Spawn (portable-pty) [SUB]
+│   │   ├── ConPTY Spawn (wmux-pty direct ConPTY wrapper) [SUB]
 │   │   ├── Env injection (WMUX_SURFACE_ID, etc.) [SUB]
 │   │   └── Resize handling [SUB]
 │   └── PTY Async I/O [CORE]

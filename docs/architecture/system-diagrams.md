@@ -83,7 +83,7 @@ C4Component
 
         Component(mux, "Multiplexer", "PaneTree + AppState Actor", "Binary split tree,<br/>focus routing, workspace lifecycle,<br/>surface manager")
         Component(terminal, "Terminal Engine", "vte + Grid + Scrollback", "VTE parsing, cell grid,<br/>ring buffer scrollback,<br/>mode/cursor state")
-        Component(pty_mgr, "PTY Manager", "portable-pty + tokio", "ConPTY spawn, I/O pipes,<br/>shell detection, env injection")
+        Component(pty_mgr, "PTY Manager", "wmux-pty direct ConPTY wrapper + tokio", "ConPTY spawn, I/O pipes,<br/>shell detection, env injection")
 
         Container_Boundary(meta, "Metadata Layer") {
             Component(meta_store, "MetadataStore", "Sidebar state owner", "Statuses, progress, logs,<br/>PID sweep (30s)")
